@@ -1,0 +1,68 @@
+{
+  "name": "frontend",
+  "version": "1.2.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "start": "electron .",
+    "build": "vite build",
+    "preview": "vite preview",
+    "package": "electron-builder"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.7.3",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "vite": "^6.4.1"
+  },
+  "build": {
+    "appId": "com.spj.app",
+    "productName": "Aplikasi SPJ",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "rofiq27745",
+        "repo": "Aplikasi_SPJ_BOSP"
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "index.js",
+      "preload.js",
+      "assets/**/*"
+    ],
+    "directories": {
+      "output": "../hasil_build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/logo.png",
+      "artifactName": "Installer_Aplikasi-SPJ_${arch}_v${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "license": "license.txt"
+    },
+ "extraResources": [
+  { "from": "../backend/dist/x64/main.exe", "to": "backend/main.exe" }
+]
+
+  }
+}

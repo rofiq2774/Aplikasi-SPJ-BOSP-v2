@@ -1,0 +1,16 @@
+{
+  "name": "aplikasi-spj",
+  "scripts": {
+    "start": "concurrently \"npm run start:frontend\" \"npm run start:electron\"",
+    "start:frontend": "cd frontend && npm run dev",
+    "start:electron": "npx wait-on http://localhost:5173 && cd frontend && npm start",
+    "build": "npm run build:python:64 && npm run build:react && npm run build:electron",
+    "build:python:64": "cd backend && py -3.10-64 -m PyInstaller --clean --distpath dist/x64 main.spec",
+    "build:react": "cd frontend && npm run build",
+    "build:electron": "cd frontend && npm run package"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "wait-on": "^8.0.2"
+  }
+}

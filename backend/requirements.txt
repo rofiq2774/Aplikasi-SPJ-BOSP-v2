@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+httpx
+SQLAlchemy>=2.0
+aiosqlite
+python-dateutil
+python-dotenv
+num2words
+pymupdf
+fpdf
+reportlab
+python-multipart
+jinja2
+starlette

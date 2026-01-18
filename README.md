@@ -112,6 +112,5 @@ A separate license agreement is required for commercial use, closed redistributi
 If you require a standard open-source license (e.g., MIT, Apache 2.0) or a formal written agreement, please contact the project owner to discuss licensing options and customization.
 
 
-**Unduhan**
-![Total Downloads](https://img.shields.io/github/downloads/rofiq2774/Aplikasi-SPJ-BOSP-v2/total?style=for-the-badge&label=Pengguna%20(Unduhan)&color=2ea44f)
+![Total Downloads](https://img.shields.io/github/downloads/rofiq2774/Aplikasi-SPJ-BOSP-v2/total?style=for-the-badge&label=Pengguna%20&color=2ea44f)
 

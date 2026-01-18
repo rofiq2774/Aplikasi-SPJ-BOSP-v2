@@ -10,6 +10,7 @@ import shutil
 import json
 import uuid
 import openpyxl
+import traceback
 from urllib.parse import urlparse
 from PyPDF2 import PdfMerger
 from urllib.parse import unquote
@@ -1500,76 +1501,6 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     c.save()
     buffer.seek(0)
     return buffer.getvalue()
-
-@api_router.get("/kwitansi/{id}/pdf")
-async def get_kwitansi_pdf(
-    id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    # 1. Ambil Data Kwitansi
-    stmt = select(Kwitansi).where(Kwitansi.id == id)
-    result = await db.execute(stmt)
-    kwitansi = result.scalar_one_or_none()
-    
-    if not kwitansi:
-        raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
-
-    # 2. Ambil Pengaturan
-    stmt2 = select(Pengaturan).limit(1)
-    result2 = await db.execute(stmt2)
-    pengaturan = result2.scalar_one_or_none()
-    
-    if not pengaturan:
-        raise HTTPException(status_code=404, detail="Pengaturan belum diisi")
-
-    # 3. Generate Bagian 1: KWITANSI (Halaman Utama)
-    try:
-        kw_pdf_bytes = generate_kwitansi_pdf_v2(kwitansi, pengaturan)
-    except Exception as e:
-        logger.error(f"Gagal generate Kwitansi PDF: {e}")
-        raise HTTPException(status_code=500, detail="Gagal membuat PDF Kwitansi")
-
-    # 4. Generate Bagian 2: BAST & FOTO (Jika ada no_bukti)
-    bast_pdf_bytes = None
-    if kwitansi.no_bukti:
-        # Ambil item transaksi dari database untuk tabel barang di BAST
-        stmt_trx = select(Transaksi).where(Transaksi.no_bukti == kwitansi.no_bukti).order_by(Transaksi.id)
-        res_trx = await db.execute(stmt_trx)
-        transaksi_list = res_trx.scalars().all()
-
-        if transaksi_list:
-            try:
-                # Panggil fungsi BAST yang sudah include FOTO di dalamnya
-                bast_pdf_bytes = generate_bast_pdf(kwitansi, pengaturan, transaksi_list)
-            except Exception as e:
-                # Jika BAST/Foto gagal, kita log saja agar kwitansi tetap bisa terdownload
-                logger.error(f"Gagal generate BAST/Foto PDF: {e}")
-
-    # 5. Proses Penggabungan (Merging)
-    final_buffer = BytesIO()
-    
-    if bast_pdf_bytes:
-        # Gabungkan Kwitansi + BAST + Foto
-        merger = PdfMerger()
-        merger.append(BytesIO(kw_pdf_bytes))
-        merger.append(BytesIO(bast_pdf_bytes))
-        merger.write(final_buffer)
-        merger.close()
-    else:
-        # Jika tidak ada BAST atau no_bukti kosong, kirim Kwitansi saja
-        final_buffer.write(kw_pdf_bytes)
-
-    final_buffer.seek(0)
-    filename = f"SPJ_Lengkap_{kwitansi.no_bukti or kwitansi.id}.pdf"
-
-    return StreamingResponse(
-        final_buffer,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Access-Control-Expose-Headers": "Content-Disposition"
-        }
-    )
 
 @api_router.get("/transaksi")
 async def get_transaksi(
@@ -3245,7 +3176,7 @@ def generate_bast_pdf(kwitansi, pengaturan, transaksi_list):
     pdf.add_page()
     
     # --- KOP SURAT (Page 1) ---
-    tinggi_logo = 18
+    tinggi_logo = 22
     
     # >>> LOGO PEMDA (Page 1) <<<
     logo_pemda_path = data.get('logo_pemda') or ''
@@ -3253,7 +3184,7 @@ def generate_bast_pdf(kwitansi, pengaturan, transaksi_list):
         try:
             p_logo = Path(logo_pemda_path)
             if p_logo.exists():
-                pdf.image(str(p_logo), x=15, y=22, h=tinggi_logo)
+                pdf.image(str(p_logo), x=13, y=22, h=tinggi_logo)
         except Exception:
             pass
             
@@ -3263,21 +3194,27 @@ def generate_bast_pdf(kwitansi, pengaturan, transaksi_list):
         try:
             p_logo_s = Path(logo_sekolah_path)
             if p_logo_s.exists():
-                pdf.image(str(p_logo_s), x=182, y=22, h=tinggi_logo)
+                pdf.image(str(p_logo_s), x=180, y=22, h=tinggi_logo)
         except Exception:
             pass
 
     pdf.set_y(22) 
-    pdf.set_font("helvetica", "B", 12)
+    pdf.set_font("helvetica", "", 14)
     pdf.cell(0, 6, data['pemda'], align="C", ln=1)
-    pdf.set_font("helvetica", "B", 14)
+    pdf.set_font("helvetica", "B", 18)
     pdf.cell(0, 7, data['sekolah'], align="C", ln=1)
-    pdf.set_font("helvetica", "", 9)
-    pdf.cell(0, 5, data['alamat'], align="C", ln=1)
+    pdf.set_font("helvetica", "", 10)
+    pdf.multi_cell(0, 5, data['alamat'], align="C")
+
+# Ambil posisi Y saat ini (setelah alamat selesai dicetak)
+    posisi_y = pdf.get_y() + 2  # Ditambah 2 agar ada jarak sedikit (padding)
 
     pdf.set_line_width(0.6)
-    pdf.line(15, 45, 200, 45)
-    pdf.ln(15)
+# Gambar garis pada posisi_y yang baru didapat
+    pdf.line(15, posisi_y, 200, posisi_y) 
+
+# Pindahkan kursor ke bawah garis untuk konten selanjutnya
+    pdf.set_y(posisi_y + 10)
 
     # --- JUDUL HALAMAN ---
     pdf.set_font("helvetica", "B", 12)
@@ -3366,7 +3303,7 @@ def generate_bast_pdf(kwitansi, pengaturan, transaksi_list):
         try:
             p_logo = Path(logo_pemda_path)
             if p_logo.exists():
-                pdf.image(str(p_logo), x=15, y=22, h=tinggi_logo)
+                pdf.image(str(p_logo), x=13, y=22, h=tinggi_logo)
         except Exception:
             pass
             
@@ -3376,20 +3313,27 @@ def generate_bast_pdf(kwitansi, pengaturan, transaksi_list):
         try:
             p_logo_s = Path(logo_sekolah_path)
             if p_logo_s.exists():
-                pdf.image(str(p_logo_s), x=182, y=22, h=tinggi_logo)
+                pdf.image(str(p_logo_s), x=180, y=22, h=tinggi_logo)
         except Exception:
             pass
 
     pdf.set_y(22)
-    pdf.set_font("helvetica", "B", 12)
+    pdf.set_font("helvetica", "", 14)
     pdf.cell(0, 6, data['pemda'], align="C", ln=1)
-    pdf.set_font("helvetica", "B", 14)
+    pdf.set_font("helvetica", "B", 18)
     pdf.cell(0, 7, data['sekolah'], align="C", ln=1)
-    pdf.set_font("helvetica", "", 9)
-    pdf.cell(0, 5, data['alamat'], align="C", ln=1)
+    pdf.set_font("helvetica", "", 10)
+    pdf.multi_cell(0, 5, data['alamat'], align="C")
+
+# Ambil posisi Y saat ini (setelah alamat selesai dicetak)
+    posisi_y = pdf.get_y() + 2  # Ditambah 2 agar ada jarak sedikit (padding)
+
     pdf.set_line_width(0.6)
-    pdf.line(15, 45, 200, 45) 
-    pdf.ln(15)
+# Gambar garis pada posisi_y yang baru didapat
+    pdf.line(15, posisi_y, 200, posisi_y) 
+
+# Pindahkan kursor ke bawah garis untuk konten selanjutnya
+    pdf.set_y(posisi_y + 10)
     pdf.set_font("helvetica", "B", 11)
     pdf.cell(0, 5, "BERITA ACARA SERAH TERIMA BARANG", align="C", ln=1)
     pdf.cell(0, 5, "PENGADAAN / PEROLEHAN", align="C", ln=1)
@@ -3599,122 +3543,399 @@ def generate_bast_pdf(kwitansi, pengaturan, transaksi_list):
 
     return pdf.output(dest="S").encode("latin1")
 
-# --- Route Cetak PDF BAST ---
-@api_router.get("/kwitansi/bast/{no_bukti}")
-async def cetak_bast_by_no_bukti(no_bukti: str, db: AsyncSession = Depends(get_db)):
-    # 1. Ambil Data Kwitansi
-    result = await db.execute(select(Kwitansi).where(Kwitansi.no_bukti == no_bukti))
-    kwitansi = result.scalar_one_or_none()
-    if not kwitansi:
-        raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
+def generate_rab_pdf(pengaturan, kegiatan, transaksi_list, thp_label, tahun):
+    # ---------------- HELPER ----------------
+    def format_rupiah(value):
+        return f"Rp {value:,.0f}".replace(",", ".")
 
-    # 2. Ambil Pengaturan
-    result = await db.execute(select(Pengaturan))
-    pengaturan = result.scalar_one_or_none()
-    
-    # [cite_start]PROTEKSI: Jika tabel pengaturan kosong sama sekali [cite: 1136]
-    if not pengaturan:
-        class Dummy:
-            nama_pemda = nama_sekolah = alamat_sekolah = ""
-            nama_kepala_sekolah = nip_kepala_sekolah = ""
-            nama_bendahara = nip_bendahara = ""
-            nama_pengurus_barang = nip_pengurus_barang = ""
-            logo_pemda = logo_sekolah = None
-            tempat_surat = tempat_surat = ""
-        pengaturan = Dummy()
-    
-    # 3. Ambil Transaksi
-    result = await db.execute(
-        select(Transaksi).where(Transaksi.no_bukti == no_bukti).order_by(Transaksi.id)
-    )
-    transaksi_list = result.scalars().all()
+    # Helper hitung bulan surat berdasarkan Label Tahap
+    # LOGIKA: Hanya mengubah bulan tanda tangan, TIDAK memfilter data tabel
+    def get_tanggal_surat_custom(lokasi, thp, thn):
+        bulan = "Januari" # Default
+        
+        if thp:
+            thp_str = str(thp).upper()
+            # Cek keyword untuk Juli (Tahap 2)
+            if "THP II" in thp_str or "2" in thp_str or "DUA" in thp_str:
+                bulan = "Juli"
+            # Cek keyword untuk Januari (Tahap 1)
+            elif "THP I" in thp_str or "1" in thp_str or "SATU" in thp_str:
+                bulan = "Januari"
+        
+        # Format: [Tempat], ... [Bulan] [Tahun]
+        return f"{lokasi}, ... {bulan} {thn}"
 
-    # 4. Generate PDF menggunakan fungsi Helper (HASIL PASTI SAMA)
-    pdf_bytes = generate_bast_pdf(kwitansi, pengaturan, transaksi_list)
+    # ---------------- SETUP PDF ----------------
+    pdf = FPDF(orientation='L', unit='mm', format=(215, 330))
+    pdf.set_margins(15, 15, 15)
+    pdf.add_page()
     
-    filename = f"BAST-{no_bukti}.pdf"
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Access-Control-Expose-Headers": "Content-Disposition"
-        }
-    )
+    # ---------------- HEADER ----------------
+    pdf.set_y(15)
+    pdf.set_font("helvetica", "B", 14)
+    pdf.cell(0, 8, "RENCANA ANGGARAN BIAYA (RAB)", align="C", ln=1)
+    pdf.ln(5)
+
+    pdf.set_font("helvetica", "", 11)
+    start_x = 15
+
+    def print_info_row(label, value):
+        pdf.set_x(start_x)
+        pdf.cell(45, 6, label, 0, 0)
+        pdf.cell(5, 6, ":", 0, 0)
+        pdf.multi_cell(0, 6, str(value) if value else "-")
+
+    nama_keg = kegiatan.nama_kegiatan if kegiatan else "-"
+    
+    print_info_row("Kegiatan", nama_keg)
+    print_info_row("Tahap", thp_label) # Hanya menampilkan label
+    print_info_row("Tahun Anggaran", tahun)
+    print_info_row("Satuan Pendidikan", pengaturan.nama_sekolah)
+    
+    pdf.ln(5)
+
+    # ---------------- TABEL HEADER ----------------
+    w = [12, 95, 18, 22, 35, 35, 35, 48] 
+    headers = ["No", "Uraian Kegiatan", "Volume", "Satuan", "Harga Satuan", "Jumlah", "Jenis Belanja", "Keterangan"]
+
+    def print_table_header():
+        pdf.set_font("helvetica", "B", 10)
+        pdf.set_fill_color(230, 230, 230)
+        x_curr = 15
+        for i, h in enumerate(headers):
+            pdf.set_xy(x_curr, pdf.get_y())
+            pdf.cell(w[i], 10, h, border=1, align="C", fill=True)
+            x_curr += w[i]
+        pdf.ln()
+
+    print_table_header()
+
+    pdf.set_font("helvetica", "", 10)
+    grand_total = 0
+    no = 1
+
+    # ---------------- PRE-PROCESSING DATA ----------------
+    # Filter hanya membuang PPh/PPN. 
+    # TIDAK ADA filter berdasarkan Tahap (semua data masuk).
+    filtered_transaksi = []
+    
+    for item in transaksi_list:
+        # Normalisasi input (bisa berupa object atau tuple)
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            trx_obj = item[0]
+            jns = item[1]
+        else:
+            trx_obj = item
+            jns = None
+            
+        # Cek Pajak
+        uraian_check = (trx_obj.uraian or "").lower()
+        if "ppn" in uraian_check or "pph" in uraian_check:
+            continue # Skip pajak
+        
+        # Masukkan semua data yang bukan pajak
+        filtered_transaksi.append((trx_obj, jns))
+
+    # ---------------- RENDER TABEL ----------------
+    for trx, jenis_belanja in filtered_transaksi:
+        vol = trx.volume or 0
+        hrg = trx.harga_satuan or 0
+        subtotal = vol * hrg
+        grand_total += subtotal
+
+        uraian_text = trx.uraian or "-"
+        satuan = trx.satuan or ""
+        jenis_text = str(jenis_belanja) if jenis_belanja else "-"
+        
+        # Cek Ganti Halaman
+        if pdf.get_y() > 175: 
+            pdf.add_page()
+            print_table_header()
+            pdf.set_font("helvetica", "", 10)
+
+        x_start = 15 
+        y_start = pdf.get_y()
+
+        # 1. Hitung Tinggi Baris (Max height dari Uraian & Jenis Belanja)
+        # Hitung Uraian
+        pdf.set_xy(x_start + w[0], y_start)
+        pdf.multi_cell(w[1], 6, uraian_text, border=0, align="L")
+        h_uraian = pdf.get_y() - y_start
+        
+        # Hitung Jenis Belanja
+        x_jenis = x_start + sum(w[:6])
+        pdf.set_xy(x_jenis, y_start)
+        pdf.multi_cell(w[6], 6, jenis_text, border=0, align="L")
+        h_jenis = pdf.get_y() - y_start
+
+        # Ambil max tinggi
+        h_row = max(h_uraian, h_jenis)
+        if h_row < 6: h_row = 6
+
+        # 2. Gambar Border/Kotak
+        current_x = x_start
+        for width in w:
+            pdf.rect(current_x, y_start, width, h_row)
+            current_x += width
+
+        # 3. Isi Konten
+        # No
+        pdf.set_xy(x_start, y_start)
+        pdf.cell(w[0], 6, str(no), border=0, align="C")
+
+        # Uraian (Tulis ulang di posisi yang benar)
+        pdf.set_xy(x_start + w[0], y_start)
+        pdf.multi_cell(w[1], 6, uraian_text, border=0, align="L")
+
+        # Vol
+        vol_str = f"{int(vol)}" if vol % 1 == 0 else f"{vol}".replace('.', ',')
+        pdf.set_xy(x_start + sum(w[:2]), y_start)
+        pdf.cell(w[2], 6, vol_str, border=0, align="C")
+
+        # Sat
+        pdf.set_xy(x_start + sum(w[:3]), y_start)
+        pdf.cell(w[3], 6, satuan, border=0, align="C")
+
+        # Harga
+        pdf.set_xy(x_start + sum(w[:4]), y_start)
+        pdf.cell(w[4], 6, format_rupiah(hrg), border=0, align="R")
+
+        # Jumlah
+        pdf.set_xy(x_start + sum(w[:5]), y_start)
+        pdf.cell(w[5], 6, format_rupiah(subtotal), border=0, align="R")
+
+        # Jenis Belanja (Tulis ulang)
+        pdf.set_xy(x_start + sum(w[:6]), y_start)
+        pdf.multi_cell(w[6], 6, jenis_text, border=0, align="L")
+
+        # Pindah baris
+        pdf.set_xy(15, y_start + h_row)
+        no += 1
+
+    # ---------------- FOOTER / TOTAL ----------------
+    pdf.set_font("helvetica", "B", 10)
+    total_width_label = sum(w[:5])
+    
+    pdf.cell(total_width_label, 8, "Jumlah Total", border=1, align="R", fill=True)
+    pdf.cell(w[5], 8, format_rupiah(grand_total), border=1, align="R", fill=True)
+    pdf.cell(w[6], 8, "", border=1, fill=True)
+    pdf.cell(w[7], 8, "", border=1, fill=True)
+    pdf.ln(10)
+
+    # ---------------- TANDA TANGAN ----------------
+    if pdf.get_y() > 150:
+        pdf.add_page()
+
+    pdf.set_font("helvetica", "", 11)
+
+    # Lokasi & Tanggal (Otomatis Juli jika Tahap II, Januari jika Tahap I)
+    lokasi = pengaturan.tempat_surat if pengaturan.tempat_surat else "Jember"
+    tgl_cetak = get_tanggal_surat_custom(lokasi, thp_label, tahun)
+    
+    x_sign = 230
+    y_ttd = pdf.get_y()
+
+    pdf.set_xy(x_sign, y_ttd)
+    pdf.cell(70, 5, tgl_cetak, align="C", ln=1)
+
+    pdf.set_xy(x_sign, y_ttd + 5)
+    pdf.cell(70, 5, "Mengetahui,", align="C", ln=1)
+    pdf.set_xy(x_sign, y_ttd + 10)
+    pdf.cell(70, 5, "Kepala Sekolah", align="C", ln=1)
+
+    pdf.ln(25)
+    
+    y_nama = pdf.get_y()
+    pdf.set_font("helvetica", "BU", 11)
+    pdf.set_xy(x_sign, y_nama)
+    pdf.cell(70, 5, pengaturan.nama_kepala_sekolah or "", align="C", ln=1)
+
+    pdf.set_font("helvetica", "", 11)
+    pdf.set_xy(x_sign, y_nama + 5)
+    pdf.cell(70, 5, f"NIP. {pengaturan.nip_kepala_sekolah or '-'}", align="C", ln=1)
+
+    try:
+        pdf_out = pdf.output(dest="S")
+        if isinstance(pdf_out, str):
+            return pdf_out.encode("latin1")
+        return pdf_out
+    except Exception as e:
+        print(f"Error output PDF: {e}")
+        raise
 
 @api_router.get("/kwitansi/{id}/pdf")
 async def get_kwitansi_pdf(
     id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    # 1. Ambil Data Kwitansi
-    stmt = select(Kwitansi).where(Kwitansi.id == id)
-    result = await db.execute(stmt)
-    kwitansi = result.scalar_one_or_none()
-    
-    if not kwitansi:
-        raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
+    import traceback
+    print(f"--- [START] Generate PDF ID: {id} ---")
 
-    # 2. Ambil Pengaturan
-    stmt2 = select(Pengaturan).limit(1)
-    result2 = await db.execute(stmt2)
-    pengaturan = result2.scalar_one_or_none()
-    
-    if not pengaturan:
-        raise HTTPException(status_code=404, detail="Pengaturan belum diisi")
-
-    # 3. Generate Bagian 1: KWITANSI
+    # 1. AMBIL DATA UTAMA (KWITANSI & PENGATURAN)
     try:
+        stmt = select(Kwitansi).where(Kwitansi.id == id)
+        result = await db.execute(stmt)
+        kwitansi = result.scalar_one_or_none()
+        
+        if not kwitansi:
+            raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
+
+        stmt2 = select(Pengaturan).limit(1)
+        result2 = await db.execute(stmt2)
+        pengaturan = result2.scalar_one_or_none()
+        
+        if not pengaturan:
+            raise HTTPException(status_code=404, detail="Pengaturan belum diisi")
+            
+        # Ambil Data Kegiatan (Log jika tidak ditemukan)
+        kegiatan_data = None
+        if kwitansi.kode_kegiatan:
+            stmt_keg = select(MasterKegiatan).where(MasterKegiatan.kode_kegiatan == kwitansi.kode_kegiatan)
+            res_keg = await db.execute(stmt_keg)
+            kegiatan_data = res_keg.scalar_one_or_none()
+        else:
+            print("--- [INFO] Kode Kegiatan kosong, RAB akan dilewati ---")
+
+    except Exception as e:
+        print(f"ERROR Fetching Data Utama: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Gagal mengambil data database")
+
+    # Inisialisasi Buffer PDF
+    kw_pdf_bytes = None
+    bast_pdf_bytes = None  # Urutan variabel tidak masalah, tapi di flow logic kita ubah
+    rab_pdf_bytes = None
+
+    # ---------------------------------------------------------
+    # A. PROSES 1: Generate KWITANSI (Wajib)
+    # ---------------------------------------------------------
+    try:
+        print("--- [PROCESS] Generating Kwitansi... ---")
         kw_pdf_bytes = generate_kwitansi_pdf_v2(kwitansi, pengaturan)
     except Exception as e:
-        logger.error(f"Gagal generate Kwitansi PDF: {e}")
-        raise HTTPException(status_code=500, detail="Gagal membuat PDF Kwitansi")
+        print(f"ERROR FATAL Generate Kwitansi: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Gagal membuat PDF Kwitansi: {e}")
 
-    # 4. Generate Bagian 2: BAST (Jika ada no_bukti)
-    bast_pdf_bytes = None
+    # ---------------------------------------------------------
+    # B. PROSES 2: Generate BAST (Dipindahkan ke Sini)
+    # ---------------------------------------------------------
     if kwitansi.no_bukti:
-        # Ambil item transaksi untuk tabel BAST
-        stmt_trx = select(Transaksi).where(Transaksi.no_bukti == kwitansi.no_bukti).order_by(Transaksi.id)
-        res_trx = await db.execute(stmt_trx)
-        transaksi_list = res_trx.scalars().all()
+        print(f"--- [PROCESS] Generating BAST untuk {kwitansi.no_bukti}... ---")
+        try:
+            stmt_trx = select(Transaksi).where(Transaksi.no_bukti == kwitansi.no_bukti).order_by(Transaksi.id)
+            res_trx = await db.execute(stmt_trx)
+            transaksi_bast = res_trx.scalars().all()
 
-        if transaksi_list:
-            try:
-                # Panggil fungsi generate_bast_pdf yang sudah ada di kode Anda
-                bast_pdf_bytes = generate_bast_pdf(kwitansi, pengaturan, transaksi_list)
-            except Exception as e:
-                # Jika BAST gagal (misal karena logo), catat log tapi jangan hentikan proses (opsional)
-                logger.error(f"Gagal generate BAST PDF: {e}")
-                # bast_pdf_bytes tetap None
+            if transaksi_bast:
+                bast_pdf_bytes = generate_bast_pdf(kwitansi, pengaturan, transaksi_bast)
+            else:
+                print("--- [INFO] Data transaksi BAST kosong ---")
+        except Exception as e:
+            print(f"ERROR Generate BAST (SKIP): {e}")
+            traceback.print_exc()
+            bast_pdf_bytes = None
+    
+    # ---------------------------------------------------------
+    # C. PROSES 3: Generate RAB (Dipindahkan ke Sini)
+    # ---------------------------------------------------------
+    print(f"--- [DEBUG] kegiatan_data={kegiatan_data}, thp='{kwitansi.thp}' ---")
+    if kegiatan_data and kwitansi.thp:
+        print("--- [PROCESS] Generating RAB... ---")
+        try:
+            stmt_rab = (
+                select(
+                    Transaksi,
+                    MasterRekeningBelanja.rekap_rekening_belanja
+                )
+                .join(Kwitansi, Transaksi.no_bukti == Kwitansi.no_bukti)
+                .join(
+                    MasterRekeningBelanja, 
+                    Transaksi.kode_rekening == MasterRekeningBelanja.kode_rekening_belanja,
+                    isouter=True
+                )
+                .where(
+                    and_(
+                        Transaksi.kode_kegiatan == kwitansi.kode_kegiatan,
+                        Kwitansi.thp == kwitansi.thp,
+                        Transaksi.pengeluaran > 0
+                    )
+                )
+                .order_by(Transaksi.tanggal, Transaksi.id)
+            )
+            
+            res_rab = await db.execute(stmt_rab)
+            transaksi_rab_raw = res_rab.all()
+            
+            # Convert Row objects to tuple format (Transaksi obj, jenis_belanja string)
+            transaksi_rab = []
+            for row in transaksi_rab_raw:
+                trx = row[0]  # Transaksi object
+                jenis = row[1] or "-"  # rekap_rekening_belanja
+                transaksi_rab.append((trx, jenis))
 
-    # 5. Gabungkan PDF (Merge)
+            if transaksi_rab:
+                print(f"--- [INFO] Ditemukan {len(transaksi_rab)} transaksi untuk RAB ---")
+                rab_pdf_bytes = generate_rab_pdf(
+                    pengaturan=pengaturan,
+                    kegiatan=kegiatan_data,
+                    transaksi_list=transaksi_rab,
+                    thp_label=kwitansi.thp,
+                    tahun=kwitansi.tahun
+                )
+            else:
+                print(f"--- [INFO] Tidak ada transaksi untuk kegiatan {kwitansi.kode_kegiatan} ---")
+        except Exception as e:
+            print(f"ERROR Generate RAB (SKIP): {e}")
+            traceback.print_exc()
+            rab_pdf_bytes = None
+    else:
+        print("--- [SKIP] RAB di-skip karena kegiatan_data/thp kosong ---")
+
+    # ---------------------------------------------------------
+    # MERGE PDF
+    # ---------------------------------------------------------
     final_buffer = BytesIO()
     
-    if bast_pdf_bytes:
-        # Jika BAST berhasil dibuat, gabungkan Kwitansi + BAST
+    try:
+        print("--- [PROCESS] Merging PDF... ---")
         merger = PdfMerger()
-        merger.append(BytesIO(kw_pdf_bytes))
-        merger.append(BytesIO(bast_pdf_bytes))
+
+        # 1. Kwitansi (Halaman 1)
+        if kw_pdf_bytes:
+            merger.append(BytesIO(kw_pdf_bytes))
+        else:
+             raise Exception("Hasil generate Kwitansi kosong")
+
+        # 2. BAST (Halaman 2 - DIPINDAHKAN KE SINI)
+        if bast_pdf_bytes:
+            merger.append(BytesIO(bast_pdf_bytes))
+
+        # 3. RAB (Halaman 3 - DIPINDAHKAN KE SINI)
+        if rab_pdf_bytes:
+            merger.append(BytesIO(rab_pdf_bytes))
+
         merger.write(final_buffer)
         merger.close()
-    else:
-        # Jika tidak ada BAST, kirim Kwitansi saja
-        final_buffer.write(kw_pdf_bytes)
+        
+        final_buffer.seek(0)
+        filename = f"SPJ_Lengkap_{kwitansi.no_bukti or kwitansi.id}.pdf"
+        
+        print("--- [SUCCESS] PDF Generated ---")
+        return StreamingResponse(
+            final_buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Expose-Headers": "Content-Disposition"
+            }
+        )
 
-    final_buffer.seek(0)
-
-    # Nama file output
-    filename = f"SPJ_Lengkap_{kwitansi.no_bukti or kwitansi.id}.pdf"
-
-    return StreamingResponse(
-        final_buffer,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Access-Control-Expose-Headers": "Content-Disposition"
-        }
-    )
-
+    except Exception as e:
+        print(f"ERROR Merging PDF: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Gagal menggabungkan dokumen PDF")
+    
 # Include router in app (harus di akhir setelah semua routes didefinisikan)
 app.include_router(api_router)
 

@@ -2929,7 +2929,7 @@ function renderChangelog(notes) {
             () => restartAndInstall()
         );
 
-        msgElement.innerText = "Unduhan selesai! Klik tombol di bawah untuk instal.";
+        msgElement.innerText = "Unduhan selesai! Restart aplikasi untuk menerapkan pembaruan.";
         progressBar.style.width = '100%';
         progressBar.innerText = 'Selesai';
         progressBar.style.backgroundColor = '#28a745';
@@ -3345,7 +3345,7 @@ window.electronAPI.getAppVersion().then(v => {
                     <div id="update-details" class="update-status-text"></div>
                     
                     <button id="btn-restart" class="btn btn-success" style="display:none; margin-top:15px; width:100%;" onclick="restartAndInstall()">
-                        🚀 Mulai Ulang & Install Update
+                        🚀Mulai Ulang & Terapkan Update
                     </button>
                 </div>
             </div>

@@ -29,7 +29,7 @@ Aplikasi ini dirancang untuk membantu bendahara sekolah dan instansi pendidikan 
 1.  **Download Installer**
    Download installer rilis terbaru dari repository kami beserta perlengkapannya (master_kegiatan.xlsx dan master_rekening.xlsx)
     ```bash
-    https://github.com/rofiq27745/Aplikasi_SPJ_BOSP
+    https://github.com/rofiq2774/Aplikasi-SPJ-BOSP-v2
     ```
 
 3.  **Instalasi**
@@ -113,5 +113,5 @@ If you require a standard open-source license (e.g., MIT, Apache 2.0) or a forma
 
 
 **Unduhan**
-![Total Downloads](https://img.shields.io/github/downloads/rofiq27745/Aplikasi_SPJ_BOSP/total?style=for-the-badge&label=Pengguna%20(Unduhan)&color=2ea44f)
+![Total Downloads](https://img.shields.io/github/downloads/rofiq2774/Aplikasi-SPJ-BOSP-v2/total?style=for-the-badge&label=Pengguna%20(Unduhan)&color=2ea44f)
 

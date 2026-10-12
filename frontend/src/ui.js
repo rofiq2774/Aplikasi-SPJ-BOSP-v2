@@ -17,13 +17,18 @@
 // ==========================================================================
 
 const UI = (() => {
-    const ICONS = {
-        success: "✓",
-        error: "✕",
-        warning: "⚠",
-        info: "ℹ",
-        question: "?",
+    const ICON_PATHS = {
+        success: '<polyline points="20 6 9 17 4 12"/>',
+        error: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+        warning: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+        info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+        question: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+        edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.481.97l-.77 3.454a1 1 0 0 0 1.23 1.23l3.454-.77a2 2 0 0 0 .97-.48z"/><path d="m15 5 4 4"/>',
+        close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     };
+    function iconSvg(name, size = 16) {
+        return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ICON_PATHS.info}</svg>`;
+    }
 
     function esc(str) {
         // Hanya untuk keamanan ganda bila suatu saat perlu innerHTML.
@@ -63,7 +68,7 @@ const UI = (() => {
 
         const icon = document.createElement("div");
         icon.className = "toast-icon";
-        icon.textContent = ICONS[type] || ICONS.info;
+        icon.innerHTML = iconSvg(type === "success" ? "success" : type === "error" ? "error" : type === "warning" ? "warning" : "info", 16);
 
         const body = document.createElement("div");
         body.className = "toast-body";
@@ -96,7 +101,7 @@ const UI = (() => {
         close.type = "button";
         close.className = "toast-close";
         close.setAttribute("aria-label", "Tutup notifikasi");
-        close.textContent = "×";
+        close.innerHTML = iconSvg("close", 14);
         close.addEventListener("click", () => dismiss(toast));
 
         const bar = document.createElement("div");
@@ -156,10 +161,10 @@ const UI = (() => {
             head.className = "ui-dialog-head";
             const icon = document.createElement("div");
             icon.className = "ui-dialog-icon";
-            icon.textContent =
-                kind === "confirm" ? (danger ? ICONS.warning : ICONS.question)
-                : kind === "prompt" ? "✎"
-                : (ICONS[tone] || ICONS.info);
+            icon.innerHTML = iconSvg(
+                kind === "confirm" ? (danger ? "warning" : "question")
+                : kind === "prompt" ? "edit"
+                : (tone in ICON_PATHS ? tone : "info"), 20);
             head.appendChild(icon);
             const h = document.createElement("h2");
             h.className = "ui-dialog-title";

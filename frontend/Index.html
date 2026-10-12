@@ -8,9 +8,12 @@ content="
 default-src 'self';
 script-src 'self' 'unsafe-inline';
 style-src 'self' 'unsafe-inline';
-img-src 'self' data: blob: http://127.0.0.1:8000 file:;
-connect-src 'self' http://127.0.0.1:8000;
+img-src 'self' data: blob: http://127.0.0.1:* file:;
+connect-src 'self' http://127.0.0.1:*;
 ">
+  <!-- Catatan: backend HANYA berjalan sebagai child_process dengan port dinamis.
+       Tidak ada servis localhost statis (8000) lagi — karena itu CSP memakai
+       wildcard port http://127.0.0.1:* dan BUKAN http://127.0.0.1:8000. -->
   <title>Aplikasi SPJ BOSP</title>
 </head>
 <body>

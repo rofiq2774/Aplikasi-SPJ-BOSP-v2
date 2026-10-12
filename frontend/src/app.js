@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import UI from "./ui.js";
 
 // ===================== BACKEND BASE URL (child_process) =====================
 // Backend TIDAK lagi dilayani oleh "servis localhost" statis (port 8000).
@@ -136,47 +137,32 @@ function formatRupiah(num) {
     return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(num);
 }
 
+// ===================== NOTIFIKASI / PERINGATAN / KONFIRMASI KUSTOM ==========
+// Semua UI bersifat non-blocking, bertema native, dan TIDAK lagi memakai
+// alert/confirm/prompt bawaan browser (diblokir total di ui.js).
+// showMessage & showToast dipertahankan sebagai API lama namun didelegasikan
+// ke implementasi kustom yang anti-bug (lihat src/ui.js).
 function showMessage(type, text) {
-    const msgDiv = document.getElementById("message");
-    msgDiv.innerHTML = `<div class="alert alert-${type}">${text}</div>`;
-    setTimeout(() => msgDiv.innerHTML = "", 3000);
+    const map = { success: "success", error: "error", danger: "error", warning: "warning", info: "info" };
+    UI.notify({ type: map[type] || "info", title: "Pemberitahuan", message: String(text ?? ""), duration: 4000 });
 }
 
 function showToast(title, message, actionText = null, actionCallback = null) {
-    const container = document.getElementById('toast-container');
-    const toast = document.createElement('div');
-    toast.className = 'toast';
-    
-    let actionBtnHtml = '';
-    if (actionText) {
-        actionBtnHtml = `<button class="toast-action-btn toast-btn">${actionText}</button>`;
-    }
-
-    toast.innerHTML = `
-        <div class="toast-content">
-            <span class="toast-title">${title}</span>
-            <span class="toast-msg">${message}</span>
-        </div>
-        ${actionBtnHtml}
-        <button class="toast-close" onclick="this.parentElement.remove()">×</button>
-    `;
-
-    container.appendChild(toast);
-
-    // Event Listener untuk tombol aksi (misal: "Lihat Progress")
-    if (actionText && actionCallback) {
-        const btn = toast.querySelector('.toast-action-btn');
-        btn.addEventListener('click', () => {
-            actionCallback();
-            toast.remove(); // Tutup toast setelah diklik
-        });
-    }
-
-    // Hilang otomatis setelah 10 detik
-    setTimeout(() => {
-        if (toast.parentElement) toast.remove();
-    }, 10000);
+    // Deteksi tipe dari judul agar pemanggil lama otomatis mendapat warna tepat.
+    const t = String(title || "").toLowerCase();
+    let type = "info";
+    if (t.includes("berhasil") || t.includes("sukses") || t.includes("success")) type = "success";
+    else if (t.includes("gagal") || t.includes("error")) type = "error";
+    else if (t.includes("peringatan") || t.includes("warn") || t.includes("hatau")) type = "warning";
+    return UI.notify({
+        type,
+        title: String(title || "Notifikasi"),
+        message: message instanceof Error ? message.message : String(message ?? ""),
+        actionText,
+        onAction: actionCallback,
+    });
 }
+// ============================================================================
 
 // Load settings
 async function loadPengaturan() {
@@ -377,7 +363,7 @@ async function saveTransaksi() {
             if (wouldDeleteBpu > 0) msg += `\nIni juga akan menghapus data Buku Kas Umum yang mungkin sudah diperbaiki!`;
             msg += '\nApakah Anda yakin ingin melanjutkan?';
 
-            if (!confirm(msg)) {
+            if (!(await UI.confirm(msg, { title: "Konfirmasi Penyimpanan BKU", okText: "Ya, Simpan" }))) {
                 showToast("info!", 'Simpan dibatalkan oleh pengguna.');
                 return;
             }
@@ -625,7 +611,7 @@ async function loadKwitansiList() {
 
 // Generate Kwitansi
 async function generateKwitansi() {
-    if (!confirm("Generate ulang semua Data SPJ? Data lama akan dihapus.")) {
+    if (!(await UI.confirm("Generate ulang semua Data SPJ? Data lama akan dihapus.", { title: "Generate Ulang SPJ", okText: "Ya, Generate" }))) {
         return;
     }
 
@@ -835,7 +821,7 @@ function renderMasterRekeningBelanja(data = null) {
 // Hapus master rekening (frontend) — akan memanggil endpoint DELETE di backend jika tersedia
 // Ganti fungsi deleteMasterRekening yang lama dengan ini:
 async function deleteMasterRekening(id) {
-    if (!confirm("Hapus rekening belanja ini?")) return;
+    if (!(await UI.confirm("Hapus rekening belanja ini?", { title: "Hapus Rekening Belanja", okText: "Hapus", danger: true }))) return;
 
     try {
         const response = await apiFetch(`${API_BASE}/master-rekening-belanja/${id}`, {
@@ -1028,7 +1014,7 @@ async function processTemplateExcel() {
 
 // Delete referensi kegiatan
 async function deleteMasterKegiatan(kode) {
-    if (!confirm(`Hapus master kegiatan ${kode}?`)) return;
+    if (!(await UI.confirm(`Hapus master kegiatan ${kode}?`, { title: "Hapus Referensi Kegiatan", okText: "Hapus", danger: true }))) return;
     
     try {
         const res = await apiFetch(`${API_BASE}/master-kegiatan/${encodeURIComponent(kode)}`, {
@@ -1251,9 +1237,9 @@ function formatTanggalID(value) {
     return d ? d.toLocaleDateString("id-ID") : "-";
 }
 
-function downloadBAST(noBukti) {
+async function downloadBAST(noBukti) {
     if (!noBukti) {
-        alert("No bukti belum tersedia");
+        UI.warning("No bukti belum tersedia.");
         return;
     }
 
@@ -2593,7 +2579,7 @@ async function deleteExistingFoto(kwitansiId, index) {
         const result = await response.json();
 
         if (result.status === "success") {
-            alert("Foto berhasil dihapus");
+            UI.success("Foto berhasil dihapus");
             // Refresh data popup atau hapus elemen dari DOM
             // Cara termudah: panggil ulang fungsi detail untuk refresh tampilan
             openUpdateDetailPopup(kwitansiId); 
@@ -2789,7 +2775,7 @@ async function loadDataBKU() {
 }
 
 async function deleteTransaksi(no_bukti) {
-    if (!confirm(`Apakah Anda yakin ingin menghapus transaksi dengan No Bukti: ${no_bukti}? Data yang dihapus tidak dapat dikembalikan.`)) {
+    if (!(await UI.confirm(`Apakah Anda yakin ingin menghapus transaksi dengan No Bukti: ${no_bukti}? Data yang dihapus tidak dapat dikembalikan.`, { title: "Hapus Transaksi", okText: "Hapus", danger: true }))) {
         return;
     }
 
@@ -3207,226 +3193,10 @@ window.electronAPI.getAppVersion().then(v => {
     document.getElementById("current-version").innerText = v;
 });
     root.innerHTML = `
-        <style>
-            :root {
-                --primary: #4a90e2;
-                --secondary: #6c757d;
-                --success: #28a745;
-                --danger: #dc3545;
-                --light-bg: #f8fafc;
-                --text-dark: #2c3e50;
-            }
-
-            * { box-sizing: border-box; }
-            body { 
-                font-family: 'Inter', 'Segoe UI', sans-serif; 
-                margin: 0; 
-                padding: 20px; 
-                background: #f1f5f9; 
-                color: var(--text-dark);
-                line-height: 1.6;
-            }
-
-            h1 { color: #1e293b; margin-bottom: 8px; font-weight: 700; }
-            .subtitle { color: #64748b; margin-bottom: 30px; font-size: 14px; }
-            
-            /* Tabs Modern */
-            .tabs { 
-                display: flex; 
-                gap: 5px; 
-                margin-bottom: 25px; 
-                background: #e2e8f0;
-                padding: 5px;
-                border-radius: 12px;
-                width: fit-content;
-            }
-            .tab-btn { 
-                padding: 10px 20px; 
-                border: none; 
-                border-radius: 8px; 
-                cursor: pointer; 
-                background: transparent; 
-                color: #64748b; 
-                font-size: 14px; 
-                font-weight: 600;
-                transition: all 0.2s;
-            }
-            .tab-btn.active { 
-                background: white; 
-                color: var(--primary); 
-                box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
-            }
-            .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.5); }
-            
-            .tab-content { display: none; animation: fadeIn 0.3s ease; }
-            .tab-content.active { display: block; }
-            @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-            
-            /* Card & Layout */
-            .card { 
-                background: white; 
-                padding: 25px; 
-                border-radius: 16px; 
-                margin-bottom: 20px; 
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1); 
-                border: 1px solid #e2e8f0;
-            }
-.progress-container {
-                width: 100%;
-                background-color: #e2e8f0;
-                border-radius: 10px;
-                margin-top: 15px;
-                height: 20px;
-                overflow: hidden;
-                display: none; /* Hidden by default */
-            }
-            
-            .progress-bar {
-                width: 0%;
-                height: 100%;
-                background-color: var(--success);
-                transition: width 0.4s ease;
-                text-align: center;
-                line-height: 20px;
-                color: white;
-                font-size: 11px;
-                font-weight: bold;
-            }
-
-            .update-status-text {
-                margin-top: 10px;
-                font-size: 13px;
-                color: var(--secondary);
-                font-style: italic;
-            }
-            /* MODERNISED UPLOAD BKU SECTION */
-            .upload-zone {
-                border: 2px dashed #cbd5e0;
-                background: var(--light-bg);
-                padding: 40px 20px;
-                border-radius: 12px;
-                text-align: center;
-                transition: all 0.3s ease;
-                margin-bottom: 20px;
-            }
-            .upload-zone:hover {
-                border-color: var(--primary);
-                background: #f1f7ff;
-            }
-            .upload-icon {
-                font-size: 40px;
-                margin-bottom: 15px;
-                display: block;
-            }
-            #bkuFile {
-                margin: 15px auto;
-                font-size: 14px;
-                color: #64748b;
-            }
-
-            /* Forms */
-            .form-group { margin-bottom: 20px; }
-            .form-group label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px; color: #475569; }
-            .form-group input, .form-group textarea { 
-                width: 100%; 
-                padding: 12px; 
-                border: 1px solid #cbd5e0; 
-                border-radius: 8px; 
-                font-size: 14px;
-                transition: border 0.2s;
-            }
-            .form-group input:focus { border-color: var(--primary); outline: none; ring: 2px var(--primary); }
-            
-            /* Buttons */
-            .btn { 
-                padding: 12px 24px; 
-                border: none; 
-                border-radius: 8px; 
-                cursor: pointer; 
-                font-size: 14px; 
-                font-weight: 600;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                gap: 8px;
-                transition: all 0.2s;
-            }
-            .btn-primary { background: var(--primary); color: white; }
-            .btn-success { background: var(--success); color: white; }
-            .btn-danger { background: var(--danger); color: white; }
-            .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
-            .btn:active { transform: translateY(0); }
-            
-            /* Table */
-            .table-container { overflow-x: auto; border-radius: 12px; border: 1px solid #e2e8f0; }
-            table { width: 100%; border-collapse: collapse; font-size: 13px; }
-            th { background: #f8fafc; color: #64748b; font-weight: 600; text-align: left; padding: 15px; border-bottom: 2px solid #e2e8f0; }
-            td { padding: 15px; border-bottom: 1px solid #e2e8f0; background: white; }
-            tr:last-child td { border-bottom: none; }
-
-            /* Pemda (logo & header preview) */
-            .logo-preview-img { max-height: 80px; border: 1px solid #e6e6e6; padding: 6px; border-radius: 6px; display: block; object-fit: contain; }
-            #pemda-header-preview { background: linear-gradient(180deg, #fff 0%, #fbfdff 100%); }
-            #pemda-header-preview img { display:block; }
-#toast-container {
-                position: fixed;
-                bottom: 20px;
-                right: 20px;
-                z-index: 9999;
-                display: flex;
-                flex-direction: column;
-                gap: 10px;
-            }
-
-            .toast {
-                background: white;
-                border-left: 5px solid var(--primary);
-                padding: 16px 20px;
-                border-radius: 8px;
-                box-shadow: 0 5px 15px rgba(0,0,0,0.15);
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                min-width: 300px;
-                animation: slideIn 0.4s ease forwards;
-                transition: all 0.3s ease;
-            }
-
-            .toast-content {
-                display: flex;
-                flex-direction: column;
-            }
-
-            .toast-title { font-weight: 700; font-size: 14px; color: var(--text-dark); }
-            .toast-msg { font-size: 12px; color: var(--secondary); margin-top: 4px; }
-
-            .toast-btn {
-                background: var(--primary);
-                color: white;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 6px;
-                font-size: 12px;
-                cursor: pointer;
-                margin-left: 15px;
-            }
-            .toast-btn:hover { background: #357abd; }
-            
-            .toast-close {
-                background: transparent;
-                border: none;
-                color: #999;
-                font-size: 18px;
-                cursor: pointer;
-                margin-left: 10px;
-            }
-@keyframes slideIn {
-                from { opacity: 0; transform: translateX(100%); }
-                to { opacity: 1; transform: translateX(0); }
-            }                            
-        </style>
-
+        <div class="app-shell">
+        <div class="app-header selectable">
         <h1>📋 Aplikasi SPJ BOSP</h1>
+
         <p class="subtitle">Aplikasi untuk membuat SPJ dari ARKAS.</p>
         <div class="search-container mb-3" style="display: flex; justify-content: flex-end;">
     <input type="text" 
@@ -3815,6 +3585,7 @@ window.electronAPI.getAppVersion().then(v => {
                 <div id="master-rekening-list" class="table-container"></div>
             </div>
         </div>
+        </div><!-- /.app-shell -->
     `;
     setTimeout(() => {
     if (document.getElementById("update-status-container")) {

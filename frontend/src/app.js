@@ -3250,6 +3250,13 @@ window.electronAPI.getAppVersion().then(v => {
         : `<button class="tab-btn" data-tab="${n.tab}"${n.id ? ` id="${n.id}"` : ""} onclick="switchTab('${n.tab}')"><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`
     ).join("");
 
+    // #app adalah satu-satunya elemen di <body>; dialah yang menjadi baris
+    // flex (sidebar + area utama). body TIDAK boleh display:flex, karena
+    // saat innerHTML masih kosong body punya tinggi 0 sehingga seluruh isi
+    // "tertindih"/tidak terlihat.
+    root.classList.add("app-layout");
+    // Bersihkan sisa markup lama sebelum membangun ulang (hindari dua sidebar)
+    while (root.firstChild) root.removeChild(root.firstChild);
     root.innerHTML = `
         <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
         <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">

@@ -98,6 +98,9 @@ function getRandomPort() {
 }
 
 function getBackendBaseUrl() {
+  // backendPort = 0 berarti child_process belum siap -> kembalikan string kosong
+  // agar renderer (ensureBackendReady) melakukan retry, BUKAN mengembalikan URL port 0.
+  if (!backendPort) return "";
   return `http://127.0.0.1:${backendPort}`;
 }
 // =========================================================================

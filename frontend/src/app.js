@@ -17,20 +17,45 @@ const API_BASE = new Proxy({}, {
     }
 });
 
+// Promise global agar semua pemanggil cukup melakukan `await ensureBackendReady()`
+// dan selalu mendapat origin yang benar (tidak ada race condition dengan
+// DOMContentLoaded). Retry sampai child_process melapor siap via IPC.
+let _backendInitPromise = null;
+
+function ensureBackendReady() {
+    if (_backendOrigin) return Promise.resolve(_backendOrigin);
+    if (!_backendInitPromise) {
+        _backendInitPromise = (async () => {
+            const maxTries = 60; // ~30 detik (retry tiap 500 ms)
+            for (let i = 0; i < maxTries; i++) {
+                try {
+                    if (window.electronAPI && typeof window.electronAPI.getBackendUrl === "function") {
+                        const url = await window.electronAPI.getBackendUrl();
+                        if (url) {
+                            _backendOrigin = url;
+                            appLog("info", `Backend child_process aktif di ${_backendOrigin}`);
+                            return _backendOrigin;
+                        }
+                    } else {
+                        appLog("error", "electronAPI.getBackendUrl tidak tersedia — preload gagal dimuat?");
+                        break;
+                    }
+                } catch (e) {
+                    appLog("error", `Gagal mengambil URL backend dari main process: ${e.message || e}`);
+                }
+                await new Promise((r) => setTimeout(r, 500));
+            }
+            _backendInitPromise = null; // izinkan percobaan ulang di kemudian hari
+            appLog("error", "Base URL backend kosong — child_process belum siap. Servis localhost statis sudah dinonaktifkan, tidak ada fallback.");
+            return "";
+        })();
+    }
+    return _backendInitPromise;
+}
+
+// Nama lama tetap dipertahankan (alias) demi kompatibilitas.
 async function initBackendBaseUrl() {
-    try {
-        if (window.electronAPI && typeof window.electronAPI.getBackendUrl === "function") {
-            _backendOrigin = await window.electronAPI.getBackendUrl();
-        }
-    } catch (e) {
-        appLog("error", `Gagal mengambil URL backend dari main process: ${e.message || e}`);
-    }
-    if (!_backendOrigin) {
-        appLog("error", "Base URL backend kosong — child_process belum siap. Servis localhost statis sudah dinonaktifkan, tidak ada fallback.");
-    } else {
-        appLog("info", `Backend child_process aktif di ${_backendOrigin}`);
-    }
-    return _backendOrigin;
+    return ensureBackendReady();
 }
 
 function getServerRoot() {
@@ -58,6 +83,10 @@ function appLog(level, message) {
 // Hook pembungkus fetch: catat SETIAP request API (mulai, status, error) ke app.log.
 async function apiFetch(url, options = {}) {
     const method = (options.method || "GET").toUpperCase();
+    if (!_backendOrigin) {
+        // Tunggu sampai child_process melapor siap (retry via IPC), bukan langsung menolak.
+        await ensureBackendReady();
+    }
     if (!_backendOrigin) {
         appLog("error", `FETCH DITOLAK (backend child_process belum siap): ${method} ${url}`);
         throw new Error("Backend child_process belum siap. Tidak ada servis localhost statis sebagai fallback.");
@@ -3111,7 +3140,9 @@ function filterData(dataArray, keyword, keys) {
     });
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+    // WAJIB: tunggu origin child_process tersedia sebelum memicu request API apa pun.
+    await ensureBackendReady();
     initApp();
     loadPengaturan();
     loadMasterKegiatan();
@@ -3847,7 +3878,9 @@ window.processTemplateExcel = processTemplateExcel;
 
 
 // --- INITIALIZE APP ---
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+    // Tunggu origin child_process siap (idempoten; handler lain sudah memanggil juga).
+    await ensureBackendReady();
     initApp();
     loadPengaturan();
     loadMasterKegiatan();

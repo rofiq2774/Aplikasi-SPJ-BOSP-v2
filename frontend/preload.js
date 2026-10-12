@@ -4,6 +4,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getAppVersion: () => ipcRenderer.invoke("get-app-version"),
   isDev: () => ipcRenderer.invoke("is-dev"),
 
+  // BUGFIX: backend sekarang child_process dengan port dinamis — renderer
+  // tidak boleh hardcode http://127.0.0.1:8000 lagi. Ambil base URL dari main process.
+  getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
+
+  // WAJIB: semua kejadian frontend dicatat ke app.log (ditulis main process,
+  // satu file yang sama dengan log backend child_process).
+  logApp: (level, message) =>
+    ipcRenderer.invoke("renderer-log", { level: String(level || "info"), message: String(message || "") }),
+  getLogPath: () => ipcRenderer.invoke("get-log-path"),
+
   checkForUpdates: () => ipcRenderer.send("check-for-updates"),
   restartApp: () => ipcRenderer.send("restart-app"),
 

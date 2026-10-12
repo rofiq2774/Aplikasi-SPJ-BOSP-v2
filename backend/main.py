@@ -38,7 +38,7 @@ from fastapi import (
     HTTPException, Depends, Form, Request, Query
 )
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -91,7 +91,7 @@ file_handler.setFormatter(formatter)
 root_logger = logging.getLogger()
 root_logger.addHandler(file_handler)
 
-# 2. Tambahkan khsus ke Uvicorn (agar log request HTTP & Startup masuk file)
+# 2. Tambahkan khusus ke Uvicorn (agar log request HTTP & Startup masuk file)
 # Gunakan try-except karena logging uvicorn mungkin belum terinit jika dijalankan manual
 try:
     logging.getLogger("uvicorn").addHandler(file_handler)
@@ -99,6 +99,53 @@ try:
     logging.getLogger("uvicorn.access").addHandler(file_handler)
 except Exception:
     pass
+
+# 3. Tangkap SEMUA print() dan tulisan langsung ke stdout/stderr (kode lama memakai
+#    print() di banyak tempat) agar ikut tercatat di app.log. Ini wajib karena
+#    Electron tidak lagi membaca pipe stdout/stderr untuk logging — satu-satunya
+#    catatan kejadian backend adalah file app.log.
+class _TeeToLogStream:
+    """Teruskan tulisan ke stream asli, sekaligus mencatatnya ke app.log."""
+    def __init__(self, original, logger_name):
+        self._original = original
+        self._logger = logging.getLogger(logger_name)
+
+    def write(self, data):
+        try:
+            if isinstance(data, (bytes, bytearray)):
+                data = data.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        try:
+            text = str(data)
+            if self._original:
+                try:
+                    self._original.write(text)
+                    self._original.flush()
+                except Exception:
+                    pass
+            for line in text.splitlines():
+                if line.strip():
+                    self._logger.info(line.rstrip())
+        except Exception:
+            pass
+        return len(data) if isinstance(data, str) else 0
+
+    def flush(self):
+        try:
+            if self._original:
+                self._original.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return False
+
+    def writable(self):
+        return True
+
+sys.stdout = _TeeToLogStream(sys.__stdout__, "backend.stdout")
+sys.stderr = _TeeToLogStream(sys.__stderr__, "backend.stderr")
 
 logger.info(f"Log file aktif di: {log_file}")
 
@@ -151,6 +198,43 @@ app.add_middleware(
 )
 
 logger.info(f"CORS allow_origins={cors_origins}")
+
+# ===============================
+# LOGGING SEMUA KEJADIAN HTTP (app.log wajib mencatat segalanya)
+# ===============================
+@app.middleware("http")
+async def log_all_requests_middleware(request, call_next):
+    """Catat SETIAP request & response REST API ke app.log."""
+    start = datetime.now(timezone.utc)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        dur_ms = (datetime.now(timezone.utc) - start).total_seconds() * 1000
+        logger.exception(
+            f"HTTP {request.method} {request.url.path} -> 500 UNHANDLED "
+            f"({dur_ms:.1f} ms): {exc}"
+        )
+        raise
+    dur_ms = (datetime.now(timezone.utc) - start).total_seconds() * 1000
+    level = logging.WARNING if response.status_code >= 400 else logging.INFO
+    logger.log(
+        level,
+        f"HTTP {request.method} {request.url.path}{'?' + request.url.query if request.url.query else ''}"
+        f" -> {response.status_code} ({dur_ms:.1f} ms)"
+    )
+    return response
+
+
+@app.exception_handler(Exception)
+async def log_unhandled_exception_handler(request, exc):
+    """Pintu terakhir: semua exception tak tertangkap dicatat ke app.log."""
+    logger.exception(
+        f"Unhandled exception pada {request.method} {request.url.path}: {exc}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "detail": "Kesalahan internal server (lihat app.log)"}
+    )
 # ===============================
 # DIRECTORIES (PAKAI BASE_DIR DARI database.py)
 # ===============================
@@ -3941,6 +4025,54 @@ app.include_router(api_router)
 
 
 if __name__ == "__main__":
+    import asyncio
     import uvicorn
-    # Gunakan 127.0.0.1 agar sama persis dengan frontend
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_config=None)
+
+    # ================= NON-ACTIVE localhost REST SERVICE =================
+    # Aplikasi ini TIDAK lagi menyediakan layanan localhost statis (port 8000).
+    # Backend FastAPI HANYA boleh dijalankan sebagai child_process oleh Electron,
+    # yang mewariskan env PORT dengan port dinamis (ephemeral). Menjalankan
+    # main.py secara manual tanpa PORT akan ditolak agar tidak ada "servis
+    # localhost" yang tertinggal / bentrok.
+    raw_port = os.getenv("PORT")
+    if not raw_port:
+        logger.error(
+            "Backend harus dijalankan sebagai child_process Electron (env PORT wajib diisi). "
+            "Layanan REST di localhost statis (8000) sudah DINONAKTIFKAN. "
+            "Jalankan lewat aplikasi Electron, atau set PORT=<port> untuk debug."
+        )
+        sys.exit(2)
+
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = 0
+
+    if port <= 0:
+        logger.error(f"Nilai PORT tidak valid: {raw_port!r}")
+        sys.exit(2)
+
+    logger.info(f"Backend child_process startup pada port dinamis {port}")
+
+    async def _serve():
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=port, log_config=None
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+        # Setelah server berhenti (SIGTERM/SIGINT), tutup koneksi DB agar proses
+        # anak bisa exit bersih tanpa digantung oleh event loop aiosqlite.
+        try:
+            await engine.dispose()
+        except Exception:
+            pass
+
+    try:
+        asyncio.run(_serve())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        logger.info("Backend child_process berhenti.")
+        # Paksa exit agar thread/handler yang menggantung tidak menahan proses anak
+        logging.shutdown()
+        os._exit(0)

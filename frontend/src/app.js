@@ -1,5 +1,88 @@
 import * as XLSX from "xlsx";
-const API_BASE = "http://127.0.0.1:8000/api";
+
+// ===================== BACKEND BASE URL (child_process) =====================
+// Backend TIDAK lagi dilayani oleh "servis localhost" statis (port 8000).
+// FastAPI HANYA berjalan sebagai child_process yang di-spawn Electron pada
+// port dinamis; base URL dikirim ke renderer lewat IPC
+// (window.electronAPI.getBackendUrl()). Tidak ada fallback hardcode — kalau
+// origin belum tersedia, request ditolak dengan error yang jelas (dan dicatat
+// ke app.log), bukan menembak port mati.
+let _backendOrigin = ""; // contoh: "http://127.0.0.1:54321" (port dinamis child_process)
+const API_BASE = new Proxy({}, {
+    get: (_t, prop) => {
+        if (prop === "toString" || prop === Symbol.toPrimitive) {
+            return () => `${_backendOrigin}/api`;
+        }
+        return `${_backendOrigin}/api`;
+    }
+});
+
+async function initBackendBaseUrl() {
+    try {
+        if (window.electronAPI && typeof window.electronAPI.getBackendUrl === "function") {
+            _backendOrigin = await window.electronAPI.getBackendUrl();
+        }
+    } catch (e) {
+        appLog("error", `Gagal mengambil URL backend dari main process: ${e.message || e}`);
+    }
+    if (!_backendOrigin) {
+        appLog("error", "Base URL backend kosong — child_process belum siap. Servis localhost statis sudah dinonaktifkan, tidak ada fallback.");
+    } else {
+        appLog("info", `Backend child_process aktif di ${_backendOrigin}`);
+    }
+    return _backendOrigin;
+}
+
+function getServerRoot() {
+    return _backendOrigin;
+}
+
+// ===================== LOG KEJADIAN FRONTEND -> app.log (WAJIB) =====================
+// Semua kejadian frontend dicatat ke app.log yang sama dengan log backend
+// (ditulis oleh main process Electron via IPC "renderer-log").
+function appLog(level, message) {
+    const msg = String(message ?? "");
+    try {
+        if (window.electronAPI && typeof window.electronAPI.logApp === "function") {
+            window.electronAPI.logApp(level, msg);
+        }
+    } catch (e) { /* logging tidak boleh memecah aplikasi */ }
+    // Pantulan ke konsol dev untuk kemudahan debugging
+    try {
+        if (level === "error") console.error(msg);
+        else if (level === "warn") console.warn(msg);
+        else console.log(msg);
+    } catch (e) {}
+}
+
+// Hook pembungkus fetch: catat SETIAP request API (mulai, status, error) ke app.log.
+async function apiFetch(url, options = {}) {
+    const method = (options.method || "GET").toUpperCase();
+    if (!_backendOrigin) {
+        appLog("error", `FETCH DITOLAK (backend child_process belum siap): ${method} ${url}`);
+        throw new Error("Backend child_process belum siap. Tidak ada servis localhost statis sebagai fallback.");
+    }
+    appLog("info", `FETCH -> ${method} ${url}`);
+    try {
+        const res = await fetch(url, options);
+        appLog(res.status >= 400 ? "error" : "info", `FETCH <- ${res.status} ${method} ${url}`);
+        return res;
+    } catch (e) {
+        appLog("error", `FETCH GAGAL ${method} ${url}: ${e.message || e}`);
+        throw e;
+    }
+}
+
+// Tangkap semua error runtime & unhandled rejection di renderer agar masuk app.log
+window.addEventListener("error", (e) => {
+    appLog("error", `Renderer error: ${e.message} @ ${e.filename || "?"}:${e.lineno || 0}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason;
+    appLog("error", `Unhandled rejection: ${(r && r.stack) || (r && r.message) || r}`);
+});
+// ============================================================================
+
 let appVersion = "-";
 document.title = `Aplikasi SPJ BOSP v${appVersion}`;
 
@@ -69,7 +152,7 @@ function showToast(title, message, actionText = null, actionCallback = null) {
 // Load settings
 async function loadPengaturan() {
     try {
-        const res = await fetch(`${API_BASE}/pengaturan`);
+        const res = await apiFetch(`${API_BASE}/pengaturan`);
         const data = await res.json();
         if (data.data) {
             pengaturan = data.data;
@@ -105,7 +188,7 @@ function renderPengaturanForm() {
 // Load referensi kegiatan
 async function loadMasterKegiatan() {
     try {
-        const res = await fetch(`${API_BASE}/master-kegiatan`);
+        const res = await apiFetch(`${API_BASE}/master-kegiatan`);
         const data = await res.json();
         if (data.data) {
             masterKegiatan = data.data;
@@ -128,7 +211,7 @@ async function savePengaturan() {
         pengaturan.nip_pengurus_barang = document.getElementById("nip_pengurus_barang").value;
         pengaturan.alamat_sekolah = document.getElementById("alamat_sekolah").value;
 
-        const res = await fetch(`${API_BASE}/pengaturan`, {
+        const res = await apiFetch(`${API_BASE}/pengaturan`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(pengaturan)
@@ -205,7 +288,7 @@ async function uploadBKU() {
 
     try {
         // Ganti endpoint jika perlu (sesuaikan dengan nama di backend Anda)
-        const res = await fetch(`${API_BASE}/extract-bku`, {
+        const res = await apiFetch(`${API_BASE}/extract-bku`, {
             method: "POST",
             body: formData
         });
@@ -241,7 +324,7 @@ async function saveTransaksi() {
     // Step 1: request preview (no DB writes)
     showToast("info!", 'Meminta preview sebelum menyimpan...');
     try {
-        const previewRes = await fetch(`${API_BASE}/save-transaksi?force=false`, {
+        const previewRes = await apiFetch(`${API_BASE}/save-transaksi?force=false`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(bkuData)
@@ -271,7 +354,7 @@ async function saveTransaksi() {
             }
 
             // User confirmed — perform actual save with force=true
-            const finalRes = await fetch(`${API_BASE}/save-transaksi?force=true`, {
+            const finalRes = await apiFetch(`${API_BASE}/save-transaksi?force=true`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(bkuData)
@@ -288,7 +371,7 @@ async function saveTransaksi() {
             
             // Refresh transaksi dari server
             try {
-                const trxRes = await fetch(`${API_BASE}/transaksi`);
+                const trxRes = await apiFetch(`${API_BASE}/transaksi`);
                 if (!trxRes.ok) throw new Error('Gagal fetch transaksi');
                 
                 const trxJson = await trxRes.json();
@@ -380,7 +463,7 @@ async function extractBHP() {
     showToast('Info!', `Sedang mengekstrak ${input.files.length} file ${jenis}...`);
 
     try {
-        const res = await fetch(`${API_BASE}/extract-bhp`, { method: 'POST', body: formData });
+        const res = await apiFetch(`${API_BASE}/extract-bhp`, { method: 'POST', body: formData });
         if (!res.ok) {
             const err = await res.json();
             showToast('Error!', err.detail || 'Gagal ekstrak BHP/BHM');
@@ -390,7 +473,7 @@ async function extractBHP() {
         const bhpData = json.data || [];
         // Send extracted BHP data to backend to apply changes server-side
         try {
-            const applyRes = await fetch(`${API_BASE}/apply-bhp`, {
+            const applyRes = await apiFetch(`${API_BASE}/apply-bhp`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(bhpData)
@@ -409,7 +492,7 @@ async function extractBHP() {
 
             // Refresh BKU data from server so frontend mirrors DB
             try {
-                const trxRes = await fetch(`${API_BASE}/transaksi`);
+                const trxRes = await apiFetch(`${API_BASE}/transaksi`);
                 const trxJson = await trxRes.json();
                 bkuData = { transaksi: trxJson.data || [] };
             } catch (err3) {
@@ -498,7 +581,7 @@ function applyBhpToBKU(bhpItems) {
 //load Kwitansi
 async function loadKwitansiList() {
     try {
-        const res = await fetch(`${API_BASE}/kwitansi`);
+        const res = await apiFetch(`${API_BASE}/kwitansi`);
         const json = await res.json();
 
         if (json.status === "success") {
@@ -517,7 +600,7 @@ async function generateKwitansi() {
         return;
     }
 
-    const res = await fetch(`${API_BASE}/kwitansi/generate`, {
+    const res = await apiFetch(`${API_BASE}/kwitansi/generate`, {
         method: "POST"
     });
 
@@ -531,7 +614,7 @@ async function downloadKwitansi(id, noBukti = "") {
     showToast("Info", "Mengunduh SPJ...");
 
     try {
-        const res = await fetch(`${API_BASE}/kwitansi/${id}/pdf`);
+        const res = await apiFetch(`${API_BASE}/kwitansi/${id}/pdf`);
 
         if (!res.ok) {
             const err = await res.json();
@@ -585,7 +668,7 @@ async function importMasterKegiatan() {
             }))
             .filter(item => item.kode_kegiatan && item.nama_kegiatan);
 
-        const res = await fetch(`${API_BASE}/master-kegiatan/bulk`, {
+        const res = await apiFetch(`${API_BASE}/master-kegiatan/bulk`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ data: masterData })
@@ -637,7 +720,7 @@ async function importMasterRekeningBelanja() {
             }))
             .filter(item => item.kode_rekening_belanja && item.nama_rekening_belanja);
 
-        const res = await fetch(`${API_BASE}/master-rekening-belanja/bulk`, {
+        const res = await apiFetch(`${API_BASE}/master-rekening-belanja/bulk`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ data: masterData })
@@ -663,7 +746,7 @@ async function importMasterRekeningBelanja() {
 // Load referensi rekening belanja
 async function loadMasterRekeningBelanja() {
     try {
-        const res = await fetch(`${API_BASE}/master-rekening-belanja`);
+        const res = await apiFetch(`${API_BASE}/master-rekening-belanja`);
         const json = await res.json();
         if (json.status === "success") {
             masterRekeningBelanja = json.data || [];
@@ -726,7 +809,7 @@ async function deleteMasterRekening(id) {
     if (!confirm("Hapus rekening belanja ini?")) return;
 
     try {
-        const response = await fetch(`${API_BASE}/master-rekening-belanja/${id}`, {
+        const response = await apiFetch(`${API_BASE}/master-rekening-belanja/${id}`, {
             method: 'DELETE'
         });
 
@@ -756,7 +839,7 @@ async function generateRekapTransaksi(forceDetails = false) {
     try {
         const include = forceDetails || document.getElementById('rekap-include-details')?.checked;
         const thp = document.getElementById('rekap-thp-select') ? document.getElementById('rekap-thp-select').value : 'all';
-        const res = await fetch(`${API_BASE}/rekap-transaksi?details=${include ? 1 : 0}&thp=${encodeURIComponent(thp)}`);
+        const res = await apiFetch(`${API_BASE}/rekap-transaksi?details=${include ? 1 : 0}&thp=${encodeURIComponent(thp)}`);
         const json = await res.json();
         if (json.status !== 'success') throw new Error(json.detail || 'Gagal memproses rekap');
         renderRekapTransaksi(json.data, include);
@@ -870,7 +953,7 @@ async function processTemplateExcel() {
     showToast('Info', 'Sedang memproses Excel...');
 
     try {
-        const res = await fetch(`${API_BASE}/generate-rekap-excel`, {
+        const res = await apiFetch(`${API_BASE}/generate-rekap-excel`, {
             method: 'POST',
             body: formData
         });
@@ -919,7 +1002,7 @@ async function deleteMasterKegiatan(kode) {
     if (!confirm(`Hapus master kegiatan ${kode}?`)) return;
     
     try {
-        const res = await fetch(`${API_BASE}/master-kegiatan/${encodeURIComponent(kode)}`, {
+        const res = await apiFetch(`${API_BASE}/master-kegiatan/${encodeURIComponent(kode)}`, {
             method: "DELETE"
         });
         if (res.ok) {
@@ -1399,7 +1482,7 @@ function previewFotoKwitansi(input, kwitansiId) {
         formData.append("jenis_foto", jenisFoto);
 
         try {
-            const res = await fetch(
+            const res = await apiFetch(
                 `${API_BASE}/kwitansi/${kwitansiId}/upload-foto`,
                 {
                     method: "POST",
@@ -1453,7 +1536,7 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
     }
 
     try {
-        const res = await fetch(
+        const res = await apiFetch(
             `${API_BASE}/kwitansi/${kwitansiId}/generate-ai-image`,
             {
                 method: "POST",
@@ -1480,7 +1563,7 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
 
 
 function openUpdateDetailPopup(kwitansiId) {
-    fetch(`${API_BASE}/kwitansi/${kwitansiId}`)
+    apiFetch(`${API_BASE}/kwitansi/${kwitansiId}`)
         .then(res => res.json())
         .then(k => {
             if (k.status !== "success") throw new Error("Gagal memuat detail");
@@ -1822,7 +1905,7 @@ function openUpdateDetailPopup(kwitansiId) {
             // ===============================
             // RENDER FOTO
             // ===============================
-            const serverRoot = API_BASE.replace(/\/api\/?$/, "");
+            const serverRoot = getServerRoot(); // origin child_process dinamis (bukan port statis)
 
             if (daftarFoto.length > 0) {
                 daftarFoto.forEach((foto, index) => {
@@ -2331,7 +2414,7 @@ async function saveManualBKU() {
         }
 
         showToast('info!', 'Menyimpan data...');
-        const res = await fetch(`${API_BASE}/kwitansi/manual`, { method: 'POST', body: formData });
+        const res = await apiFetch(`${API_BASE}/kwitansi/manual`, { method: 'POST', body: formData });
         const json = await res.json();
         if (json.status !== 'success') { showToast('Error!', json.detail || 'Gagal menyimpan'); return; }
 
@@ -2471,7 +2554,7 @@ window.deleteManualBKUPhoto = function(index) {
 async function deleteExistingFoto(kwitansiId, index) {
 
     try {
-        const response = await fetch(`${API_BASE}/kwitansi/${kwitansiId}/foto/${index}`, {
+        const response = await apiFetch(`${API_BASE}/kwitansi/${kwitansiId}/foto/${index}`, {
             method: 'DELETE',
             headers: {
                 'Authorization': `Bearer ${localStorage.getItem("token")}` // jika pakai auth
@@ -2529,7 +2612,7 @@ async function saveUpdateDetail(kwitansiId) {
         // ===============================
         // 3. Simpan detail kwitansi
         // ===============================
-        const res = await fetch(`${API_BASE}/kwitansi/${kwitansiId}/update-detail`, {
+        const res = await apiFetch(`${API_BASE}/kwitansi/${kwitansiId}/update-detail`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -2555,7 +2638,7 @@ async function saveUpdateDetail(kwitansiId) {
                 formData.append("files", file);
             });
 
-            const uploadRes = await fetch(
+            const uploadRes = await apiFetch(
                 `${API_BASE}/kwitansi/${kwitansiId}/upload-foto`,
                 {
                     method: "POST",
@@ -2635,7 +2718,7 @@ async function loadDataBKU() {
     tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;">Memuat data...</td></tr>';
 
     try {
-        const response = await fetch('http://127.0.0.1:8000/api/transaksi');
+        const response = await apiFetch(`${API_BASE}/transaksi`);
         const result = await response.json();
 
         // KARENA BACKEND MENGIRIM {"status": "success", "data": [...] }
@@ -2683,7 +2766,7 @@ async function deleteTransaksi(no_bukti) {
 
     try {
         // Panggil endpoint DELETE ke backend
-        const response = await fetch(`${API_BASE}/transaksi/${encodeURIComponent(no_bukti)}`, {
+        const response = await apiFetch(`${API_BASE}/transaksi/${encodeURIComponent(no_bukti)}`, {
             method: 'DELETE',
         });
 
@@ -2743,7 +2826,7 @@ async function saveDataPemda() {
     if (fileSekolah) formData.append('logo_sekolah', fileSekolah);
 
     try {
-        const response = await fetch('http://127.0.0.1:8000/api/save-pemda', {
+        const response = await apiFetch(`${API_BASE}/save-pemda`, {
             method: 'POST',
             body: formData
             // Jangan tambahkan Header Content-Type, browser akan mengaturnya otomatis sebagai multipart/form-data
@@ -2761,10 +2844,25 @@ async function saveDataPemda() {
     }
 }
 
+// Bangun URL absolut untuk aset backend (logo/upload) dari path relatif.
+// Wajib memakai origin child_process dinamis — servis localhost statis (8000)
+// sudah ditiadakan, dan pada build produksi halaman dimuat via file:// sehingga
+// path relatif tidak akan pernah resolve tanpa origin eksplisit.
+function assetUrl(path) {
+    if (!path) return "";
+    if (/^(https?:|data:|blob:|file:)/i.test(path)) return path;
+    const root = getServerRoot();
+    if (!root) {
+        appLog("error", `Aset tidak dapat dimuat — backend child_process belum siap: ${path}`);
+        return "";
+    }
+    return `${root}${path.startsWith("/") ? "" : "/"}${path}`;
+}
+
 // Fungsi Load Data (Panggil saat aplikasi dibuka atau tab diklik)
 async function loadDataPemda() {
     try {
-        const response = await fetch('http://127.0.0.1:8000/api/get-pemda');
+        const response = await apiFetch(`${API_BASE}/get-pemda`);
         const res = await response.json();
         if (res.data) {
             document.getElementById('kop-1').value = res.data.nama_pemda || '';
@@ -2773,12 +2871,12 @@ async function loadDataPemda() {
             
             if (res.data.logo_pemda) {
                 const img = document.getElementById('preview-logo-pemda');
-                img.src = `${res.data.logo_pemda}?t=${new Date().getTime()}`; // Cache buster
+                img.src = `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`; // Cache buster
                 img.style.display = 'block';
             }
             if (res.data.logo_sekolah) {
                 const img = document.getElementById('preview-logo-sekolah');
-                img.src = `${res.data.logo_sekolah}?t=${new Date().getTime()}`;
+                img.src = `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
                 img.style.display = 'block';
             }
 

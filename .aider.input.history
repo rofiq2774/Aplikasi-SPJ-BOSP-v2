@@ -1,0 +1,189 @@
+
+# 2026-10-08 11:32:09.570610
++127.0.0.1:8000/api/pengaturan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-kegiatan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-rekening-belanja:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/kwitansi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/transaksi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/get-pemda:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/pengaturan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-kegiatan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-rekening-belanja:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/kwitansi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/transaksi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/get-pemda:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++fikskan migrasi dari rest api ke child process
+
+# 2026-10-08 11:33:56.911306
++fikskan baik di backend maupun forntend nya
+
+# 2026-10-08 11:34:10.720674
++a
+
+# 2026-10-08 12:05:12.304839
++127.0.0.1:8000/api/pengaturan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-kegiatan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/kwitansi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-rekening-belanja:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/transaksi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/get-pemda:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/pengaturan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-kegiatan:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/kwitansi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/master-rekening-belanja:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/transaksi:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
++127.0.0.1:8000/api/get-pemda:1  Failed to load resource: net::ERR_CONNECTION_REFUSEED cek perbaikan sebelumnya yang belum selesai
+
+# 2026-10-08 12:05:28.393166
++a
+
+# 2026-10-08 12:08:56.348837
++saya mau migrasi dari rest api ke childprocess tolong fikskan kode antara backend dan frontend yang tidak sinkron
+
+# 2026-10-08 12:35:12.235288
++kenapa frontend tidak bisa terhubung ke backend misal Action 'save_pengaturan' tidak dikenal
++
+
+# 2026-10-08 12:43:40.104788
++masih belum terhubung
+
+# 2026-10-08 12:44:18.808770
++masih belum terhubung frontend ke backend
+
+# 2026-10-08 12:44:26.506000
++a
+
+# 2026-10-08 13:49:00.308765
++sinkronkan backend dan frontend dengan metode child process electron dan python
+
+# 2026-10-08 13:49:15.008863
++a
+
+# 2026-10-08 13:51:17.046834
++npm start
++
++> start
++> concurrently "npm run start:frontend" "npm run start:electron"
++
++[0] 
++[0] > start:frontend
++[0] > cd frontend && npm run dev
++[0] 
++[1] 
++[1] > start:electron
++[1] > npx wait-on http://localhost:5173 && cd frontend && npm start
++[1] 
++[0] 
++[0] > frontend@1.2.4 dev
++[0] > vite
++[0] 
++[0] 
++[0]   VITE v6.4.1  ready in 491 ms
++[0] 
++[0]   ➜  Local:   http://localhost:5173/
++[0]   ➜  Network: use --host to expose
++[1] 
++[1] > frontend@1.2.4 start
++[1] > electron .
++[1] 
++[1] 
++[1] Menjalankan Python Backend: python D:\SERVER_WEBSITE\Project\Aplikasi-SPJ-BOSP-v2\backend\main.py
++[1] Python stderr: Traceback (most recent call last):
++[1]   File "D:\SERVER_WEBSITE\Project\Aplikasi-SPJ-BOSP-v2\backend\main.py", line 7, in <module>
++[1]     import fit
++[1] ModuleNotFoundError: No module named 'fit'
++[1] 
++[1] Python process exited with code 1 and signal null kenapa ya
+
+# 2026-10-08 13:51:23.726350
++a
+
+# 2026-10-08 13:51:48.671944
++blank tampilannya
+
+# 2026-10-08 13:55:00.306321
++kenapa ya index.html:1 Uncaught TypeError: Failed to resolve module specifier "xlsx". Relative references must start with either "/", "./", or "../".
++
+
+# 2026-10-08 13:55:48.511175
++tolong perbaiki eror ini index.html:1 Uncaught TypeError: Failed to resolve module specifier "xlsx". Relative references must start with either "/", "./", or "../".
++
+
+# 2026-10-08 13:56:15.842568
++Index.html 
+
+# 2026-10-08 14:00:21.378723
++kenapa ya Gagal import data referensi kegiatan
++Gagal import data rekening belanja
++
+
+# 2026-10-08 14:00:31.389990
++a
+
+# 2026-10-08 14:04:48.215057
++Berhasil!
++Berhasil import 145 data referensi kegiatan
++tapi di displaynya Daftar Referensi Tersimpan (0)
++Belum ada data referensi kegiatan.sama halnya dengan ini 
++Berhasil!
++Berhasil import 279 data rekening belanja displaynya Daftar Rekening Tersimpan (0)
++Belum ada data referensi rekening belanja.
+
+# 2026-10-08 14:08:54.781352
++ketika impor behasil semua, tapi kenapa setelah aplikasi ditutup dan dibuka ulang, datanya tidak ada lagi
+
+# 2026-10-08 14:11:27.790103
++sekarang hapus modul, fungsi, atau service yang tidak digunakan pada aplikasi ini, karena aplikasi ini akan dijadikan full offline tanpa localhost
+
+# 2026-10-08 16:16:51.340188
++ini kok masih ada localhostnya ya, padahal sudah tidak difungsikan  D:\SERVER_WEBSITE\Project\Aplikasi-SPJ-BOSP-v2> npm start
++
++> start
++> concurrently "npm run start:frontend" "npm run start:electron"
++
++[0] 
++[0] > start:frontend
++[0] > cd frontend && npm run dev
++[0] 
++[1] 
++[1] > start:electron
++[1] > npx wait-on http://localhost:5173 && cd frontend && npm start
++[1] 
++[0] 
++[0] > frontend@1.2.4 dev
++[0] > vite
++[0] 
++[0] 
++[0]   VITE v6.4.1  ready in 313 ms
++[0] 
++[0]   ➜  Local:   http://localhost:5173/
++[0]   ➜  Network: use --host to expose
++[1] 
++[1] > frontend@1.2.4 start
++[1] > electron .
++[1] 
++[1] 
++[1] Menjalankan Python Backend: python D:\SERVER_WEBSITE\Project\Aplikasi-SPJ-BOSP-v2\backend\main.py
++[1] npm run start:electron exited with code 0
++
+
+# 2026-10-08 16:17:06.017687
++n
+
+# 2026-10-08 16:19:27.668240
++kenapa service localhost pada aplikasi ini masih ada ya, tolong dihilangkan karena sudah tidak memakai rest api tapi memakai childprocess
+
+# 2026-10-08 16:19:57.248581
++a
+
+# 2026-10-08 16:20:54.836114
++coba cek folder bauk backend maupun frontend
+
+# 2026-10-08 16:21:06.530098
++a
+
+# 2026-10-08 16:25:05.298940
++permasalahan lainnya adalah antara tab  Identitas Sekolah dam Logo & Kop itu tidak sinkron, serta pengaturan yang disimpan itu keterangannya tersimpan, tapi saat dibuka ulang malah kembali dari awal.
+
+# 2026-10-08 16:25:49.353825
++tolog perbaiki masalah di atas

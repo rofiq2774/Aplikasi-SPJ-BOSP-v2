@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import UI from "./ui.js";
+import { iconSvg } from "./icons.js";
 
 // ===================== BACKEND BASE URL (child_process) =====================
 // Backend TIDAK lagi dilayani oleh "servis localhost" statis (port 8000).
@@ -261,7 +262,7 @@ window.updateFileList = function() {
         // Judul List (selaras dengan gaya BHP uploader)
         const title = document.createElement('div');
         title.style.cssText = 'margin: 8px 0 6px 0; font-weight: bold; font-size: 13px; color: #333;';
-        title.innerHTML = `📄 File Terpilih (${input.files.length}/12):`;
+        title.innerHTML = `${iconSvg("fileText", 14)} File Terpilih (${input.files.length}/12):`;
         display.appendChild(title);
 
         // Render Daftar File (gaya konsisten dengan BHP)
@@ -436,7 +437,7 @@ function updateBhpFileList() {
     if (input.files.length === 0) return;
     const title = document.createElement('div');
     title.style.cssText = 'margin: 8px 0 6px 0; font-weight: bold; font-size: 13px; color: #333;';
-    title.innerHTML = `📄 File BHP/BHM Terpilih (${input.files.length}/24):`;
+    title.innerHTML = `${iconSvg("fileText", 14)} File BHP/BHM Terpilih (${input.files.length}/24):`;
     display.appendChild(title);
     Array.from(input.files).forEach((file, idx) => {
         const item = document.createElement('div');
@@ -1030,9 +1031,18 @@ async function deleteMasterKegiatan(kode) {
 }
 
 // Tab switching
+const TAB_TITLES = {
+    pengaturan: "Identitas Satuan Pendidikan", pemda: "Logo dan Kop Surat",
+    master: "Referensi Kegiatan", rekening: "Rekening Belanja",
+    bku: "Upload BKU", "data-bku": "Data BKU", kwitansi: "Daftar SPJ",
+    rekap: "Rekap Belanja", update: "Pembaruan Aplikasi",
+};
+
 window.switchTab = function(tab) {
     // 1. Update State Active Tab
     activeTab = tab;
+    const pt = document.getElementById("pageTitle");
+    if (pt) pt.textContent = TAB_TITLES[tab] || "Aplikasi SPJ BOSP";
 
     // 2. UI Toggle (Button & Content)
     document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -1053,26 +1063,26 @@ window.switchTab = function(tab) {
         searchInput.value = ""; 
         
         // B. Ambil container search untuk hide/show (opsional)
-        const searchContainer = searchInput.parentElement; 
+        const searchContainer = searchInput.closest('.search-container'); 
 
         // C. Atur Placeholder & Render Ulang Data Asli (Reset Filter)
         switch (tab) {
             case 'master':
-                searchInput.placeholder = "🔍 Cari data...";
-                if(searchContainer) searchContainer.style.display = 'flex'; // Tampilkan search
+                searchInput.placeholder = "Cari data...";
+                if(searchContainer) searchContainer.classList.remove('hidden'); // Tampilkan search
                 // Reset tabel ke data penuh (unfiltered)
                 if (typeof renderMasterKegiatan === 'function') renderMasterKegiatan(masterKegiatan);
                 break;
 
             case 'rekening':
-                searchInput.placeholder = "🔍 Cari data...";
-                if(searchContainer) searchContainer.style.display = 'flex';
+                searchInput.placeholder = "Cari data...";
+                if(searchContainer) searchContainer.classList.remove('hidden');
                 if (typeof renderMasterRekeningBelanja === 'function') renderMasterRekeningBelanja(masterRekeningBelanja);
                 break;
 
             case 'data-bku':
-                searchInput.placeholder = "🔍 Cari data...";
-                if(searchContainer) searchContainer.style.display = 'flex';
+                searchInput.placeholder = "Cari data...";
+                if(searchContainer) searchContainer.classList.remove('hidden');
                 // Pastikan bkuData ada sebelum akses transaksi
                 if (typeof renderBKUResult === 'function') {
                     renderBKUResult(bkuData ? bkuData.transaksi : []);
@@ -1080,8 +1090,8 @@ window.switchTab = function(tab) {
                 break;
 
             case 'kwitansi':
-                searchInput.placeholder = "🔍 Cari data...";
-                if(searchContainer) searchContainer.style.display = 'flex';
+                searchInput.placeholder = "Cari data...";
+                if(searchContainer) searchContainer.classList.remove('hidden');
                 // Pastikan fungsi renderKwitansiList ada
                 if (typeof renderKwitansiList === 'function' && bkuData) {
                     renderKwitansiList(bkuData.kwitansi_list);
@@ -1090,33 +1100,33 @@ window.switchTab = function(tab) {
 
             case 'pengaturan':
                 // Sembunyikan search bar di menu pengaturan karena tidak relevan
-                if(searchContainer) searchContainer.style.display = 'none';
+                if(searchContainer) searchContainer.classList.add('hidden');
                 break;
             
             case 'pemda':
                 // Sembunyikan search bar di menu pengaturan karena tidak relevan
-                if(searchContainer) searchContainer.style.display = 'none';
+                if(searchContainer) searchContainer.classList.add('hidden');
                 break;
 
             case 'rekap':
                 // Sembunyikan search bar di menu pengaturan karena tidak relevan
-                if(searchContainer) searchContainer.style.display = 'none';
+                if(searchContainer) searchContainer.classList.add('hidden');
                 break;
             
             case 'bku':
                 // Sembunyikan search bar di menu pengaturan karena tidak relevan
-                if(searchContainer) searchContainer.style.display = 'none';
+                if(searchContainer) searchContainer.classList.add('hidden');
                 break;            
 
             case 'update':
                 // Sembunyikan search bar di menu pengaturan karena tidak relevan
-                if(searchContainer) searchContainer.style.display = 'none';
+                if(searchContainer) searchContainer.classList.add('hidden');
                 break;
 
             default:
                 // Default behavior untuk tab lain (misal Rekap)
-                searchInput.placeholder = "🔍 Cari data...";
-                if(searchContainer) searchContainer.style.display = 'flex';
+                searchInput.placeholder = "Cari data...";
+                if(searchContainer) searchContainer.classList.remove('hidden');
                 break;
         }
     }
@@ -1312,7 +1322,7 @@ function renderKwitansiList(list) {
         
         <div style="margin-bottom:20px">
             <button class="btn btn-primary" style="padding: 10px 20px; font-weight: bold;" onclick="generateKwitansi()">
-                ⚡ Generate SPJ
+                ${iconSvg("zap",16)} Generate SPJ
             </button>
         </div>
 
@@ -1353,14 +1363,14 @@ function renderKwitansiList(list) {
             <td style="text-align:center">
                 <button class="btn-sm ${needsUpdate ? "btn-danger" : "btn-success"}" 
                     onclick="openUpdateDetailPopup(${k.id})">
-                    ${needsUpdate ? "✏️ Lengkapi" : "✅ Edit"}
+                    ${needsUpdate ? iconSvg("pencil",13)+" Lengkapi" : iconSvg("check",13)+" Edit"}
                 </button>
             </td>
 <td style="text-align:center; display: flex; gap: 5px; justify-content: center;">
     ${k.nomor_kwitansi
         ? `
             <button class="btn-sm btn-outline-primary" onclick="downloadKwitansi(${k.id}, '${k.no_bukti}')">
-                  📦 SPJ
+                  ${iconSvg("package",13)} SPJ
             </button>
           `
         : `<span style="color:#aaa; font-size:11px; font-style: italic;">Menunggu Generate</span>`
@@ -1510,7 +1520,7 @@ function previewFotoKwitansi(input, kwitansiId) {
                 throw new Error(result.detail || "Upload gagal");
             }
 
-            showToast("Berhasil!", "📷 Foto berhasil diupload");
+            showToast("Berhasil!", "Foto berhasil diupload");
             input.value = "";
 
             // refresh popup agar foto + label jenis muncul
@@ -1634,8 +1644,8 @@ function openUpdateDetailPopup(kwitansiId) {
                     .foto-delete-btn {
                         position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
                         border-radius: 50%; border: none; background: rgba(220, 53, 69, 0.9);
-                        color: #fff; font-size: 14px; font-weight: bold; cursor: pointer;
-                        line-height: 22px; padding: 0; display: flex; align-items: center; justify-content: center;
+                        color: #fff; cursor: pointer;
+                        padding: 0; display: flex; align-items: center; justify-content: center;
                     }
                     .foto-delete-btn:hover { background: rgba(200, 35, 51, 1); }
                 </style>
@@ -1688,7 +1698,7 @@ function openUpdateDetailPopup(kwitansiId) {
                             <button type="button" class="btn btn-secondary" style="padding:4px 6px; font-size:11px;"
                                     title="Generate Foto AI untuk barang ini"
                                     onclick="generateGambarAIItem(${kwitansiId}, ${index})">
-                                🤖
+                                ${iconSvg("bot",15)}
                             </button>
                         </td>
                     </tr>
@@ -1754,14 +1764,14 @@ function openUpdateDetailPopup(kwitansiId) {
 
                         <div style="margin-top:20px; margin-bottom: 25px;">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                                <label style="font-weight:700; font-size:1rem;">📦 Rincian Barang/Jasa</label>
+                                <label style="font-weight:700; font-size:1rem;">${iconSvg("package",17)} Rincian Barang/Jasa</label>
                             </div>
                             ${uraianHtml}
                         </div>
 
                         <div class="upload-area" id="drop-area-foto">
                             <label style="font-weight:600; display:block; margin-bottom:8px;">
-                                📷 Foto Bukti / Dokumentasi
+                                ${iconSvg("camera",15)} Foto Bukti / Dokumentasi
                             </label>
                             <small style="color:#666; display:block; margin-bottom:10px;">
                                 Upload manual, <b>Paste (Ctrl+V)</b>, atau generate dari AI. (Max 15)
@@ -1769,11 +1779,11 @@ function openUpdateDetailPopup(kwitansiId) {
 
                             <select id="jenis-foto" class="form-control"
                                     style="max-width:220px; margin:10px auto;">
-                                <option value="barang">📦 Barang</option>
-                                <option value="kegiatan">📍 Kegiatan</option>
-                                <option value="sebelum">⏪ Sebelum</option>
-                                <option value="proses">⚙️ Proses</option>
-                                <option value="sesudah">✅ Sesudah</option>
+                                <option value="barang">Barang</option>
+                                <option value="kegiatan">Kegiatan</option>
+                                <option value="sebelum">Sebelum</option>
+                                <option value="proses">Proses</option>
+                                <option value="sesudah">Sesudah</option>
                             </select>
 
                             <input type="file"
@@ -1790,7 +1800,7 @@ function openUpdateDetailPopup(kwitansiId) {
                         <div class="popup-footer">
                             <button class="btn btn-secondary" onclick="closePopup()">Batal</button>
                             <button class="btn btn-success" onclick="saveUpdateDetail(${kwitansiId})">
-                                <span style="margin-right:5px;">💾</span> Simpan Perubahan
+                                ${iconSvg("save",15)} Simpan Perubahan
                             </button>
                         </div>
                     </div>
@@ -1929,9 +1939,9 @@ function openUpdateDetailPopup(kwitansiId) {
                     const div = document.createElement("div");
                     div.className = "foto-item";
                     div.innerHTML = `
-                        <button class="foto-delete-btn"
+                        <button class="foto-delete-btn" title="Hapus foto"
                             onclick="event.stopPropagation(); deleteExistingFoto(${kwitansiId}, ${index})">
-                            ×
+                            ${iconSvg("x", 12)}
                         </button>
                         <span style="position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,.65); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; text-transform:uppercase;">
                             ${foto.jenis}
@@ -1981,7 +1991,7 @@ async function openManualBKUForm() {
             .foto-delete-btn {
                 position: absolute; top: -5px; right: -5px; width: 20px; height: 20px;
                 border-radius: 50%; background: red; color: white; border: none;
-                cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px;
+                cursor: pointer; display: flex; align-items: center; justify-content: center;
             }
         </style>
     `;
@@ -2088,7 +2098,7 @@ async function openManualBKUForm() {
                 
                 <div class="upload-area" id="manual-drop-area">
                     <label style="font-weight:600; display:block; margin-bottom:5px;">
-                        📷 Foto Bukti / Dokumentasi
+                        ${iconSvg("camera",15)} Foto Bukti / Dokumentasi
                     </label>
                     <small style="color:#666; display:block; margin-bottom:12px;">
                         Klik untuk upload, atau <b>Paste (Ctrl+V)</b> gambar di sini. (Max 15)
@@ -2097,11 +2107,11 @@ async function openManualBKUForm() {
                     <div style="display:flex; justify-content:center; gap:10px; margin-bottom:10px;">
                         <div style="width: 200px;">
                             <select id="manual-jenis-foto" class="form-control" style="text-align:center;">
-                                <option value="barang">📦 Barang</option>
-                                <option value="kegiatan">📍 Kegiatan</option>
-                                <option value="sebelum">⏪ Sebelum</option>
-                                <option value="proses">⚙️ Proses</option>
-                                <option value="sesudah">✅ Sesudah</option>
+                                <option value="barang">Barang</option>
+                                <option value="kegiatan">Kegiatan</option>
+                                <option value="sebelum">Sebelum</option>
+                                <option value="proses">Proses</option>
+                                <option value="sesudah">Sesudah</option>
                             </select>
                         </div>
                     </div>
@@ -2122,7 +2132,7 @@ async function openManualBKUForm() {
                 <div style="margin-top:30px; padding-top:15px; border-top:1px solid #eee; display:flex; gap:10px; justify-content:flex-end;">
                     <button class="btn btn-secondary" onclick="closePopup()" style="padding: 8px 20px;">Batal</button>
                     <button class="btn btn-success" onclick="saveManualBKU()" style="padding: 8px 25px; font-weight:bold;">
-                        <span style="margin-right:5px;">💾</span> Simpan Data
+                        ${iconSvg("save",15)} Simpan Data
                     </button>
                 </div>
             </div>
@@ -2269,7 +2279,7 @@ function addManualUraianRow() {
             <button class="btn btn-sm btn-outline-danger" 
                     onclick="deleteManualUraianRow(this)"
                     style="border-radius: 50%; width: 28px; height: 28px; padding: 0; line-height: 26px; display: inline-flex; align-items: center; justify-content: center;">
-                ✕
+                ${iconSvg("x",14)}
             </button>
         </td>
     `;
@@ -2511,7 +2521,7 @@ window.renderManualBKUPreview = function() {
                 type="button"
                 onclick="event.stopPropagation(); deleteManualBKUPhoto(${idx})"
                 title="Hapus Foto">
-                ×
+                ${iconSvg("x", 12)}
             </button>
 
             <span style="
@@ -2953,7 +2963,7 @@ function renderChangelog(notes) {
     changelogContainer.innerHTML = ""; // Bersihkan isi lama
 
     // Jika notes kosong/null, pakai default
-    const defaultNote = "Mohon dukungannya untuk pengembangan Aplikasi SPJ BOSP dengan berdonasi melalui Bank BRI Nomor Rekening 6237 0103 6885 534 atas nama MUH. ROFIQ. Terima kasih telah menggunakan Aplikasi SPJ BOSP.🙏";
+    const defaultNote = "Mohon dukungannya untuk pengembangan Aplikasi SPJ BOSP dengan berdonasi melalui Bank BRI Nomor Rekening 6237 0103 6885 534 atas nama MUH. ROFIQ. Terima kasih telah menggunakan Aplikasi SPJ BOSP.";
     if (!notes) notes = [defaultNote];
 
     const card = document.createElement("div");
@@ -2997,7 +3007,7 @@ function renderChangelog(notes) {
     // 1. UPDATE TERSEDIA (Auto Check)
     window.electronAPI.onUpdateAvailable((info) => {
         if (navUpdateBtn) {
-            navUpdateBtn.innerHTML = "🔄 Pembaruan Aplikasi 🔴";
+            navUpdateBtn.classList.add("has-update"); const dotAv = navUpdateBtn.querySelector(".update-dot"); if (dotAv) dotAv.hidden = false;
         }
 
         showToast(
@@ -3033,7 +3043,7 @@ function renderChangelog(notes) {
 
     // 3. UPDATE SELESAI DIDOWNLOAD
     window.electronAPI.onUpdateDownloaded(() => {
-        navUpdateBtn.innerHTML = "🔄 Pembaruan Aplikasi ✅"; 
+        navUpdateBtn.classList.remove("has-update"); const dotDl = navUpdateBtn.querySelector(".update-dot"); if (dotDl) dotDl.hidden = true; 
         
         showToast(
             "Siap Instalasi", 
@@ -3058,7 +3068,7 @@ function renderChangelog(notes) {
 
     // 5. TIDAK ADA UPDATE
     window.electronAPI.onUpdateNotAvailable(() => {
-        msgElement.innerText = "Aplikasi sudah versi terbaru ✅";
+        msgElement.innerText = "Aplikasi sudah versi terbaru";
         msgElement.style.color = "green";
         progressBox.style.display = "none";
 
@@ -3190,47 +3200,69 @@ function initApp() {
     const root = document.getElementById("app");
     let appVersion = "-";
 window.electronAPI.getAppVersion().then(v => {
-    document.getElementById("current-version").innerText = v;
+    ["current-version", "update-version-box"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerText = v;
+    });
 });
+    const NAV = [
+        { tab: "pengaturan", label: "Identitas Sekolah", icon: "school" },
+        { tab: "pemda",      label: "Logo & Kop Surat",  icon: "landmark" },
+        { section: "Transaksi" },
+        { tab: "master",     label: "Referensi Kegiatan", icon: "book" },
+        { tab: "rekening",   label: "Rekening Belanja",   icon: "briefcase" },
+        { tab: "bku",        label: "Upload BKU",         icon: "fileText" },
+        { tab: "data-bku",   label: "Data BKU",           icon: "barChart" },
+        { tab: "kwitansi",   label: "Daftar SPJ",         icon: "receipt" },
+        { tab: "rekap",      label: "Rekap Belanja",      icon: "trendingUp" },
+        { section: "Sistem" },
+        { tab: "update",     label: "Pembaruan Aplikasi", icon: "refreshCw", id: "nav-update-btn" },
+    ];
+    const navHtml = NAV.map(n => n.section
+        ? `<div class="sidebar-section">${n.section}</div>`
+        : `<button class="tab-btn${n.tab === "pengaturan" ? " active" : ""}" data-tab="${n.tab}"${n.id ? ` id="${n.id}"` : ""} onclick="switchTab('${n.tab}')"><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`
+    ).join("");
+
     root.innerHTML = `
-        <div class="app-shell">
-        <div class="app-header selectable">
-        <h1>📋 Aplikasi SPJ BOSP</h1>
-
-        <p class="subtitle">Aplikasi untuk membuat SPJ dari ARKAS.</p>
-        <div class="search-container mb-3" style="display: flex; justify-content: flex-end;">
-    <input type="text" 
-           id="globalSearchInput" 
-           class="form-control" 
-           style="width: 300px;" 
-           placeholder="🔍 Cari data di menu ini...">
-</div>
-        
+        <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+        <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#4f8df9"/><stop offset="1" stop-color="#2563eb"/>
+        </linearGradient></defs></svg>
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <span class="brand-badge">${iconSvg("clipboard", 20)}</span>
+                <div class="brand-text">
+                    <div class="brand-title">SPJ BOSP</div>
+                    <div class="brand-sub">Aplikasi SPJ dari ARKAS</div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">${navHtml}</nav>
+            <div class="sidebar-footer">
+                <span class="version-pill">${iconSvg("package", 14)} v<span id="current-version">-</span></span>
+            </div>
+        </aside>
+        <div class="main-area">
+        <header class="topbar">
+            <button class="btn btn-secondary btn-sm sidebar-toggle" onclick="toggleSidebar()" title="Sembunyikan/tampilkan menu">${iconSvg("panelLeft", 16)}</button>
+            <h1 class="page-title" id="pageTitle">Identitas Satuan Pendidikan</h1>
+            <div class="search-container">
+                <span class="search-wrap"><span class="search-icon">${iconSvg("search", 15)}</span>
+                <input type="text" id="globalSearchInput" class="form-control" placeholder="Cari data di menu ini..."></span>
+            </div>
+        </header>
+        <div class="app-shell selectable">
         <div id="message"></div>
-
-<div class="tabs">
-    <button class="tab-btn active" data-tab="pengaturan" onclick="switchTab('pengaturan')">🏫 Identitas Satuan Pendidikan</button>
-    <button class="tab-btn" data-tab="pemda" onclick="switchTab('pemda')">🏛️ Logo dan Kop Surat</button>
-    <button class="tab-btn" data-tab="master" onclick="switchTab('master')">📚 Referensi Kegiatan</button>
-    <button class="tab-btn" data-tab="rekening" onclick="switchTab('rekening')">💼 Rekening Belanja</button>
-    <button class="tab-btn" data-tab="bku" onclick="switchTab('bku')">📄 Upload BKU</button>
-    <button class="tab-btn" data-tab="data-bku" onclick="switchTab('data-bku')">📊 Data BKU</button>
-    <button class="tab-btn" data-tab="kwitansi" onclick="switchTab('kwitansi')">🧾 Daftar SPJ</button>
-    <button class="tab-btn" data-tab="rekap" onclick="switchTab('rekap')">📈 Rekap Belanja</button>
-    <button class="tab-btn" data-tab="update" id="nav-update-btn" onclick="switchTab('update')" style="color: var(--primary);">🔄 Pembaruan Aplikasi</button>
-    <div id="toast-container"></div>  
-</div>
 <div id="tab-update" class="tab-content">
             <div class="card" style="max-width: 600px; margin: 0 auto; text-align: center;">
-                <h3>🔄 Pembaruan Aplikasi</h3>
+                <h3>${iconSvg("refreshCw",17)} Pembaruan Aplikasi</h3>
                 <div style="margin-bottom: 20px;">
                     <p style="color: #64748b;">Versi Aplikasi Saat Ini:</p>
-                    <h2 style="margin-top: -10px; color: var(--primary);" id="current-version">-</h2>
+                    <h2 style="margin-top: -10px; color: var(--primary);" id="update-version-box">-</h2>
                 </div>
                 
                 <div id="update-actions">
                     <button class="btn btn-primary" id="btn-check-update" onclick="checkForUpdates()">
-                        🔍 Cek Pembaruan
+                        ${iconSvg("search",15)} Cek Pembaruan
                     </button>
                 </div>
 
@@ -3244,7 +3276,7 @@ window.electronAPI.getAppVersion().then(v => {
                     <div id="update-details" class="update-status-text"></div>
                     
                     <button id="btn-restart" class="btn btn-success" style="display:none; margin-top:15px; width:100%;" onclick="restartAndInstall()">
-                        🚀Mulai Ulang & Terapkan Update
+                        ${iconSvg("rocket",15)} Mulai Ulang &amp; Terapkan Update
                     </button>
                 </div>
             </div>
@@ -3255,7 +3287,7 @@ window.electronAPI.getAppVersion().then(v => {
     <div class="card">
         <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;">
             <div style="flex:1; min-width:320px;">
-                <h3>🏛️ Logo dan Kop Surat</h3>
+                <h3>${iconSvg("landmark",17)} Logo dan Kop Surat</h3>
 <p>Atur identitas visual dan informasi kop surat untuk dokumen SPJ Anda. Logo dan nama instansi akan tercetak pada setiap halaman SPJ yang dihasilkan.</p>
                 <form id="form-pemda" onsubmit="event.preventDefault(); saveDataPemda();" style="margin-top:12px;">
                     <div class="form-group">
@@ -3295,8 +3327,8 @@ window.electronAPI.getAppVersion().then(v => {
                         </div>
                     </div>
                     <div style="display:flex; gap:10px; margin-top:14px;">
-                        <button type="submit" class="btn btn-primary" style="flex:1; padding:12px 18px; font-weight:700;">💾 Simpan Pengaturan</button>
-                        <button class="btn btn-secondary" type="button" style="padding:12px 18px;" onclick="loadDataPemda(); showToast('Info!','Data berhasil dimuat ulang')">🔄 Muat Ulang</button>
+                        <button type="submit" class="btn btn-primary" style="flex:1; padding:12px 18px; font-weight:700;">${iconSvg("save",15)} Simpan Pengaturan</button>
+                        <button class="btn btn-secondary" type="button" style="padding:12px 18px;" onclick="loadDataPemda(); showToast('Info!','Data berhasil dimuat ulang')">${iconSvg("refreshCw",15)} Muat Ulang</button>
                     </div>
                 </form>
             </div>
@@ -3308,9 +3340,9 @@ window.electronAPI.getAppVersion().then(v => {
 <div id="tab-data-bku" class="tab-content">
     <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-            <h3>📊 Data BKU</h3>
+            <h3>${iconSvg("barChart",17)} Data BKU</h3>
                 <div style="display:flex; gap:10px; align-items:center;">
-                    <button class="btn-primary" onclick="loadDataBKU()">🔄 Segarkan Data</button>
+                    <button class="btn-primary" onclick="loadDataBKU()">${iconSvg("refreshCw",15)} Segarkan Data</button>
                     <button class="btn btn-outline-primary" onclick="openManualBKUForm()" title="Tambah data BKU manual">＋ Tambah Manual</button>
                 </div>
         </div>
@@ -3424,14 +3456,14 @@ window.electronAPI.getAppVersion().then(v => {
                     <div style="border: 1px solid #edf2f7; padding: 16px; border-radius: 12px; background:#fdfdfd; flex: 1; display: flex; flex-direction: column;">
                         <div class="custom-upload-btn" onclick="document.getElementById('bkuFile').click()" 
                              style="width: 100%; padding: 20px; border: 2px dashed #d1d5db; border-radius: 10px; background: #fafafa; cursor: pointer; text-align: center; transition: all 0.3s ease;">
-                            <span style="font-weight: bold; color: #2563eb; display: block; font-size: 15px;">📎 Pilih File BKU (PDF)</span>
+                            <span style="font-weight: bold; color: #2563eb; display: block; font-size: 15px;">${iconSvg("paperclip",15)} Pilih File BKU (PDF)</span>
                             <span style="font-size: 11px; color: #6b7280; margin-top: 4px; display:block;">Maksimal 12 file</span>
                         </div>
                         <input type="file" id="bkuFile" accept=".pdf" multiple onchange="updateFileList()" style="display:none;">
                         <div id="selected-files" class="file-list" style="margin-top: 10px; flex-grow: 1;"></div>
                         
                         <div style="display:flex; gap:10px; margin-top:15px;">
-                            <button class="btn btn-success" style="flex:2; padding: 10px; border-radius: 8px; font-weight: 600; background-color: #10b981; border: none; color: white; font-size: 13px;" onclick="uploadBKU()">🔍 Ekstrak Data</button>
+                            <button class="btn btn-success" style="flex:2; padding: 10px; border-radius: 8px; font-weight: 600; background-color: #10b981; border: none; color: white; font-size: 13px;" onclick="uploadBKU()">${iconSvg("search",14)} Ekstrak Data</button>
                             <button class="btn btn-secondary" style="flex:1; padding: 10px; border-radius: 8px; background-color: #6b7280; border: none; color: white; font-size: 13px;" onclick="resetBkuSelection()">Reset</button>
                         </div>
                     </div>
@@ -3441,7 +3473,7 @@ window.electronAPI.getAppVersion().then(v => {
                     <div style="border: 1px solid #edf2f7; padding: 16px; border-radius: 12px; background:#fdfdfd; flex: 1; display: flex; flex-direction: column; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);">                        
                         <div class="custom-upload-btn" onclick="document.getElementById('bhpFile').click()" 
                              style="width: 100%; padding: 20px; border: 2px dashed #d1d5db; border-radius: 10px; background: #fafafa; cursor: pointer; text-align: center; transition: all 0.3s ease;">
-                            <span style="font-weight: bold; color: #2563eb; display: block; font-size: 15px;">📎 Pilih File BHP/BHM</span>
+                            <span style="font-weight: bold; color: #2563eb; display: block; font-size: 15px;">${iconSvg("paperclip",15)} Pilih File BHP/BHM</span>
                             <span style="font-size: 11px; color: #6b7280; margin-top: 4px; display:block;">File PDF pendukung</span>
                         </div>
                             <input type="hidden" id="bhp-type"  value="BHP">
@@ -3449,7 +3481,7 @@ window.electronAPI.getAppVersion().then(v => {
                         <div id="selected-bhp-files" class="file-list" style="margin-top:10px; flex-grow: 1;"></div>
                         
                         <div style="display:flex; gap:10px; margin-top:15px;">
-                            <button class="btn btn-success" style="flex:2; font-size: 13px; padding: 10px; border-radius: 8px; background-color: #10b981; border: none; color: white; font-weight: 600;" onclick="extractBHP()">🔍 Ekstrak Data</button>
+                            <button class="btn btn-success" style="flex:2; font-size: 13px; padding: 10px; border-radius: 8px; background-color: #10b981; border: none; color: white; font-weight: 600;" onclick="extractBHP()">${iconSvg("search",14)} Ekstrak Data</button>
                             <button class="btn btn-secondary" style="flex:1; font-size: 13px; border-radius: 8px; background-color: #6b7280; border: none; color: white;" onclick="resetBhpSelection()">Reset</button>
                         </div>
                     </div>
@@ -3466,7 +3498,7 @@ window.electronAPI.getAppVersion().then(v => {
         <div id="tab-kwitansi" class="tab-content">
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                    <h3 style="margin:0">🧾 Daftar Draft SPJ</h3>
+                    <h3 style="margin:0">${iconSvg("receipt",17)} Daftar Draft SPJ</h3>
                     <div id="kwitansi-stats"></div>
                 </div>
                 <div id="kwitansi-list" class="table-container"></div>
@@ -3475,7 +3507,7 @@ window.electronAPI.getAppVersion().then(v => {
 
         <div id="tab-pengaturan" class="tab-content active">
             <div class="card" style="max-width: 650px; margin: 0 auto;">
-                <h3 style="margin-top:0">🏫 Identitas Satuan Pendidikan</h3>
+                <h3 style="margin-top:0">${iconSvg("school",17)} Identitas Satuan Pendidikan</h3>
                 <div class="form-group">
                     <label>Nama Satuan Pendidikan</label>
                     <input type="text" id="nama_sekolah" placeholder="Masukkan nama satuan pendidikan...">
@@ -3520,9 +3552,9 @@ window.electronAPI.getAppVersion().then(v => {
 
         <div id="tab-master" class="tab-content">
             <div class="card">
-                <h3 style="margin-top:0">📚 Data Referensi Kegiatan</h3>
+                <h3 style="margin-top:0">${iconSvg("book",17)} Data Referensi Kegiatan</h3>
                 <div style="background: #fffbeb; border: 1px solid #fef3c7; padding: 15px; border-radius: 12px; margin-bottom: 25px;">
-                    <h4 style="margin:0 0 5px 0; color: #92400e; font-size: 14px;">📥 Import dari Excel</h4>
+                    <h4 style="margin:0 0 5px 0; color: #92400e; font-size: 14px;">${iconSvg("download",15)} Import dari Excel</h4>
                     <p style="color: #b45309; margin: 0 0 15px 0; font-size: 13px;">
                         Gunakan file Excel dengan header: <strong>kode_kegiatan</strong> dan <strong>nama_kegiatan</strong>.
                     </p>
@@ -3540,7 +3572,7 @@ window.electronAPI.getAppVersion().then(v => {
 
 <div id="tab-rekap" class="tab-content">
     <div class="card" style="margin-top:20px;">
-        <h3 style="margin-top:0">📈 Rekap Belanja</h3>
+        <h3 style="margin-top:0">${iconSvg("trendingUp",17)} Rekap Belanja</h3>
         
         <div style="display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap: wrap;">
             <label style="display:flex; align-items:center; gap:8px;">
@@ -3550,8 +3582,8 @@ window.electronAPI.getAppVersion().then(v => {
                     <option value="2">Tahap 2</option>
                 </select>
             </label>
-            <button class="btn btn-primary" onclick="generateRekapTransaksi(false)">🔍 Generate Data</button>
-            <button class="btn" onclick="generateRekapTransaksi(true)">🔽 Detail</button>
+            <button class="btn btn-primary" onclick="generateRekapTransaksi(false)">${iconSvg("search",15)} Generate Data</button>
+            <button class="btn" onclick="generateRekapTransaksi(true)">${iconSvg("chevronDown",15)} Detail</button>
         </div>
 
         <div style="margin-top:15px; padding:15px; border:1px dashed #ccc; background:#f9f9f9; border-radius:8px; display:flex; gap:10px; align-items:center;">
@@ -3560,7 +3592,7 @@ window.electronAPI.getAppVersion().then(v => {
                 <small style="color:#666;">Copas "Kode Template" di bawah ini pada file excel template rekap (.xlsx) lalu upload melalui tombol di samping. Sistem akan mengganti "Kode Template" di dalam excel dengan jumlah rekap belanja Anda!.</small>
             </div>
             <input type="file" id="template-file" accept=".xlsx" style="font-size:0.9em;">
-            <button class="btn btn-success" onclick="processTemplateExcel()">⬇️ Download Rekap</button>
+            <button class="btn btn-success" onclick="processTemplateExcel()">${iconSvg("download",15)} Download Rekap</button>
         </div>
 
         <div id="rekap-result" style="margin-top:20px;"></div>
@@ -3569,9 +3601,9 @@ window.electronAPI.getAppVersion().then(v => {
 
         <div id="tab-rekening" class="tab-content">
             <div class="card" style="margin-top:20px;">
-                <h3 style="margin-top:0">📥 Data Rekening Belanja</h3>
+                <h3 style="margin-top:0">${iconSvg("briefcase",17)} Data Rekening Belanja</h3>
                 <div style="background: #f0f9ff; border: 1px solid #e0f2fe; padding: 15px; border-radius: 12px; margin-bottom: 15px;">
-                    <h4 style="margin:0 0 8px 0; font-size:14px;">📥 Import Rekening dari Excel</h4>
+                    <h4 style="margin:0 0 8px 0; font-size:14px;">${iconSvg("download",15)} Import Rekening dari Excel</h4>
                     <p style="margin:0 0 12px 0; color:#0369a1; font-size:13px;">Gunakan file Excel dengan header: <strong>kode_rekening_belanja</strong>, <strong>nama_rekening_belanja</strong>, <strong>rekap_rekening_belanja</strong>, <strong>nilai_kapitalisasi_belanja</strong>.</p>
                     <div style="display:flex; gap:10px; align-items:center;">
                         <input type="file" id="excelFileRekening" accept=".xlsx,.xls" style="font-size:12px;">
@@ -3586,6 +3618,7 @@ window.electronAPI.getAppVersion().then(v => {
             </div>
         </div>
         </div><!-- /.app-shell -->
+        </div><!-- /.main-area -->
     `;
     setTimeout(() => {
     if (document.getElementById("update-status-container")) {

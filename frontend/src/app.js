@@ -1055,6 +1055,12 @@ window.switchTab = function(tab) {
         content.classList.toggle("active", content.id === `tab-${tab}`);
     });
 
+    // 2b. Sinkronkan state sidebar & judul, lalu reset pencarian utk tab non-tabel
+    const searchInputPre = document.getElementById("globalSearchInput");
+    if (searchInputPre && ["pengaturan", "pemda", "rekap", "bku", "update"].includes(tab)) {
+        searchInputPre.value = "";
+    }
+
     // 3. LOGIC PENCARIAN GLOBAL (BARU)
     const searchInput = document.getElementById("globalSearchInput");
     
@@ -3137,16 +3143,20 @@ function filterData(dataArray, keyword, keys) {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-    // WAJIB: tunggu origin child_process tersedia sebelum memicu request API apa pun.
-    await ensureBackendReady();
+    // Bangun kerangka UI (sidebar + seluruh tab/form/table) LEBIH DULU agar
+    // isi halaman langsung tampil, baru backend child_process disiapkan dan
+    // data dimuat. (Sebelumnya `await ensureBackendReady()` mendahului
+    // initApp(): saat backend lambat siap, halaman tampak kosong.)
     initApp();
+
+    await ensureBackendReady();
     loadPengaturan();
     loadMasterKegiatan();
     loadMasterRekeningBelanja();
     loadKwitansiList();
     loadDataBKU();
     loadDataPemda().then(() => updatePemdaPreview());
-    
+
     // SETUP EVENT LISTENER PENCARIAN SETELAH initApp() SELESAI
     setupSearchListener();
 });
@@ -3195,6 +3205,23 @@ function handleGlobalSearch(e) {
 
 
 
+// Lipat/buka sidebar (dipanggil tombol di topbar); state diingat antar reload.
+window.toggleSidebar = function () {
+    const sb = document.getElementById("sidebar");
+    if (!sb) return;
+    const collapsed = sb.classList.toggle("collapsed");
+    try { localStorage.setItem("spj-sidebar-collapsed", collapsed ? "1" : "0"); } catch (e) {}
+};
+
+function restoreSidebarState() {
+    try {
+        if (localStorage.getItem("spj-sidebar-collapsed") === "1") {
+            const sb = document.getElementById("sidebar");
+            if (sb) sb.classList.add("collapsed");
+        }
+    } catch (e) {}
+}
+
 // Initialize app
 function initApp() {
     const root = document.getElementById("app");
@@ -3220,7 +3247,7 @@ window.electronAPI.getAppVersion().then(v => {
     ];
     const navHtml = NAV.map(n => n.section
         ? `<div class="sidebar-section">${n.section}</div>`
-        : `<button class="tab-btn${n.tab === "pengaturan" ? " active" : ""}" data-tab="${n.tab}"${n.id ? ` id="${n.id}"` : ""} onclick="switchTab('${n.tab}')"><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`
+        : `<button class="tab-btn" data-tab="${n.tab}"${n.id ? ` id="${n.id}"` : ""} onclick="switchTab('${n.tab}')"><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`
     ).join("");
 
     root.innerHTML = `
@@ -3282,7 +3309,8 @@ window.electronAPI.getAppVersion().then(v => {
             </div>
             
             <div id="changelog-container"></div>
-        </div>
+        </div><!-- /#tab-update -->
+
 <div id="tab-pemda" class="tab-content">
     <div class="card">
         <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;">
@@ -3342,7 +3370,7 @@ window.electronAPI.getAppVersion().then(v => {
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h3>${iconSvg("barChart",17)} Data BKU</h3>
                 <div style="display:flex; gap:10px; align-items:center;">
-                    <button class="btn-primary" onclick="loadDataBKU()">${iconSvg("refreshCw",15)} Segarkan Data</button>
+                    <button class="btn btn-primary" onclick="loadDataBKU()">${iconSvg("refreshCw",15)} Segarkan Data</button>
                     <button class="btn btn-outline-primary" onclick="openManualBKUForm()" title="Tambah data BKU manual">＋ Tambah Manual</button>
                 </div>
         </div>
@@ -3620,6 +3648,11 @@ window.electronAPI.getAppVersion().then(v => {
         </div><!-- /.app-shell -->
         </div><!-- /.main-area -->
     `;
+
+    // Terapkan state lipatan sidebar & tab aktif sesuai state saat ini
+    restoreSidebarState();
+    switchTab(activeTab);
+
     setTimeout(() => {
     if (document.getElementById("update-status-container")) {
         initUpdateListeners();
@@ -3682,14 +3715,4 @@ window.processTemplateExcel = processTemplateExcel;
 
 
 // --- INITIALIZE APP ---
-document.addEventListener("DOMContentLoaded", async () => {
-    // Tunggu origin child_process siap (idempoten; handler lain sudah memanggil juga).
-    await ensureBackendReady();
-    initApp();
-    loadPengaturan();
-    loadMasterKegiatan();
-    loadMasterRekeningBelanja();
-    loadKwitansiList();
-    loadDataBKU();
-    loadDataPemda().then(() => updatePemdaPreview());
-});
+// (Satu-satunya bootstrap DOMContentLoaded ada di atas; dulunya duplikat di sini.)

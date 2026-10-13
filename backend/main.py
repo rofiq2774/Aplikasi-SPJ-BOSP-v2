@@ -1577,15 +1577,8 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     current_y = content_start_y
     line_gap = 0.8 * cm # Jarak antar field utama
 
-    # A. Tanggal
-    current_y = draw_wrapped_text_with_lines(
-        c, _safe_text(kwitansi.tanggal) or "-",
-        left_col_x, colon_x, value_x, value_x + 6*cm,
-        current_y, "Times-Roman", 12, "Tanggal"
-    )
-    current_y -= line_gap
-
-    # B. Telah Terima Dari
+    # A. Telah Terima Dari (baris "Tanggal" dihilangkan sesuai permintaan;
+    #    tanggal tetap tampil pada blok tanda tangan di bawah)
     current_y = draw_wrapped_text_with_lines(
         c, f"BENDAHARA BOSP {_safe_text(pengaturan.nama_sekolah).upper()}", 
         left_col_x, colon_x, value_x, line_end_x,
@@ -1619,28 +1612,38 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     c.setLineWidth(0.5)
     # c.line(left_col_x, sep_y, line_end_x, sep_y) # (Opsional: garis pemisah form dan ttd)
 
-    # --- 4. TANDA TANGAN ---
+    # --- 4. TANDA TANGAN (proporsional: blok rata tepi kiri-tengah-kanan) ---
     ttd_base_y = sep_y - 1.0 * cm
-    
-    # Koordinat X Tanda Tangan
-    col_1_x = margin_x + 1.0 * cm                  # Kiri (KS)
-    col_2_x = margin_x + (kwitansi_width / 2) - 2*cm  # Tengah (Bendahara)
-    col_3_x = margin_x + kwitansi_width - 5.5 * cm    # Kanan (Penerima)
+
+    # Koordinat X kolom tanda tangan (kiri / tengah / kanan)
+    col_1_x = margin_x + 1.0 * cm                       # Kiri (KS)
+    col_3_w = 5.5 * cm                                  # Lebar area kolom kanan
+    col_3_x = margin_x + kwitansi_width - col_3_w       # Kanan (Penerima)
+    col_c_end = line_end_x                              # Tengah dibatasi ujung garis value
+    col_2_cx = (col_1_x + col_3_x) / 2.0                # Titik tengah blok ttd
 
     c.setFont("Times-Roman", 11)
-    
+
+    def _ttd_text(x, y, text, align="L"):
+        if align == "C":
+            c.drawCentredString(x, y, text)
+        elif align == "R":
+            c.drawRightString(x, y, text)
+        else:
+            c.drawString(x, y, text)
+
     # Header TTD
-    c.drawString(col_1_x, ttd_base_y, "Setuju Dibayar")
-    c.drawString(col_1_x, ttd_base_y - 0.5*cm, "Kepala Sekolah")
-    
-    c.drawString(col_2_x, ttd_base_y, f"Lunas Dibayar {_safe_text(kwitansi.tanggal)}") 
-    c.drawString(col_2_x, ttd_base_y - 0.5*cm, "Bendahara BOSP")
+    _ttd_text(col_1_x, ttd_base_y, "Setuju Dibayar")
+    _ttd_text(col_1_x, ttd_base_y - 0.5*cm, "Kepala Sekolah")
+
+    _ttd_text(col_2_cx, ttd_base_y, f"Lunas Dibayar {_safe_text(kwitansi.tanggal)}", "C")
+    _ttd_text(col_2_cx, ttd_base_y - 0.5*cm, "Bendahara BOSP", "C")
 
     kota_ttd = _safe_text(getattr(pengaturan, 'tempat_surat', None)) or 'Jember'
-    c.drawString(col_3_x, ttd_base_y, f"{kota_ttd}, {_safe_text(kwitansi.tanggal)}")
-    c.drawString(col_3_x, ttd_base_y - 0.5*cm, "Penerima")
+    _ttd_text(col_c_end, ttd_base_y, f"{kota_ttd}, {_safe_text(kwitansi.tanggal)}", "R")
+    _ttd_text(col_c_end, ttd_base_y - 0.5*cm, "Penerima", "R")
 
-    # Nama & NIP (Jarak sekitar 2.5cm - 3cm ke bawah)
+    # Nama & NIP (jarak tetap dari header)
     name_y = ttd_base_y - 3.0 * cm
     nip_y = name_y - 0.5 * cm
 
@@ -1651,20 +1654,31 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
         s = _safe_text(value)
         return f"NIP. {s}" if s else "NIP. ............................."
 
+    def _fit_name(text, max_w):
+        """Perkecil font bertahap agar nama tidak menabrak kolom sebelah."""
+        size = 11
+        while size > 8 and c.stringWidth(text, "Times-Bold", size) > max_w:
+            size -= 0.5
+        return size
+
     # TTD Kiri (KS)
-    c.setFont("Times-Bold", 11)
-    c.drawString(col_1_x, name_y, _nama(pengaturan.nama_kepala_sekolah))
+    max_w_1 = col_2_cx - col_1_x - 1.0 * cm
+    nm1 = _nama(pengaturan.nama_kepala_sekolah)
+    c.setFont("Times-Bold", _fit_name(nm1, max_w_1))
+    _ttd_text(col_1_x, name_y, nm1)
     c.setFont("Times-Roman", 11)
-    c.drawString(col_1_x, nip_y, _nip(pengaturan.nip_kepala_sekolah))
+    _ttd_text(col_1_x, nip_y, _nip(pengaturan.nip_kepala_sekolah))
 
     # TTD Tengah (Bendahara)
-    c.setFont("Times-Bold", 11)
-    c.drawString(col_2_x, name_y, _nama(pengaturan.nama_bendahara))
+    nm2 = _nama(pengaturan.nama_bendahara)
+    c.setFont("Times-Bold", _fit_name(nm2, min(max_w_1, col_3_x - col_2_cx - 1.0 * cm) * 2))
+    _ttd_text(col_2_cx, name_y, nm2, "C")
     c.setFont("Times-Roman", 11)
-    c.drawString(col_2_x, nip_y, _nip(pengaturan.nip_bendahara))
+    _ttd_text(col_2_cx, nip_y, _nip(pengaturan.nip_bendahara), "C")
 
-    # TTD Kanan (Penerima)
-    c.line(col_3_x, name_y, col_3_x + 4.5*cm, name_y) # Garis tanda tangan
+    # TTD Kanan (Penerima) — garis bantu tanda tangan di atas nama
+    c.setLineWidth(0.5)
+    c.line(col_3_x, name_y + 0.15*cm, col_3_x + 4.5*cm, name_y + 0.15*cm)
 
     # --- 5. KOTAK NOMINAL (Rp.) ---
     # Posisi di bawah NIP KS
@@ -3291,7 +3305,9 @@ class SPJFPDF(FPDF):
             return
         top_y = 12
         max_logo_h = 20
-        left_margin, right_margin = 15, 200
+        # Margin kop menyesuaikan orientasi halaman (portrait/landscape)
+        left_margin = self.l_margin
+        right_margin = self.w - self.r_margin
         max_logo_w = 24
 
         def logo_exists(path):

@@ -3176,39 +3176,43 @@ async function deleteTransaksi(no_bukti) {
 
 // Tampilkan/sembunyikan placeholder pada kotak preview logo
 function syncLogoPlaceholder(img) {
-    const box = img?.closest('.logo-preview-box');
-    if (!box) return;
-    const ph = box.querySelector('.logo-preview-placeholder');
-    const hasSrc = img && img.src && img.src !== '#' && img.style.display !== 'none';
-    if (ph) ph.style.display = hasSrc ? 'none' : 'flex';
+  const box = img?.closest(".logo-preview-box");
+  if (!box) return;
+  const ph = box.querySelector(".logo-preview-placeholder");
+  const hasSrc =
+    img && img.src && img.src !== "#" && img.style.display !== "none";
+  if (ph) ph.style.display = hasSrc ? "none" : "flex";
 }
 
 function previewImage(input, previewId) {
-    const preview = document.getElementById(previewId);
-    if (!preview) return;
-    if (input.files && input.files[0]) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            preview.src = e.target.result;
-            preview.style.display = 'block';
-            syncLogoPlaceholder(preview);
-        }
-        reader.readAsDataURL(input.files[0]);
-    } else {
-        preview.src = "#";
-        preview.style.display = 'none';
-        syncLogoPlaceholder(preview);
-    }
+  const preview = document.getElementById(previewId);
+  if (!preview) return;
+  if (input.files && input.files[0]) {
+    const reader = new FileReader();
+    reader.onload = function (e) {
+      preview.src = e.target.result;
+      preview.style.display = "block";
+      syncLogoPlaceholder(preview);
+    };
+    reader.readAsDataURL(input.files[0]);
+  } else {
+    preview.src = "#";
+    preview.style.display = "none";
+    syncLogoPlaceholder(preview);
+  }
 }
 
 // Buka gambar logo penuh di jendela baru (untuk memeriksa detail resolusi tinggi)
 function openLogoFull(previewId) {
-    const img = document.getElementById(previewId);
-    if (!img || !img.src || img.src === '#' || img.style.display === 'none') return;
-    const w = window.open('', '_blank');
-    if (w) {
-        w.document.write(`<title>Pratinjau Logo</title><body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f1f5f9;"><img src="${img.src}" style="max-width:92vw;max-height:92vh;object-fit:contain;"></body>`);
-    }
+  const img = document.getElementById(previewId);
+  if (!img || !img.src || img.src === "#" || img.style.display === "none")
+    return;
+  const w = window.open("", "_blank");
+  if (w) {
+    w.document.write(
+      `<title>Pratinjau Logo</title><body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f1f5f9;"><img src="${img.src}" style="max-width:92vw;max-height:92vh;object-fit:contain;"></body>`,
+    );
+  }
   const preview = document.getElementById(previewId);
   if (input.files && input.files[0]) {
     const reader = new FileReader();
@@ -3285,40 +3289,10 @@ function assetUrl(path) {
 
 // Fungsi Load Data (Panggil saat aplikasi dibuka atau tab diklik)
 async function loadDataPemda() {
-    try {
-        const response = await apiFetch(`${API_BASE}/get-pemda`);
-        const res = await response.json();
-        if (res.data) {
-            document.getElementById('kop-1').value = res.data.nama_pemda || '';
-            document.getElementById('kop-2').value = res.data.nama_sekolah || '';
-            document.getElementById('kop-alamat').value = res.data.alamat_sekolah || '';
-            
-            if (res.data.logo_pemda) {
-                const img = document.getElementById('preview-logo-pemda');
-                img.src = `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`; // Cache buster
-                img.style.display = 'block';
-                syncLogoPlaceholder(img);
-            }
-            if (res.data.logo_sekolah) {
-                const img = document.getElementById('preview-logo-sekolah');
-                img.src = `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
-                img.style.display = 'block';
-                syncLogoPlaceholder(img);
-            }
-
-            // tempat_surat
-            if (typeof res.data.tempat_surat !== 'undefined') {
-                const el = document.getElementById('tempat_surat');
-                if (el) el.value = res.data.tempat_surat || '';
-                const preview = document.getElementById('preview-tempat-surat');
-                if (preview) preview.innerText = res.data.tempat_surat || '';
-            }
-        }
-    } catch (err) {
-        showToast("Gagal!", "Error loading data:"+ err);
   try {
     const response = await apiFetch(`${API_BASE}/get-pemda`);
     const res = await response.json();
+
     if (res.data) {
       document.getElementById("kop-1").value = res.data.nama_pemda || "";
       document.getElementById("kop-2").value = res.data.nama_sekolah || "";
@@ -3329,11 +3303,14 @@ async function loadDataPemda() {
         const img = document.getElementById("preview-logo-pemda");
         img.src = `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`; // Cache buster
         img.style.display = "block";
+        if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
       }
+
       if (res.data.logo_sekolah) {
         const img = document.getElementById("preview-logo-sekolah");
         img.src = `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
         img.style.display = "block";
+        if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
       }
 
       // tempat_surat
@@ -3345,7 +3322,7 @@ async function loadDataPemda() {
       }
     }
   } catch (err) {
-    showToast("Gagal!", "Error loading data:" + err);
+    showToast("Gagal!", "Error loading data: " + err);
   }
 }
 
@@ -4207,6 +4184,3 @@ window.initUpdateListeners = initUpdateListeners;
 window.checkForUpdates = checkForUpdates;
 window.restartAndInstall = restartAndInstall;
 window.processTemplateExcel = processTemplateExcel;
-
-// --- INITIALIZE APP ---
-// (Satu-satunya bootstrap DOMContentLoaded ada di atas; dulunya duplikat di sini.)

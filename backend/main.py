@@ -1376,6 +1376,9 @@ def draw_wrapped_text_with_lines(c, text, x_label, x_colon, x_text, x_end, y, fo
     Fungsi helper untuk menulis label, titik dua, dan teks isian yang bisa wrap (turun baris).
     Otomatis menggambar garis bawah di setiap baris isian.
     """
+    # Teks isian boleh None/kosong — normalisasi agar tidak crash saat render
+    text = _safe_text(text)
+
     # 1. Gambar Label dan Titik Dua (hanya di baris pertama)
     c.setFont(font_name, font_size)
     if label_text:
@@ -1407,42 +1410,87 @@ def draw_wrapped_text_with_lines(c, text, x_label, x_colon, x_text, x_end, y, fo
         
     return y # Kembalikan posisi Y terakhir agar elemen berikutnya menyesuaikan
 
+def _safe_text(value):
+    """Konversi nilai apa pun ke string aman untuk digambar di PDF."""
+    if value is None:
+        return ""
+    s = str(value).strip()
+    return s
+
+
+def _to_float(value, default=0.0):
+    """Konversi nilai (float/int/string '1.234,56' dll.) ke float dengan aman."""
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return default
+    # Normalkan format angka Indonesia ("1.500.000" -> 1500000, "1.500,50" -> 1500.50)
+    s = s.replace("Rp", "").replace("rp", "").strip()
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    else:
+        s = s.replace(".", "").replace(",", ".") if s.count(",") == 1 and "." not in s else s.replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return default
+
+
 def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2, baris3, x_left, y_top, content_width):
     """
     Menggambar kop surat rapi pada canvas ReportLab:
     - Logo Pemda kiri, Logo Sekolah kanan, tinggi seragam maks 20mm
-    - Teks kop rata tengah di antara kedua logo (tidak tertutup logo)
+      (lebar logo dibatasi agar tidak pernah mendesak teks tengah)
+    - Teks kop rata tengah pada ruang DI ANTARA kedua logo (khas kop resmi),
+      otomatis mengecil bila terlalu panjang, dan alamat di-wrap rapi
     - Garis ganda tebal-tipis sebagai pembatas kop
     Mengembalikan posisi Y (pt) tepat di bawah garis kop.
     """
     from reportlab.lib.utils import ImageReader
 
     max_logo_h = 20 * mm
+    max_logo_w = 24 * mm
 
-    x_text_start = x_left + max_logo_h + 2 * mm
-    x_text_end = x_left + content_width - max_logo_h - 2 * mm
-    cx_text = (x_text_start + x_text_end) / 2.0
+    def _logo_ok(path):
+        return bool(path) and Path(str(path)).exists()
+
+    has_pemda = _logo_ok(logo_pemda_path)
+    has_sekolah = _logo_ok(logo_sekolah_path)
+
+    # Area teks = ruang di antara kedua logo (bukan seluruh lebar halaman)
+    pad_l = (max_logo_w + 4 * mm) if has_pemda else 0
+    pad_r = (max_logo_w + 4 * mm) if has_sekolah else 0
+    text_x_start = x_left + pad_l
+    text_x_end = x_left + content_width - pad_r
+    text_area_w = max(text_x_end - text_x_start, 3 * cm)
+    cx_text = (text_x_start + text_x_end) / 2.0  # rata tengah antar logo
 
     def _draw_logo(path, right_align=False):
         if not path:
             return
         try:
-            p = Path(path)
+            p = Path(str(path))
             if not p.exists():
                 return
             img = ImageReader(str(p))
             iw, ih = img.getSize()
             if iw <= 0 or ih <= 0:
                 return
-            h = max_logo_h
-            w = h * (iw / ih)
-            max_w = 30 * mm
-            if w > max_w:
-                w = max_w
-                h = w * (ih / iw)
+            # Skala proporsional: batasi tinggi DAN lebar sehingga logo apa pun
+            # (termasuk yang sangat besar/persegi) tetap rapi di sudut kop
+            scale = min(max_logo_h / ih, max_logo_w / iw)
+            h, w = ih * scale, iw * scale
             y = y_top - max_logo_h + (max_logo_h - h) / 2.0
             x = (x_left + content_width - w) if right_align else x_left
+            c.saveState()
             c.drawImage(img, x, y, width=w, height=h, mask='auto', preserveAspectRatio=True)
+            c.restoreState()
         except Exception as e:
             logger.warning("Gagal render logo PDF: %s -> %s", path, e)
 
@@ -1450,25 +1498,42 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
     _draw_logo(logo_sekolah_path, right_align=True)
 
     c.setFillColor(colors.black)
-    line_gap = 0.62 * cm
-    yy = y_top - 0.85 * cm
-    c.setFont("Times-Bold", 13)
-    c.drawCentredString(cx_text, yy, baris1 or "")
-    yy -= line_gap
-    c.setFont("Times-Bold", 17)
-    c.drawCentredString(cx_text, yy, baris2 or "")
-    yy -= line_gap
-    c.setFont("Times-Roman", 9.5)
-    for ln in simpleSplit(baris3 or "", "Times-Roman", 9.5, x_text_end - x_text_start):
-        c.drawCentredString(cx_text, yy, ln)
-        yy -= 0.45 * cm
 
-    kop_line_y = min(yy - 0.15 * cm, y_top - max_logo_h - 0.35 * cm)
+    def _fit_font(text, bold, base_size, min_size=8.5):
+        """Pilih ukuran font agar baris teks muat di area tersedia."""
+        size = base_size
+        face = "Times-Bold" if bold else "Times-Roman"
+        while size > min_size and stringWidth(text, face, size) > text_area_w:
+            size -= 0.5
+        return face, size
+
+    yy = y_top - 0.8 * cm
+    b1 = _safe_text(baris1)
+    if b1:
+        face, size = _fit_font(b1.upper(), True, 12.5)
+        c.setFont(face, size)
+        c.drawCentredString(cx_text, yy, b1.upper())
+        yy -= size * 1.55
+    b2 = _safe_text(baris2)
+    if b2:
+        face, size = _fit_font(b2.upper(), True, 17, min_size=11)
+        c.setFont(face, size)
+        c.drawCentredString(cx_text, yy, b2.upper())
+        yy -= size * 1.5
+    b3 = _safe_text(baris3)
+    if b3:
+        c.setFont("Times-Roman", 9.5)
+        for ln in simpleSplit(b3, "Times-Roman", 9.5, text_area_w):
+            c.drawCentredString(cx_text, yy, ln)
+            yy -= 0.42 * cm
+
+    # Garis kop: pastikan tidak memotong logo meski teks kop sedikit
+    kop_line_y = min(yy - 0.12 * cm, y_top - max_logo_h - 0.3 * cm)
     c.setStrokeColor(colors.black)
     c.setLineWidth(1.6)
     c.line(x_left, kop_line_y, x_left + content_width, kop_line_y)
     c.setLineWidth(0.4)
-    c.line(x_left, kop_line_y - 1.6, x_left + content_width, kop_line_y - 1.6)
+    c.line(x_left, kop_line_y - 1.8, x_left + content_width, kop_line_y - 1.8)
 
     return kop_line_y - 0.8 * cm
 
@@ -1491,23 +1556,8 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     kwitansi_height = 14.0 * cm 
     bottom_y = top_y - kwitansi_height
 
-    # --- 1. KOP SURAT (rapi: logo kiri/kanan + teks tengah + garis ganda) ---
-    kop_top = top_y - 0.6 * cm
-    kop_x = margin_x + 1.0 * cm
-    kop_w = kwitansi_width - 2.0 * cm
-    baris_kop_1 = (getattr(pengaturan, 'nama_pemda', '') or '').upper()
-    baris_kop_2 = (pengaturan.nama_sekolah or '').upper()
-    baris_kop_3 = pengaturan.alamat_sekolah or ''
-    after_kop_y = draw_pdf_kop_reportlab(
-        c,
-        resolve_logo(getattr(pengaturan, 'logo_pemda', '') or ''),
-        resolve_logo(getattr(pengaturan, 'logo_sekolah', '') or ''),
-        baris_kop_1, baris_kop_2, baris_kop_3,
-        kop_x, kop_top, kop_w
-    )
-
-    # --- 1b. JUDUL ---
-    judul_y = after_kop_y - 0.7 * cm
+    # --- 1. JUDUL (kwitansi TANPA kop surat sesuai permintaan) ---
+    judul_y = top_y - 0.6 * cm
     c.setFillColor(colors.black)
     c.setFont("Times-Bold", 18)
     c.drawCentredString(F4_WIDTH / 2, judul_y, "KWITANSI")
@@ -1529,7 +1579,7 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
 
     # A. Tanggal
     current_y = draw_wrapped_text_with_lines(
-        c, str(kwitansi.tanggal or "-"),
+        c, _safe_text(kwitansi.tanggal) or "-",
         left_col_x, colon_x, value_x, value_x + 6*cm,
         current_y, "Times-Roman", 12, "Tanggal"
     )
@@ -1537,7 +1587,7 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
 
     # B. Telah Terima Dari
     current_y = draw_wrapped_text_with_lines(
-        c, f"BENDAHARA BOSP {pengaturan.nama_sekolah}", 
+        c, f"BENDAHARA BOSP {_safe_text(pengaturan.nama_sekolah).upper()}", 
         left_col_x, colon_x, value_x, line_end_x,
         current_y, "Times-Roman", 12, "Telah terima dari"
     )
@@ -1546,8 +1596,9 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     # C. Uang Sejumlah (Terbilang) - Font Bold
     # Convert jumlah ke terbilang (pastikan fungsi terbilang ada)
     try:
-        txt_terbilang = f"{terbilang(kwitansi.jumlah).capitalize()} rupiah"
-    except:
+        txt_terbilang = f"{terbilang(_to_float(kwitansi.jumlah)).capitalize()} rupiah"
+    except Exception as e:
+        logger.warning("kwitansi: terbilang gagal untuk %r -> %s", kwitansi.jumlah, e)
         txt_terbilang = "................ rupiah" # Fallback
 
     current_y = draw_wrapped_text_with_lines(
@@ -1582,28 +1633,35 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     c.drawString(col_1_x, ttd_base_y, "Setuju Dibayar")
     c.drawString(col_1_x, ttd_base_y - 0.5*cm, "Kepala Sekolah")
     
-    c.drawString(col_2_x, ttd_base_y, f"Lunas Dibayar {kwitansi.tanggal}") 
+    c.drawString(col_2_x, ttd_base_y, f"Lunas Dibayar {_safe_text(kwitansi.tanggal)}") 
     c.drawString(col_2_x, ttd_base_y - 0.5*cm, "Bendahara BOSP")
 
-    kota_ttd = getattr(pengaturan, 'tempat_surat', None) or 'Jember'
-    c.drawString(col_3_x, ttd_base_y, f"{kota_ttd}, {kwitansi.tanggal}")
+    kota_ttd = _safe_text(getattr(pengaturan, 'tempat_surat', None)) or 'Jember'
+    c.drawString(col_3_x, ttd_base_y, f"{kota_ttd}, {_safe_text(kwitansi.tanggal)}")
     c.drawString(col_3_x, ttd_base_y - 0.5*cm, "Penerima")
 
     # Nama & NIP (Jarak sekitar 2.5cm - 3cm ke bawah)
     name_y = ttd_base_y - 3.0 * cm
     nip_y = name_y - 0.5 * cm
 
+    def _nama(value):
+        return _safe_text(value) or "................................."
+
+    def _nip(value):
+        s = _safe_text(value)
+        return f"NIP. {s}" if s else "NIP. ............................."
+
     # TTD Kiri (KS)
     c.setFont("Times-Bold", 11)
-    c.drawString(col_1_x, name_y, pengaturan.nama_kepala_sekolah)
+    c.drawString(col_1_x, name_y, _nama(pengaturan.nama_kepala_sekolah))
     c.setFont("Times-Roman", 11)
-    c.drawString(col_1_x, nip_y, f"NIP. {pengaturan.nip_kepala_sekolah}")
+    c.drawString(col_1_x, nip_y, _nip(pengaturan.nip_kepala_sekolah))
 
     # TTD Tengah (Bendahara)
     c.setFont("Times-Bold", 11)
-    c.drawString(col_2_x, name_y, pengaturan.nama_bendahara)
+    c.drawString(col_2_x, name_y, _nama(pengaturan.nama_bendahara))
     c.setFont("Times-Roman", 11)
-    c.drawString(col_2_x, nip_y, f"NIP. {pengaturan.nip_bendahara}")
+    c.drawString(col_2_x, nip_y, _nip(pengaturan.nip_bendahara))
 
     # TTD Kanan (Penerima)
     c.line(col_3_x, name_y, col_3_x + 4.5*cm, name_y) # Garis tanda tangan
@@ -1625,8 +1683,8 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     c.setFont("Times-Bold", 14)
     c.drawString(rp_box_x - 1.0 * cm, rp_box_y + 0.3*cm, "Rp.")
     
-    # Angka Nominal (Di dalam kotak)
-    formatted_jumlah = f"{kwitansi.jumlah:,.00f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    # Angka Nominal (Di dalam kotak) — konversi aman (jumlah bisa berupa string)
+    formatted_jumlah = f"{_to_float(kwitansi.jumlah):,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
     center_x_box = rp_box_x + (rp_box_w / 2)
     c.drawCentredString(center_x_box, rp_box_y + 0.3*cm, formatted_jumlah)
 
@@ -3231,30 +3289,37 @@ class SPJFPDF(FPDF):
         d = self.kop_data
         if not d:
             return
-        top_y = 14
+        top_y = 12
         max_logo_h = 20
         left_margin, right_margin = 15, 200
-        x_text_start = left_margin + max_logo_h + 3
-        x_text_end = right_margin - max_logo_h - 3
+        max_logo_w = 24
+
+        def logo_exists(path):
+            return bool(path) and Path(str(path)).exists()
+
+        # Area teks = ruang di antara kedua logo (simetris, khas kop resmi)
+        pad_l = (max_logo_w + 4) if logo_exists(d.get('logo_pemda')) else 0
+        pad_r = (max_logo_w + 4) if logo_exists(d.get('logo_sekolah')) else 0
+        x_text_start = left_margin + pad_l
+        x_text_end = right_margin - pad_r
         cx = (x_text_start + x_text_end) / 2.0
+        text_w = max(x_text_end - x_text_start, 30)
 
         def place_logo(path, right_align=False):
             if not path:
                 return
             try:
-                p = Path(path)
+                p = Path(str(path))
                 if not p.exists():
                     return
                 with Image.open(p) as img:
                     iw, ih = img.size
                 if iw <= 0 or ih <= 0:
                     return
-                h = max_logo_h
-                w = h * (iw / ih)
-                max_w = 30
-                if w > max_w:
-                    w = max_w
-                    h = w * (ih / iw)
+                # Skala proporsional: batasi tinggi DAN lebar agar logo apa pun
+                # tetap rapi di sudut kop dan tidak mendesak teks tengah
+                scale = min(max_logo_h / ih, max_logo_w / iw)
+                h, w = ih * scale, iw * scale
                 y = top_y + (max_logo_h - h) / 2.0
                 x = (right_margin - w) if right_align else left_margin
                 self.image(str(p), x=x, y=y, h=h, w=w)
@@ -3264,19 +3329,34 @@ class SPJFPDF(FPDF):
         place_logo(d.get('logo_pemda'), right_align=False)
         place_logo(d.get('logo_sekolah'), right_align=True)
 
-        self.set_y(top_y + 4)
+        def fit_line(text, style, base_size, min_size):
+            """Perkecil font bertahap agar baris muat di area antar-logo."""
+            size = base_size
+            while size > min_size and self.get_string_width(text) > text_w:
+                size -= 0.5
+                self.set_font("times", style, size)
+            return size
+
+        self.set_y(top_y + 3)
         self.set_text_color(0, 0, 0)
-        self.set_font("helvetica", "", 12)
-        self.cell(0, 6, d.get('baris1', ''), align="C", ln=1)
-        self.set_font("helvetica", "B", 17)
-        self.cell(0, 8, d.get('baris2', ''), align="C", ln=1)
-        self.set_font("helvetica", "", 9)
-        alamat = d.get('alamat', '') or ''
+
+        b1 = (d.get('baris1') or '').strip().upper()
+        if b1:
+            self.set_font("times", "B", 12)
+            fit_line(b1, "B", 12, 8.5)
+            self.cell(0, 5.5, b1, align="C", ln=1)
+        b2 = (d.get('baris2') or '').strip().upper()
+        if b2:
+            self.set_font("times", "B", 16)
+            fit_line(b2, "B", 16, 10)
+            self.cell(0, 7, b2, align="C", ln=1)
+        alamat = (d.get('alamat') or '').strip()
         if alamat:
-            # wrap manual agar tidak melebar ke area logo
+            self.set_font("times", "", 9)
             import textwrap
-            for ln in textwrap.wrap(alamat, width=55):
-                self.cell(0, 4.5, ln, align="C", ln=1)
+            wrap_w = max(int(text_w / (self.get_string_width("x") * 1.05)), 20)
+            for ln in textwrap.wrap(alamat, width=wrap_w):
+                self.cell(0, 4.2, ln, align="C", ln=1)
 
         posisi_y = max(self.get_y() + 1.5, top_y + max_logo_h + 1)
         self.set_line_width(0.8)

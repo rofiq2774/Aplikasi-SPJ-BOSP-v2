@@ -14,7 +14,11 @@ const log = require("electron-log");
 //   - Windows packaged : %LOCALAPPDATA%\AplikasiSPJ\app.log
 //   - development      : <repo>/backend/app.log
 function resolveAppLogPath() {
-  if (process.platform === "win32" && app.isPackaged && process.env.LOCALAPPDATA) {
+  if (
+    process.platform === "win32" &&
+    app.isPackaged &&
+    process.env.LOCALAPPDATA
+  ) {
     return path.join(process.env.LOCALAPPDATA, "AplikasiSPJ", "app.log");
   }
   return path.join(__dirname, "..", "backend", "app.log");
@@ -27,39 +31,57 @@ try {
 } catch (e) {
   // fallback ke electron-log default bila path utama tidak bisa dibuat
   APP_LOG_PATH = path.join(app.getPath("logs") || os.tmpdir(), "app.log");
-  try { fs.mkdirSync(path.dirname(APP_LOG_PATH), { recursive: true }); } catch (e2) {}
+  try {
+    fs.mkdirSync(path.dirname(APP_LOG_PATH), { recursive: true });
+  } catch (e2) {}
 }
 
 log.transports.file.level = "info";
 log.transports.file.maxSize = 10 * 1024 * 1024; // 10 MB rotasi
 log.transports.file.format = "[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] {text}";
-try { log.transports.file.resolvePathFn = () => APP_LOG_PATH; } catch (e) {}
+try {
+  log.transports.file.resolvePathFn = () => APP_LOG_PATH;
+} catch (e) {}
 
 function writeAppLog(level, source, message) {
   const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] [${source}] ${message}`;
   if (APP_LOG_PATH) {
-    try { fs.appendFileSync(APP_LOG_PATH, line + os.EOL); } catch (e) {}
+    try {
+      fs.appendFileSync(APP_LOG_PATH, line + os.EOL);
+    } catch (e) {}
   }
   try {
     if (level === "error") log.error(`[${source}] ${message}`);
     else if (level === "warn") log.warn(`[${source}] ${message}`);
     else log.info(`[${source}] ${message}`);
   } catch (e) {}
-  try { console[level === "warn" ? "warn" : level](line); } catch (e) {}
+  try {
+    console[level === "warn" ? "warn" : level](line);
+  } catch (e) {}
 }
 
-writeAppLog("info", "frontend-main", `=== Aplikasi SPJ BOSP v${app.getVersion()} dimulai (log: ${APP_LOG_PATH}) ===`);
+writeAppLog(
+  "info",
+  "frontend-main",
+  `=== Aplikasi SPJ BOSP v${app.getVersion()} dimulai (log: ${APP_LOG_PATH}) ===`,
+);
 
 // Capture unexpected errors in the main process to aid debugging
 process.on("uncaughtException", (err) => {
   const msg = err && err.stack ? err.stack : String(err);
   writeAppLog("error", "frontend-main", `Uncaught Exception: ${msg}`);
   // Ensure backend is stopped if main crashes
-  try { stopBackend(); } catch(e) {}
+  try {
+    stopBackend();
+  } catch (e) {}
 });
 
 process.on("unhandledRejection", (reason) => {
-  writeAppLog("error", "frontend-main", `Unhandled Rejection: ${reason && reason.stack ? reason.stack : reason}`);
+  writeAppLog(
+    "error",
+    "frontend-main",
+    `Unhandled Rejection: ${reason && reason.stack ? reason.stack : reason}`,
+  );
 });
 
 // Teruskan log dari renderer (frontend) supaya ikut tercatat di app.log
@@ -106,7 +128,7 @@ function getBackendBaseUrl() {
 // =========================================================================
 
 autoUpdater.logger = log;
-autoUpdater.logger.transports.file.level = 'info';
+autoUpdater.logger.transports.file.level = "info";
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = false;
 /* ===================== STOP BACKEND ===================== */
@@ -120,9 +142,17 @@ function stopBackend() {
       } else {
         pyProcess.kill("SIGTERM");
       }
-      writeAppLog("info", "frontend-main", `Backend child_process dihentikan (pid=${pid})`);
+      writeAppLog(
+        "info",
+        "frontend-main",
+        `Backend child_process dihentikan (pid=${pid})`,
+      );
     } catch (e) {
-      writeAppLog("error", "frontend-main", `Gagal menghentikan backend (pid=${pid}): ${e.message || e}`);
+      writeAppLog(
+        "error",
+        "frontend-main",
+        `Gagal menghentikan backend (pid=${pid}): ${e.message || e}`,
+      );
     }
     pyProcess = null;
   }
@@ -132,7 +162,6 @@ process.on("SIGINT", stopBackend);
 process.on("SIGTERM", stopBackend);
 process.on("exit", stopBackend);
 /* ======================================================= */
-
 
 /* ===================== WAIT BACKEND ===================== */
 function waitForBackend(url, timeout = 20000) {
@@ -169,7 +198,6 @@ function waitForBackend(url, timeout = 20000) {
 
 /* ======================================================= */
 
-
 /* ===================== START BACKEND ===================== */
 // Backend HANYA dijalankan sebagai child_process dengan port dinamis.
 // Tidak ada lagi "servis localhost" statis (port 8000) — jika port dinamis
@@ -190,13 +218,13 @@ async function spawnBackendOnPort(port) {
     PYTHON_ENV: isDev ? "development" : "production",
     PORT: String(backendPort),
     // Satu file log bersama frontend & renderer — WAJIB mencatat semua kejadian
-    SPJ_LOG_FILE: APP_LOG_PATH
+    SPJ_LOG_FILE: APP_LOG_PATH,
   };
 
   writeAppLog(
     "info",
     "frontend-main",
-    `Spawn backend child_process (${isDev ? "Development" : "Production"}): ${isDev ? pythonCmd + " " + pyPath : pyPath} pada port dinamis ${backendPort}`
+    `Spawn backend child_process (${isDev ? "Development" : "Production"}): ${isDev ? pythonCmd + " " + pyPath : pyPath} pada port dinamis ${backendPort}`,
   );
 
   pyProcess = isDev
@@ -204,7 +232,11 @@ async function spawnBackendOnPort(port) {
     : spawn(pyPath, [], { env, stdio: "pipe", detached: false });
 
   pyProcess.on("error", (err) => {
-    writeAppLog("error", "frontend-main", `Gagal menjalankan backend: ${err.message || err}`);
+    writeAppLog(
+      "error",
+      "frontend-main",
+      `Gagal menjalankan backend: ${err.message || err}`,
+    );
   });
 
   // Pantau proses anak agar kita tahu kalau backend mati mendadak
@@ -213,7 +245,7 @@ async function spawnBackendOnPort(port) {
     writeAppLog(
       code === 0 || code === null ? "info" : "error",
       "frontend-main",
-      `Backend child_process berhenti (code=${code}, signal=${signal})`
+      `Backend child_process berhenti (code=${code}, signal=${signal})`,
     );
   });
 
@@ -222,10 +254,14 @@ async function spawnBackendOnPort(port) {
   // mencatat semuanya ke app.log (logging + tee stdout/stderr), di sini pipe
   // hanya diteruskan ke konsol untuk debugging — bukan sebagai sumber log.
   if (pyProcess.stdout) {
-    pyProcess.stdout.on("data", (data) => console.log(`[backend] ${data.toString()}`));
+    pyProcess.stdout.on("data", (data) =>
+      console.log(`[backend] ${data.toString()}`),
+    );
   }
   if (pyProcess.stderr) {
-    pyProcess.stderr.on("data", (data) => console.error(`[backend] ${data.toString()}`));
+    pyProcess.stderr.on("data", (data) =>
+      console.error(`[backend] ${data.toString()}`),
+    );
   }
 }
 
@@ -238,7 +274,11 @@ async function startPythonBackend() {
       port = await getRandomPort();
     } catch (e) {
       // TIDAK ada fallback ke port 8000 — servis localhost statis sudah ditiadakan.
-      writeAppLog("error", "frontend-main", `Gagal mendapat port dinamis (percobaan ${attempt}): ${e.message || e}`);
+      writeAppLog(
+        "error",
+        "frontend-main",
+        `Gagal mendapat port dinamis (percobaan ${attempt}): ${e.message || e}`,
+      );
       continue;
     }
 
@@ -246,29 +286,31 @@ async function startPythonBackend() {
 
     try {
       await waitForBackend(`${getBackendBaseUrl()}/health`, 20000);
-      writeAppLog("info", "frontend-main", `Backend siap di http://127.0.0.1:${port}`);
+      writeAppLog(
+        "info",
+        "frontend-main",
+        `Backend siap di http://127.0.0.1:${port}`,
+      );
       return;
     } catch (e) {
       writeAppLog(
         "error",
         "frontend-main",
-        `Backend tidak siap pada port ${port} (percobaan ${attempt}/${MAX_PORT_ATTEMPTS}): ${e.message || e}. Detail penyebab ada di app.log (output child_process).`
+        `Backend tidak siap pada port ${port} (percobaan ${attempt}/${MAX_PORT_ATTEMPTS}): ${e.message || e}. Detail penyebab ada di app.log (output child_process).`,
       );
       stopBackend();
     }
   }
 
   throw new Error(
-    "Backend child_process gagal berjalan pada port dinamis setelah beberapa percobaan. Periksa app.log."
+    "Backend child_process gagal berjalan pada port dinamis setelah beberapa percobaan. Periksa app.log.",
   );
 }
 /* ======================================================= */
 
-
 /* ===================== SET LOCALE ===================== */
 app.commandLine.appendSwitch("lang", "id-ID");
 /* ===================================================== */
-
 
 async function createWindow() {
   const version = app.getVersion();
@@ -281,25 +323,25 @@ async function createWindow() {
     icon: path.join(__dirname, "assets", "logo.png"),
     autoHideMenuBar: true,
     webPreferences: {
-  preload: path.join(__dirname, "preload.js"),
-  nodeIntegration: false,
-  contextIsolation: true
-}
+      preload: path.join(__dirname, "preload.js"),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
   });
   mainWindow = win;
   win.on("page-title-updated", (e) => e.preventDefault());
 
   // Tampilkan setelah siap + maximize (BUKAN fullscreen)
-win.once("ready-to-show", () => {
-  win.maximize();
-  win.show();
+  win.once("ready-to-show", () => {
+    win.maximize();
+    win.show();
 
-  if (app.isPackaged) {
-    setTimeout(() => {
-      autoUpdater.checkForUpdates();
-    }, 3000);
-  }
-});
+    if (app.isPackaged) {
+      setTimeout(() => {
+        autoUpdater.checkForUpdates();
+      }, 3000);
+    }
+  });
 
   // BUGFIX: CSP injected ini menimpa CSP meta di Index.html. Karena backend kini
   // berjalan pada port dinamis (child_process), src 'self' saja akan memblokir
@@ -311,22 +353,30 @@ win.once("ready-to-show", () => {
         ...details.responseHeaders,
         "Content-Security-Policy": [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-          "img-src 'self' data: blob: http://127.0.0.1:* file:; " +
-          "connect-src 'self' http://127.0.0.1:* https://api.github.com https://github.com https://objects.githubusercontent.com; " +
-          "style-src 'self' 'unsafe-inline';"
-        ]
-      }
+            "img-src 'self' data: blob: http://127.0.0.1:* file:; " +
+            "connect-src 'self' http://127.0.0.1:* https://api.github.com https://github.com https://objects.githubusercontent.com; " +
+            "style-src 'self' 'unsafe-inline';",
+        ],
+      },
     });
   });
 
   // Backend sudah dipastikan siap oleh startPythonBackend() sebelum jendela dibuat.
   // Health check ulang di sini hanya sebagai penjaga (guard) terakhir.
   try {
-    writeAppLog("info", "frontend-main", "Verifikasi akhir kesiapan backend child_process...");
+    writeAppLog(
+      "info",
+      "frontend-main",
+      "Verifikasi akhir kesiapan backend child_process...",
+    );
     await waitForBackend(`${getBackendBaseUrl()}/health`, 5000);
     writeAppLog("info", "frontend-main", `Backend siap, memuat UI renderer`);
   } catch (e) {
-    writeAppLog("error", "frontend-main", `Backend gagal start: ${e.message || e}`);
+    writeAppLog(
+      "error",
+      "frontend-main",
+      `Backend gagal start: ${e.message || e}`,
+    );
     const msg = String((e && e.message) || e).replace(/["'<>]/g, "");
     win.loadURL(
       "data:text/html;charset=utf-8," +
@@ -335,8 +385,8 @@ win.once("ready-to-show", () => {
             `<h2>Backend gagal berjalan</h2><p>${msg}</p>` +
             `<p>Layanan REST hanya tersedia lewat child_process dengan port dinamis — servis localhost statis sudah dinonaktifkan.</p>` +
             `<p>Periksa app.log (${APP_LOG_PATH}) dan pastikan Python/backend terinstall dengan benar.</p>` +
-            `</body></html>`
-        )
+            `</body></html>`,
+        ),
     );
     return;
   }
@@ -345,31 +395,63 @@ win.once("ready-to-show", () => {
   if (isDev) {
     // Vite dev server HANYA untuk pengembangan frontend (bukan servis backend).
     // Build produksi memakai loadFile (file://) tanpa server HTTP apa pun.
-    writeAppLog("info", "frontend-main", "Mode dev: memuat renderer dari Vite (http://localhost:5173)");
+    writeAppLog(
+      "info",
+      "frontend-main",
+      "Mode dev: memuat renderer dari Vite (http://localhost:5173)",
+    );
     win.loadURL("http://localhost:5173");
     win.webContents.openDevTools();
   } else {
-    const indexPath = path.join(__dirname, "dist", "Index.html");
-    writeAppLog("info", "frontend-main", `Production: memuat renderer dari file ${indexPath}`);
-    win.loadFile(indexPath).catch((e) =>
-      writeAppLog("error", "frontend-main", `Gagal memuat index.html: ${e.message || e}`)
+    const indexPath = path.join(__dirname, "dist", "index.html");
+    writeAppLog(
+      "info",
+      "frontend-main",
+      `Production: memuat renderer dari file ${indexPath}`,
     );
+    win
+      .loadFile(indexPath)
+      .catch((e) =>
+        writeAppLog(
+          "error",
+          "frontend-main",
+          `Gagal memuat index.html: ${e.message || e}`,
+        ),
+      );
   }
 
   // Tangkap error runtime & console dari renderer agar ikut tercatat ke app.log
-  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    // level: 0=log/debug, 1=info, 2=warning, 3=error
-    const lvl = level >= 3 ? "error" : level === 2 ? "warn" : "info";
-    writeAppLog(lvl, "frontend-renderer", `${message} (${sourceId}:${line})`);
-  });
-  win.webContents.on("did-fail-load", (_e, errorCode, errorDescription, validatedURL) => {
-    writeAppLog("error", "frontend-main", `Gagal memuat halaman ${validatedURL}: ${errorCode} ${errorDescription}`);
-  });
+  win.webContents.on(
+    "console-message",
+    (_event, level, message, line, sourceId) => {
+      // level: 0=log/debug, 1=info, 2=warning, 3=error
+      const lvl = level >= 3 ? "error" : level === 2 ? "warn" : "info";
+      writeAppLog(lvl, "frontend-renderer", `${message} (${sourceId}:${line})`);
+    },
+  );
+  win.webContents.on(
+    "did-fail-load",
+    (_e, errorCode, errorDescription, validatedURL) => {
+      writeAppLog(
+        "error",
+        "frontend-main",
+        `Gagal memuat halaman ${validatedURL}: ${errorCode} ${errorDescription}`,
+      );
+    },
+  );
   win.webContents.on("render-process-gone", (_e, details) => {
-    writeAppLog("error", "frontend-main", `Renderer process gone: ${JSON.stringify(details)}`);
+    writeAppLog(
+      "error",
+      "frontend-main",
+      `Renderer process gone: ${JSON.stringify(details)}`,
+    );
   });
   win.webContents.on("preload-error", (_e, preloadPath, error) => {
-    writeAppLog("error", "frontend-main", `Preload error (${preloadPath}): ${error.message || error}`);
+    writeAppLog(
+      "error",
+      "frontend-main",
+      `Preload error (${preloadPath}): ${error.message || error}`,
+    );
   });
 }
 
@@ -377,12 +459,12 @@ win.once("ready-to-show", () => {
 // Bagian ini menghubungkan logika Frontend (UI) dengan Backend Electron
 
 // 1. Menerima perintah "Cek Update" dari tombol di UI
-ipcMain.on('check-for-updates', () => {
+ipcMain.on("check-for-updates", () => {
   if (!app.isPackaged) {
     if (mainWindow) {
       mainWindow.webContents.send(
-        'update-error',
-        'Update hanya bisa dicek di aplikasi hasil install (.exe)'
+        "update-error",
+        "Update hanya bisa dicek di aplikasi hasil install (.exe)",
       );
     }
     return;
@@ -391,35 +473,34 @@ ipcMain.on('check-for-updates', () => {
   autoUpdater.checkForUpdates();
 });
 
-
 // 2. Menerima perintah "Restart" dari tombol di UI
-ipcMain.on('restart-app', () => {
-    autoUpdater.quitAndInstall();
+ipcMain.on("restart-app", () => {
+  autoUpdater.quitAndInstall();
 });
 
 // 3. Mengirim status ke UI saat update tersedia
-autoUpdater.on('update-available', (info) => {
-    if(mainWindow) mainWindow.webContents.send('update-available', info);
+autoUpdater.on("update-available", (info) => {
+  if (mainWindow) mainWindow.webContents.send("update-available", info);
 });
 
 // 4. Mengirim status ke UI saat TIDAK ada update
-autoUpdater.on('update-not-available', (info) => {
-    if(mainWindow) mainWindow.webContents.send('update-not-available', info);
+autoUpdater.on("update-not-available", (info) => {
+  if (mainWindow) mainWindow.webContents.send("update-not-available", info);
 });
 
 // 5. MENGIRIM DATA PROGRESS DOWNLOAD (Persen & Kecepatan)
-autoUpdater.on('download-progress', (progressObj) => {
-    if(mainWindow) mainWindow.webContents.send('download-progress', progressObj);
+autoUpdater.on("download-progress", (progressObj) => {
+  if (mainWindow) mainWindow.webContents.send("download-progress", progressObj);
 });
 
 // 6. Memberitahu UI bahwa download selesai
-autoUpdater.on('update-downloaded', (info) => {
-    if(mainWindow) mainWindow.webContents.send('update-downloaded', info);
+autoUpdater.on("update-downloaded", (info) => {
+  if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
 });
 
 // 7. Mengirim pesan Error ke UI
-autoUpdater.on('error', (err) => {
-    if(mainWindow) mainWindow.webContents.send('update-error', err.toString());
+autoUpdater.on("error", (err) => {
+  if (mainWindow) mainWindow.webContents.send("update-error", err.toString());
 });
 
 ipcMain.handle("is-dev", () => !app.isPackaged);
@@ -442,7 +523,11 @@ app.whenReady().then(async () => {
   try {
     await startPythonBackend();
   } catch (e) {
-    writeAppLog("error", "frontend-main", `Gagal memulai backend child_process: ${e.message || e}`);
+    writeAppLog(
+      "error",
+      "frontend-main",
+      `Gagal memulai backend child_process: ${e.message || e}`,
+    );
   }
   createWindow();
 });

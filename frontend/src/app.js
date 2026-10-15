@@ -3330,14 +3330,20 @@ async function loadDataPemda() {
 
       if (res.data.logo_pemda) {
         const img = document.getElementById("preview-logo-pemda");
-        img.src = `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`; // Cache buster
+        // Logo kini dikirim backend sebagai data URI base64 — pakai langsung,
+        // tanpa assetUrl/cache-buster (data URI tidak perlu di-cache-bust).
+        img.src = res.data.logo_pemda.startsWith("data:")
+          ? res.data.logo_pemda
+          : `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`;
         img.style.display = "block";
         if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
       }
 
       if (res.data.logo_sekolah) {
         const img = document.getElementById("preview-logo-sekolah");
-        img.src = `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
+        img.src = res.data.logo_sekolah.startsWith("data:")
+          ? res.data.logo_sekolah
+          : `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
         img.style.display = "block";
         if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
       }

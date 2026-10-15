@@ -1774,6 +1774,16 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
     promptText = `${namaBarang} sebanyak ${volume} ${satuan || "buah"}`;
   }
 
+  // Feedback visual: tombol berputar & info bahwa generate butuh waktu
+  const btn = row.querySelector(".btn-generate-ai");
+  const btnHtmlBackup = btn ? btn.innerHTML : null;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML =
+      `<span style="display:inline-block;font-size:14px;">&#8635;</span> Generating...`;
+  }
+  showToast("Info", "Generate gambar AI sedang diproses, bisa memakan waktu hingga 1 menit...");
+
   try {
     const res = await apiFetch(
       `${API_BASE}/kwitansi/${kwitansiId}/generate-ai-image`,
@@ -1783,18 +1793,35 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
         body: JSON.stringify({
           prompt_items: promptText,
           jenis_foto: "barang",
+          orientation: "landscape", // 4:3 agar proporsional saat dirender di kop/lampiran
         }),
       },
     );
 
-    const result = await res.json();
-    if (result.status !== "success") {
-      throw new Error(result.detail || "Gagal generate AI");
+    let result = null;
+    try {
+      result = await res.json();
+    } catch {
+      throw new Error(
+        `Respons server tidak valid (HTTP ${res.status}). Backend mungkin belum di-restart setelah perubahan kode.`,
+      );
     }
 
+    if (!res.ok || result?.status !== "success") {
+      throw new Error(
+        result?.detail || `Gagal generate AI (HTTP ${res.status})`,
+      );
+    }
+
+    showToast("Sukses!", "Gambar AI berhasil dibuat & dikompres.");
     openUpdateDetailPopup(kwitansiId);
   } catch (err) {
-    showToast("Error!", err.message);
+    showToast("Error!", err.message || "Gagal generate AI");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = btnHtmlBackup;
+    }
   }
 };
 
@@ -1859,6 +1886,7 @@ function openUpdateDetailPopup(kwitansiId) {
                         padding: 0; display: flex; align-items: center; justify-content: center;
                     }
                     .foto-delete-btn:hover { background: rgba(200, 35, 51, 1); }
+                    @keyframes spin { to { transform: rotate(360deg); } }
                 </style>
             `;
 
@@ -1906,7 +1934,7 @@ function openUpdateDetailPopup(kwitansiId) {
                                    data-db-value="${pengeluaran}"
                                    style="${validationStyle}"
                                    readonly>
-                            <button type="button" class="btn btn-secondary" style="padding:4px 6px; font-size:11px;"
+                            <button type="button" class="btn btn-secondary btn-generate-ai" style="padding:4px 6px; font-size:11px;"
                                     title="Generate Foto AI untuk barang ini"
                                     onclick="generateGambarAIItem(${kwitansiId}, ${index})">
                                 ${iconSvg("bot", 15)}
@@ -3257,15 +3285,16 @@ async function saveDataPemda() {
       // Jangan tambahkan Header Content-Type, browser akan mengaturnya otomatis sebagai multipart/form-data
     });
 
-    const res = await response.json();
-    if (res.status === "success") {
+    const res = await response.json().catch(() => null);
+    if (res && res.status === "success") {
       showToast("Berhasil!", res.message);
       loadDataPemda(); // Refresh data setelah simpan
     } else {
-      showToast("Gagal!", "Gagal menyimpan data");
+      const detail = res?.detail || res?.message || "Gagal menyimpan data";
+      showToast("Gagal!", String(detail));
     }
   } catch (err) {
-    showToast("Gagal!", "Terjadi kesalahan koneksi ke server" + err.message);
+    showToast("Gagal!", "Terjadi kesalahan koneksi ke server: " + err.message);
   }
 }
 

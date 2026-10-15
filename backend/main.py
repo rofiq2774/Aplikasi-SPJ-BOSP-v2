@@ -484,6 +484,17 @@ def resolve_logo(path_input: str) -> str:
         if p3.exists():
             return str(p3)
 
+        # 4. Fallback: nama file tersimpan di DB beda ekstensi dengan file di disk
+        #    (mis. DB masih "logo_pemda.png" padahal file sekarang "logo_pemda.jpg")
+        stem = p.name.rsplit(".", 1)[0]
+        for cand in sorted(UPLOAD_LOGO_DIR.glob(f"{stem}.*")):
+            if cand.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
+                logger.warning(
+                    "resolve_logo: '%s' tidak ada, memakai fallback '%s'",
+                    path_input, cand.name,
+                )
+                return str(cand)
+
         logger.error(f"Logo tidak ditemukan: {path_input}")
         return ""
 
@@ -1478,8 +1489,11 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
             p = Path(str(path))
             if not p.exists():
                 return
-            img = ImageReader(str(p))
-            iw, ih = img.getSize()
+            # Baca via PIL dulu: validasi + konversi ke format yang pasti bisa
+            # didekode ReportLab (TIFF/BMP/WEBM/CMYK sering gagal di ImageReader)
+            with Image.open(str(p)) as _im:
+                im = _im.convert("RGBA" if (_im.mode in ("RGBA", "LA", "P")) else "RGB")
+                iw, ih = im.size
             if iw <= 0 or ih <= 0:
                 return
             # Skala proporsional: batasi tinggi DAN lebar sehingga logo apa pun
@@ -1488,8 +1502,11 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
             h, w = ih * scale, iw * scale
             y = y_top - max_logo_h + (max_logo_h - h) / 2.0
             x = (x_left + content_width - w) if right_align else x_left
+            out = io.BytesIO()
+            im.save(out, format="PNG")
+            out.seek(0)
             c.saveState()
-            c.drawImage(img, x, y, width=w, height=h, mask='auto', preserveAspectRatio=True)
+            c.drawImage(ImageReader(out), x, y, width=w, height=h, mask='auto', preserveAspectRatio=True)
             c.restoreState()
         except Exception as e:
             logger.warning("Gagal render logo PDF: %s -> %s", path, e)
@@ -2798,6 +2815,86 @@ def compress_image_bytes(data: bytes, filename_hint: str = "") -> tuple[bytes, s
         return data, os.path.splitext(filename_hint)[1].lower() or ".jpg"
 
 
+# ===============================
+# NORMALISASI LOGO KOP (PEMDA / SATUAN PENDIDIKAN)
+# ===============================
+LOGO_MAX_DIMENSION_PX = 800     # logo kop dirender maks 24x20 mm; >800 px percuma
+LOGO_MAX_FILE_SIZE    = 400_000 # target ukuran file logo +/- 400 KB
+
+
+def normalize_logo_file(data: bytes) -> tuple[bytes, str]:
+    """Normalisasi file logo kop agar tidak bermasalah saat dirender ke PDF/HTML.
+
+    Masalah yang sering terjadi pada logo kop (pemda / satuan pendidikan):
+    - File sangat besar (3000-5000 px) -> render lambat/memakan memori.
+    - Format eksotis (TIFF/BMP/WEBM) -> FPDF/ReportLab gagal decode sehingga
+      logo hilang di kop padahal preview web tampil (browser lebih toleran).
+    - CMYK JPEG -> warna tertukar/terbalik saat dicetak.
+    - GIF/APNG multi-frame atau mode aneh -> decode error.
+
+    Solusi: validasi + resize proporsional (maks LOGO_MAX_DIMENSION_PX) lalu
+    simpan ulang sebagai PNG RGBA (jika ada transparansi, supaya tetap bening
+    di web & mask='auto' ReportLab bekerja benar) atau JPEG RGB (latar penuh).
+    Mengembalikan (bytes_hasil, ekstensi_baru); raise ValueError bila file
+    bukan gambar valid.
+    """
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+    except Exception as e:
+        raise ValueError(f"File bukan gambar yang valid: {e}")
+
+    fmt = (img.format or "?").upper()
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        raise ValueError("Dimensi gambar tidak valid")
+
+    # Deteksi transparansi sebelum konversi
+    has_alpha = (
+        img.mode in ("RGBA", "LA")
+        or (img.mode == "P" and "transparency" in img.info)
+    )
+    if img.mode == "CMYK":
+        img = img.convert("RGB")
+    elif has_alpha:
+        img = img.convert("RGBA")
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    # Resize proporsional bila jauh melebihi area cetak kop
+    largest = max(w, h)
+    if largest > LOGO_MAX_DIMENSION_PX:
+        ratio = LOGO_MAX_DIMENSION_PX / float(largest)
+        img = img.resize((max(1, int(w * ratio)), max(1, int(h * ratio))), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    if has_alpha:
+        # PNG mempertahankan transparansi; buang frame animasi dengan copy statis
+        for _ in range(5):
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            if len(buf.getvalue()) <= LOGO_MAX_FILE_SIZE:
+                break
+            w2, h2 = img.size
+            img = img.resize((max(1, int(w2 * 0.8)), max(1, int(h2 * 0.8))), Image.LANCZOS)
+        out_ext = ".png"
+    else:
+        quality = 90
+        for _ in range(5):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            if len(buf.getvalue()) <= LOGO_MAX_FILE_SIZE:
+                break
+            quality -= 15
+        out_ext = ".jpg"
+
+    logger.info(
+        "[LOGO] dinormalisasi: %s %dx%d -> %s %dx%d (%d KB)",
+        fmt, w, h, out_ext, img.size[0], img.size[1], len(buf.getvalue()) // 1024,
+    )
+    return buf.getvalue(), out_ext
+
+
 # --- 1. SCHEMAS (Pydantic) ---
 class AIImageRequest(BaseModel):
     prompt_items: str  # Contoh: "Laptop Asus ROG" atau "Rapat koordinasi guru"
@@ -2890,21 +2987,58 @@ async def generate_ai_image(
             f"&enhance=false"   # False agar tidak terlalu 'cantik' (biar natural)
         )
 
-        # E. Request ke AI Server (Non-blocking I/O)
-        # Timeout diset 60s karena model Flux kadang butuh waktu render
-        async with httpx.AsyncClient() as client:
-            response = await client.get(ai_url, timeout=60.0)
+        # E. Request ke AI Server (Non-blocking I/O) dengan beberapa percobaan.
+        # Pollinations kadang mengembalikan teks error (bukan gambar) saat
+        # server sibuk/limit tercapai, jadi kita retry 3x: flux -> flux -> default.
+        response = None
+        last_error = ""
+        attempt_urls = [ai_url, ai_url, ai_url.replace("&model=flux", "")]
+        for attempt, url in enumerate(attempt_urls, start=1):
+            try:
+                async with httpx.AsyncClient() as client:
+                    candidate = await client.get(url, timeout=90.0)
+            except httpx.TimeoutException:
+                last_error = "Waktu habis saat menghubungi AI server"
+                logger.warning("AI generate percobaan %d: timeout", attempt)
+                continue
+            except httpx.HTTPError as e:
+                last_error = f"Gagal menghubungi AI server: {e}"
+                logger.warning("AI generate percobaan %d error: %s", attempt, e)
+                continue
 
-        # Fallback jika model Flux gagal/sibuk (biasanya return text error bukan image)
-        if response.status_code != 200 or "image" not in response.headers.get("content-type", ""):
-            # Coba sekali lagi tanpa parameter model (pakai default)
-            print("Flux model busy, retrying with default...")
-            fallback_url = ai_url.replace("&model=flux", "")
-            async with httpx.AsyncClient() as client:
-                response = await client.get(fallback_url, timeout=60.0)
-                
-            if response.status_code != 200:
-                 raise HTTPException(status_code=502, detail="AI Service sedang sibuk, coba lagi nanti.")
+            ctype = candidate.headers.get("content-type", "")
+            looks_like_image = candidate.content[:4].startswith(b"\xff\xd8") or ctype.startswith("image/")
+            if candidate.status_code == 200 and looks_like_image and len(candidate.content) > 3000:
+                response = candidate
+                break
+
+            body_preview = candidate.text[:200] if len(candidate.content) < 2000 else "(respons besar non-gambar)"
+            last_error = (
+                f"status={candidate.status_code}, content-type={ctype or '-'}, body={body_preview!r}"
+            )
+            logger.warning("AI generate percobaan %d bukan gambar valid: %s", attempt, last_error)
+
+        if response is None:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Layanan AI gambar (Pollinations) sedang tidak menghasilkan gambar valid. "
+                    f"Coba lagi beberapa saat. Detail: {last_error}"
+                ),
+            )
+
+        # Validasi hasil benar-benar gambar yang bisa dibaca PIL sebelum disimpan,
+        # agar file korup tidak pernah masuk ke daftar foto (penyebab gambar
+        # "tidak keluar" di preview web maupun di lampiran PDF).
+        try:
+            probe = Image.open(io.BytesIO(response.content))
+            probe.verify()
+        except Exception as e:
+            logger.error("Respons AI bukan gambar valid: %s", e)
+            raise HTTPException(
+                status_code=502,
+                detail="Layanan AI mengembalikan data yang bukan gambar valid, coba lagi.",
+            )
 
         # F. Kompres & sesuaikan dimensi gambar, lalu simpan ke Disk.
         # Tanpa langkah ini, gambar hasil generate sering berukuran besar
@@ -3253,25 +3387,42 @@ async def save_pemda(
         except Exception:
             logger.info("save_pemda: tidak dapat membaca DB_PATH untuk logging")
 
-        # 3. Handle Upload Logo Pemda (simpan ke folder uploads/logos)
+        # 3. Handle Upload Logo Pemda (normalisasi + simpan ke folder uploads/logos)
         if logo_pemda and logo_pemda.filename:
-            ext = os.path.splitext(logo_pemda.filename)[1]
-            filename = f"logo_pemda{ext}"
+            raw = await logo_pemda.read()
+            try:
+                data_out, ext_out = normalize_logo_file(raw)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Logo Pemda tidak valid: {e}")
+            filename = f"logo_pemda{ext_out}"
             file_path = UPLOAD_LOGO_DIR / filename
+            # Bersihkan varian ekstensi lama agar tidak menumpuk/menggantung di DB
+            for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff"):
+                old_path = UPLOAD_LOGO_DIR / f"logo_pemda{old_ext}"
+                if old_path != file_path and old_path.exists():
+                    old_path.unlink()
             with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(logo_pemda.file, buffer)
+                buffer.write(data_out)
             pengaturan.logo_pemda = filename # Simpan nama filenya saja
-            logger.info("save_pemda: logo_pemda disimpan di %s", file_path)
+            logger.info("save_pemda: logo_pemda disimpan di %s (%d KB)", file_path, len(data_out) // 1024)
 
-        # 4. Handle Upload Logo Sekolah (simpan ke folder uploads/logos)
+        # 4. Handle Upload Logo Sekolah (normalisasi + simpan ke folder uploads/logos)
         if logo_sekolah and logo_sekolah.filename:
-            ext = os.path.splitext(logo_sekolah.filename)[1]
-            filename = f"logo_sekolah{ext}"
+            raw = await logo_sekolah.read()
+            try:
+                data_out, ext_out = normalize_logo_file(raw)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Logo Sekolah tidak valid: {e}")
+            filename = f"logo_sekolah{ext_out}"
             file_path = UPLOAD_LOGO_DIR / filename
+            for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff"):
+                old_path = UPLOAD_LOGO_DIR / f"logo_sekolah{old_ext}"
+                if old_path != file_path and old_path.exists():
+                    old_path.unlink()
             with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(logo_sekolah.file, buffer)
+                buffer.write(data_out)
             pengaturan.logo_sekolah = filename
-            logger.info("save_pemda: logo_sekolah disimpan di %s", file_path)
+            logger.info("save_pemda: logo_sekolah disimpan di %s (%d KB)", file_path, len(data_out) // 1024)
 
         await db.commit()
         return {"status": "success", "message": "Data berhasil diperbarui"}
@@ -3296,6 +3447,19 @@ async def get_pemda(
 
         base_url = str(request.base_url).rstrip("/")
 
+        # Cari file logo di disk dengan stem yang sama jika ekstensi di DB tidak
+        # cocok (mencegah preview web kosong saat nama file berganti ekstensi)
+        def _logo_url(nama_db):
+            if not nama_db:
+                return None
+            if (UPLOAD_LOGO_DIR / nama_db).exists():
+                return f"{base_url}/uploads/logos/{nama_db}"
+            stem = nama_db.rsplit(".", 1)[0]
+            for cand in sorted(UPLOAD_LOGO_DIR.glob(f"{stem}.*")):
+                if cand.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
+                    return f"{base_url}/uploads/logos/{cand.name}"
+            return f"{base_url}/uploads/logos/{nama_db}"
+
         return {
             "status": "success",
             "data": {
@@ -3303,14 +3467,8 @@ async def get_pemda(
                 "nama_sekolah": p.nama_sekolah,
                 "alamat_sekolah": p.alamat_sekolah,
                 "tempat_surat": p.tempat_surat or "",
-                "logo_pemda": (
-                    f"{base_url}/uploads/logos/{p.logo_pemda}"
-                    if p.logo_pemda else None
-                ),
-                "logo_sekolah": (
-                    f"{base_url}/uploads/logos/{p.logo_sekolah}"
-                    if p.logo_sekolah else None
-                )
+                "logo_pemda": _logo_url(p.logo_pemda),
+                "logo_sekolah": _logo_url(p.logo_sekolah),
             }
         }
     except Exception as e:
@@ -3423,8 +3581,11 @@ class SPJFPDF(FPDF):
                 p = Path(str(path))
                 if not p.exists():
                     return
-                with Image.open(p) as img:
-                    iw, ih = img.size
+                # Baca via PIL & konversi ke PNG bytes agar format apa pun
+                # (TIFF/BMP/WEBM/CMYK/P-GIF) pasti bisa didekode FPDF.
+                with Image.open(p) as _im:
+                    im = _im.convert("RGBA" if (_im.mode in ("RGBA", "LA", "P")) else "RGB")
+                    iw, ih = im.size
                 if iw <= 0 or ih <= 0:
                     return
                 # Skala proporsional: batasi tinggi DAN lebar agar logo apa pun
@@ -3433,7 +3594,10 @@ class SPJFPDF(FPDF):
                 h, w = ih * scale, iw * scale
                 y = top_y + (max_logo_h - h) / 2.0
                 x = (right_margin - w) if right_align else left_margin
-                self.image(str(p), x=x, y=y, h=h, w=w)
+                out = io.BytesIO()
+                im.save(out, format="PNG")
+                out.seek(0)
+                self.image(out, x=x, y=y, h=h, w=w)
             except Exception as e:
                 logger.warning("Kop: gagal render logo %s -> %s", path, e)
 

@@ -2723,10 +2723,86 @@ async def upload_foto_kwitansi(
 
     return {"status": "success", "message": "Foto berhasil diupload", "uploaded": len(foto_baru)}
 
+
+# ===============================
+# KOMPRESI GAMBAR HASIL GENERATE / UPLOAD
+# ===============================
+FOTO_MAX_DIMENSION_PX = 1200   # dimensi terbesar (lebar/tinggi) disamakan ke sini
+FOTO_MAX_FILE_SIZE    = 350_000  # target ukuran file maks +/- 350 KB
+FOTO_JPEG_QUALITY     = 82
+
+
+def compress_image_bytes(data: bytes, filename_hint: str = "") -> tuple[bytes, str]:
+    """Kompres gambar hasil generate/upload agar ukurannya proporsional dengan
+    area tampilnya di dokumen (kop & lampiran PDF dirender maks ~70 mm tinggi).
+
+    - Gambar yang lebih besar dari FOTO_MAX_DIMENSION_PX di-resize proporsional
+      (LANCZOS) sehingga dimensinya menyesuaikan ruang cetak pada kop/lampiran.
+    - Transparansi (PNG RGBA/P) dibuang dengan menempelkan latar putih.
+    - Disimpan sebagai JPEG; jika masih melebihi FOTO_MAX_FILE_SIZE, kualitas
+      dan dimensi diturunkan bertahap sampai cukup kecil.
+
+    Mengembalikan (bytes_hasil, ekstensi_baru). Jika terjadi error, data asli
+    dikembalikan apa adanya agar proses utama tidak gagal.
+    """
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+
+        # Buang kanal alpha / palette transparan -> latar putih
+        if img.mode in ("RGBA", "LA", "P"):
+            has_alpha = (
+                img.mode in ("RGBA", "LA")
+                or (img.mode == "P" and "transparency" in img.info)
+            )
+            if has_alpha:
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                rgba = img.convert("RGBA")
+                bg.paste(rgba, mask=rgba.split()[-1])
+                img = bg
+            else:
+                img = img.convert("RGB")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Resize proporsional jika dimensi asli jauh lebih besar dari area cetak
+        w, h = img.size
+        largest = max(w, h)
+        if largest > FOTO_MAX_DIMENSION_PX:
+            ratio = FOTO_MAX_DIMENSION_PX / float(largest)
+            img = img.resize(
+                (max(1, int(w * ratio)), max(1, int(h * ratio))),
+                Image.LANCZOS,
+            )
+
+        # Simpan sebagai JPEG; turunkan kualitas lalu dimensi bila masih terlalu besar
+        quality = FOTO_JPEG_QUALITY
+        for _ in range(6):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            out = buf.getvalue()
+            if len(out) <= FOTO_MAX_FILE_SIZE:
+                return out, ".jpg"
+            if quality > 60:
+                quality -= 10
+            else:
+                w2, h2 = img.size
+                img = img.resize(
+                    (max(1, int(w2 * 0.85)), max(1, int(h2 * 0.85))),
+                    Image.LANCZOS,
+                )
+                quality = FOTO_JPEG_QUALITY
+        return out, ".jpg"
+    except Exception as e:
+        logger.warning("Gagal kompres gambar (%s): %s", filename_hint, e)
+        return data, os.path.splitext(filename_hint)[1].lower() or ".jpg"
+
+
 # --- 1. SCHEMAS (Pydantic) ---
 class AIImageRequest(BaseModel):
     prompt_items: str  # Contoh: "Laptop Asus ROG" atau "Rapat koordinasi guru"
     jenis_foto: str    # Valid: "barang", "kegiatan", "sebelum", "proses", "sesudah"
+    orientation: str = "landscape"  # "landscape" (4:3, pas utk lampiran kop) atau "portrait" (3:4)
 
 # --- 2. HELPER: PROMPT ENGINEER ---
 def build_professional_prompt(item: str, jenis: str) -> str:
@@ -2793,11 +2869,21 @@ async def generate_ai_image(
         
         # Seed acak agar gambar selalu unik
         seed = uuid.uuid4().int % 100000
-        
+
+        # Dimensi hasil disesuaikan dengan area tampil foto pada kop/lampiran PDF:
+        # foto di sana dirender dengan TINGGI tetap (70 mm), jadi rasio 4:3
+        # (landscape) membuat lebarnya proporsional dan tidak mendesak/memotong
+        # kolom lain. Resolusi 640x480 juga menghasilkan file yang lebih ringan.
+        orientation = (getattr(request, "orientation", None) or "landscape").lower()
+        if orientation == "portrait":
+            gen_w, gen_h = 480, 640   # 3:4 -> foto lebih tinggi (dokumentasi orang)
+        else:
+            gen_w, gen_h = 640, 480   # 4:3 -> landscape, pas untuk lampiran/kop
+
         # URL Pollinations dengan Model Flux
         ai_url = (
             f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-            f"?width=1024&height=1024"
+            f"?width={gen_w}&height={gen_h}"
             f"&model=flux"      # <--- KUNCI REALISME
             f"&seed={seed}"
             f"&nologo=true"     # Hilangkan watermark
@@ -2820,12 +2906,21 @@ async def generate_ai_image(
             if response.status_code != 200:
                  raise HTTPException(status_code=502, detail="AI Service sedang sibuk, coba lagi nanti.")
 
-        # F. Simpan Gambar ke Disk
-        filename = f"ai_{request.jenis_foto}_{uuid.uuid4().hex[:8]}.jpg"
+        # F. Kompres & sesuaikan dimensi gambar, lalu simpan ke Disk.
+        # Tanpa langkah ini, gambar hasil generate sering berukuran besar
+        # (resolusi & file) sehingga render di kop/lampiran lambat, dokumen
+        # PDF membengkak, dan preview di web sulit terlihat jelas.
+        compressed, ext = compress_image_bytes(response.content, "generate.jpg")
+        filename = f"ai_{request.jenis_foto}_{uuid.uuid4().hex[:8]}{ext}"
         filepath = kw_dir / filename
 
         with open(filepath, "wb") as f:
-            f.write(response.content)
+            f.write(compressed)
+
+        logger.info(
+            "AI image saved: %s (%d bytes -> %d bytes setelah kompres)",
+            filename, len(response.content), len(compressed),
+        )
 
         # G. Update Database (JSON Append)
         # Logika merge foto lama dan baru

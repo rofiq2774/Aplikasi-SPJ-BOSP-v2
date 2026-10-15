@@ -11,6 +11,7 @@ import json
 import uuid
 import openpyxl
 import traceback
+import base64
 from urllib.parse import urlparse
 from PyPDF2 import PdfMerger
 from urllib.parse import unquote
@@ -1467,10 +1468,20 @@ def _to_float(value, default=0.0):
         return default
 
 
-def flatten_logo_to_jpeg(path, quality: int = 95):
-    """Muat file logo dengan Pillow lalu 'flattening' transparansi ke latar
-    putih dan simpan sebagai JPEG solid di io.BytesIO() — format yang paling
-    kompatibel untuk ReportLab maupun FPDF/fpdf2.
+def flatten_image_to_jpeg(source, quality: int = 95):
+    """Muat gambar dari PATH file ATAU bytes mentah/base64 dengan Pillow lalu
+    'flattening' transparansi ke latar putih dan simpan sebagai JPEG solid di
+    io.BytesIO() — format yang paling kompatibel untuk ReportLab maupun
+    FPDF/fpdf2.
+
+    Sumber yang diterima (`source`):
+    - str/Path berisi path file di disk;
+    - bytes mentah isi gambar;
+    - string base64 telanjang ("iVBORw0...") maupun data URI
+      ("data:image/png;base64,...").
+    Ini adalah inti perbaikan metode baru: logo disimpan di DB sebagai BASE64
+    dan kop PDF dirender langsung dari base64 itu — tanpa rantai path/nama
+    file/ekstensi di uploads yang selama ini menjadi sumber bug "logo hilang".
 
     Aturan:
     1. Image.open() -> validasi dimensi.
@@ -1484,7 +1495,52 @@ def flatten_logo_to_jpeg(path, quality: int = 95):
        tidak didukung versi fpdf yang terpasang).
     Mengembalikan tuple (buffer_bytesio, (lebar_px, tinggi_px)).
     """
-    with Image.open(str(path)) as _im:
+    if isinstance(source, (bytes, bytearray)):
+        raw = bytes(source)
+    elif isinstance(source, Path):
+        raw = source.read_bytes()
+    else:
+        s = str(source or "").strip()
+        if not s:
+            raise ValueError("Sumber logo kosong")
+        if s.startswith("data:image/"):
+            # data URI "data:image/png;base64,xxxx" (metode baru: DB berisi base64)
+            b64 = s.split(",", 1)[1]
+            raw = base64.b64decode(b64)
+        elif _looks_like_base64(s):
+            raise ValueError(
+                f"Sumber logo mirip base64 tapi bukan data URI valid: {s[:60]}..."
+            )
+        else:
+            # nilai berupa path / URL file di disk. Base64 telanjang ("iVBORw0...",
+            # tanpa prefix data:) TIDAK mungkin menjadi nama file yang valid —
+            # ia selalu lewat percobaan decode+validasi PIL lebih dulu sebelum
+            # dianggap path, sehingga tidak pernah menabrak batas panjang filename.
+            looks_b64ish = bool(re.fullmatch(r"[A-Za-z0-9+/=\s]{120,}", s))
+            pth_obj = None
+            if not looks_b64ish:
+                pth = urlparse(s).path if s.startswith(("http://", "https://")) else s
+                try:
+                    pth_obj = Path(pth)
+                except Exception:
+                    pth_obj = None
+                if pth_obj is not None and not pth_obj.exists():
+                    alt = resolve_logo(s)
+                    pth_obj = Path(alt) if alt else None
+            if pth_obj is not None and pth_obj.exists():
+                raw = pth_obj.read_bytes()
+            else:
+                # percobaan: base64 telanjang tanpa prefix data:
+                try:
+                    cand = base64.b64decode(s + "=" * (-len(s) % 4), validate=False)
+                except Exception:
+                    cand = b""
+                if len(cand) > 512:
+                    raw = cand
+                else:
+                    raise ValueError(f"Sumber logo tidak dikenali (bukan path/base64): {s[:60]}...")
+
+    with Image.open(io.BytesIO(raw)) as _im:
         im = _im
         has_alpha = (
             im.mode in ("RGBA", "LA")
@@ -1506,6 +1562,206 @@ def flatten_logo_to_jpeg(path, quality: int = 95):
     return out, size
 
 
+# Nama lama tetap tersedia (compat) — sekarang hanya delegasi ke helper umum.
+def flatten_logo_to_jpeg(path, quality: int = 95):
+    return flatten_image_to_jpeg(path, quality=quality)
+
+
+def _looks_like_base64(s: str) -> bool:
+    """True bila string adalah DATA URI gambar yang valid ("data:image/...;base64,...").
+
+    Catatan desain: deteksi TIDAK lagi memakai regex heuristik panjang-karakter
+    pada base64 telanjang. Regex longgar dulu salah mengenali spasi dalam path
+    Windows (mis. "D:\\SERVER WEBSITE\\...\\logo.png") sebagai base64, sehingga
+    nilai terlewat dari disk dan logo tidak muncul di kop. Kini hanya data URI
+    eksplisit yang dianggap base64; base64 telanjang tetap didukung oleh
+    flatten_image_to_jpeg melalui decode+validasi PIL.
+    """
+    s = (s or "").strip()
+    if not s.startswith("data:image/"):
+        return False
+    _, _, payload = s.partition(",")
+    return len(payload) >= 100 and bool(re.fullmatch(r"[A-Za-z0-9+/=\s]+", payload))
+
+
+# Kolom DB tempat base64 logo disimpan ( utk migrasi otomatis warisan file ).
+_LOGO_COL_BY_STEM = {
+    "pemda": "logo_pemda",
+    "logo_pemda": "logo_pemda",
+    "sekolah": "logo_sekolah",
+    "satdik": "logo_sekolah",
+    "logo_sekolah": "logo_sekolah",
+}
+
+
+def _file_to_datauri(path) -> Optional[str]:
+    """Baca file gambar -> normalisasi (resize, JPEG kompak) -> kembalikan string
+    data URI base64. None bila gagal/tidak valid."""
+    try:
+        raw = Path(path).read_bytes()
+        if not raw:
+            return None
+        data_out, _ext = normalize_logo_file(raw)
+        mime = "image/png" if _ext == ".png" else "image/jpeg"
+        return f"data:{mime};base64," + base64.b64encode(data_out).decode("ascii")
+    except Exception as e:
+        logger.warning("_file_to_datauri: gagal konversi %s -> %s", str(path)[:80], e)
+        return None
+
+
+def _raw_to_storage_b64(raw: bytes) -> str:
+    """Bytes gambar mentah -> data URI base64 SIAP SIMPAN ke DB untuk kop PDF.
+
+    PENTING: transparansi SELALU di-flatten ke latar putih dan disimpan sebagai
+    JPEG RGB — bukan PNG RGBA. Alasannya: kolom DB kini menjadi satu-satunya
+    sumber logo yang dirender langsung oleh FPDF/ReportLab; PNG RGBA/LA/P-transparan
+    yang dikirim mentah ke library PDF adalah penyebab klasik "logo tidak muncul
+    / kotak hitam". Preview web juga tetap tampil karena JPEG solid valid.
+    """
+    with Image.open(io.BytesIO(raw)) as im:
+        im.load()
+        has_alpha = (
+            im.mode in ("RGBA", "LA")
+            or (im.mode == "P" and "transparency" in im.info)
+            or (im.mode == "1" and "transparency" in im.info)
+        )
+        w, h = im.size
+        if max(w, h) > LOGO_MAX_DIMENSION_PX:
+            ratio = LOGO_MAX_DIMENSION_PX / float(max(w, h))
+            im = im.resize((max(1, int(w * ratio)), max(1, int(h * ratio))), Image.LANCZOS)
+        if im.mode == "CMYK":
+            im = im.convert("RGB")
+        if has_alpha:
+            rgba = im.convert("RGBA")
+            bg = Image.new("RGB", rgba.size, (255, 255, 255))
+            bg.paste(rgba, mask=rgba.split()[-1])  # masking alpha -> latar putih
+            flat = bg
+        else:
+            flat = im.convert("RGB")
+        quality = 92
+        buf = io.BytesIO()
+        for _ in range(5):
+            buf = io.BytesIO()
+            flat.save(buf, format="JPEG", quality=quality, optimize=True)
+            if buf.tell() <= LOGO_MAX_FILE_SIZE or quality <= 55:
+                break
+            quality -= 12
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+async def _persist_logo_b64(col: str, value: str):
+    """Simpan data URI base64 ke kolom `col` tabel pengaturan (row id=1).
+    Best-effort: pakai koneksi engine baru agar aman dipanggil dari dalam
+    request/session yang sedang berjalan maupun dari konteks sinkron."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from sqlalchemy import text as sql_text
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        await session.execute(
+            sql_text(f"UPDATE pengaturan SET {col} = :v WHERE id = 1"), {"v": value}
+        )
+        await session.execute(
+            sql_text(f"UPDATE pengaturan SET {col} = :v WHERE id = (SELECT MIN(id) FROM pengaturan)")
+        )
+        await session.commit()
+
+
+def _schedule_migrate_logo_b64(col: str, value: str):
+    """Jadwalkan migrasi kolom logo ke base64 tanpa memblokir render.
+    - Bila loop asyncio aktif (khas FastAPI): buat task.
+    - Bila tidak (jalur sinkron/test): jalankan asyncio.run sendiri."""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        t = loop.create_task(_persist_logo_b64(col, value))
+
+        def _log_fail(task):
+            exc = task.exception()
+            if exc:
+                logger.warning("Migrasi base64 logo '%s' gagal: %s", col, exc)
+
+        t.add_done_callback(_log_fail)
+    except RuntimeError:
+        try:
+            asyncio.run(_persist_logo_b64(col, value))
+            logger.info("Migrasi base64 logo '%s' selesai (jalur sinkron)", col)
+        except Exception as e:
+            logger.warning("Migrasi base64 logo '%s' gagal: %s", col, e)
+
+
+def load_logo_source(nama_db: str, *, col: str = "") -> str:
+    """SATU sumber kebenaran logo kop untuk SEMUA renderer (FPDF, ReportLab,
+    preview web get-pemda). Hasil selalu berupa string yang siap diberikan ke
+    flatten_image_to_jpeg():
+
+    - METODE BARU: kolom `logo_pemda`/`logo_sekolah` berisi BASE64
+      (data URI "data:image/jpeg;base64,..." atau base64 telanjang)
+      -> dikembalikan apa adanya; dirender langsung dari memori TANPA disk.
+    - WARISAN (nama file / URL / path): file dibaca dari disk lalu
+      DIKONVERSI KE BASE64 + dimigrasikan otomatis ke kolom DB (sekali jalan),
+      sehingga dokumen berikutnya tidak lagi bergantung pada rantai
+      path/nama file/ekstensi yang menjadi akar bug "logo hilang".
+    - BILA KOSONG ATAU FILE WARISAN TIDAK ADA: fallback ke file baku
+      logo_pemda.* / logo_sekolah.* di uploads/logos, dikonversi ke base64
+      (dan ikut dimigrasikan) — ini menyelamatkan data lama yang kolomnya
+      tereset kosong padahal filenya masih ada di disk.
+    """
+    s = (nama_db or "").strip()
+
+    def _col_from_name(name: str) -> str:
+        low = (name or "").lower()
+        for key, c in _LOGO_COL_BY_STEM.items():
+            if key in low:
+                return c
+        return ""
+
+    target_col = col or _col_from_name(s) or _col_from_name(
+        "pemda" if "pemda" in (col or s).lower() else "sekolah"
+    )
+
+    # 1) Base64 / data URI (metode baru) — tidak menyentuh disk sama sekali.
+    if s.startswith("data:image/") or _looks_like_base64(s):
+        return s
+    if s and _looks_like_base64(s.split(",", 1)[-1]) and "," in s and s.split(",", 1)[0].startswith("data:"):
+        return s
+
+    # 2) Warisan: nama file / URL / path -> baca dari disk, konversi ke base64.
+    migrated_value = None
+    p = resolve_logo(s) if s else ""
+    if p:
+        try:
+            raw = Path(p).read_bytes()
+            if raw:
+                # Konversi ke base64 SIAP-PDF (flatten alpha -> JPEG RGB solid),
+                # lalu kolom DB dimigrasikan otomatis sehingga render berikutnya
+                # murni dari memori tanpa menyentuh disk.
+                migrated_value = _raw_to_storage_b64(raw)
+        except Exception as e:
+            logger.warning("load_logo_source: gagal baca %s -> %s", p, e)
+
+    # 3) Fallback file baku bila DB kosong / file warisan tidak ditemukan.
+    if migrated_value is None:
+        canonical = "logo_pemda" if target_col == "logo_pemda" else "logo_sekolah"
+        for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"):
+            cand = UPLOAD_LOGO_DIR / f"{canonical}{ext}"
+            if cand.exists():
+                migrated_value = _file_to_datauri(cand)
+                if migrated_value:
+                    logger.info(
+                        "load_logo_source: DB '%s' kosong/tak ditemukan, fallback file baku %s",
+                        target_col or "?", cand.name,
+                    )
+                break
+
+    if migrated_value:
+        _schedule_migrate_logo_b64(target_col or "logo_sekolah", migrated_value)
+        return migrated_value
+
+    # 4) Benar-benar tidak ada sumber — kembalikan path warisan bila ada
+    #    (renderer akan log warning), kalau tidak ada pun -> string kosong.
+    return p or ""
+
+
 def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2, baris3, x_left, y_top, content_width):
     """
     Menggambar kop surat rapi pada canvas ReportLab:
@@ -1521,8 +1777,25 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
     max_logo_h = 20 * mm
     max_logo_w = 24 * mm
 
-    def _logo_ok(path):
-        return bool(path) and Path(str(path)).exists()
+    def _logo_ok(src):
+        # Sumber bisa berupa data URI base64 (langsung siap render dari memori),
+        # base64 telanjang, atau path file warisan.
+        if not src:
+            return False
+        s = str(src)
+        if s.startswith("data:image/"):
+            return True
+        if _looks_like_base64(s):
+            return True
+        try:
+            cand = base64.b64decode(s + "=" * (-len(s) % 4), validate=False)
+            if len(cand) > 512:
+                with Image.open(io.BytesIO(cand)) as _t:
+                    _t.verify()
+                return True
+        except Exception:
+            pass
+        return Path(s).exists()
 
     has_pemda = _logo_ok(logo_pemda_path)
     has_sekolah = _logo_ok(logo_sekolah_path)
@@ -1535,18 +1808,16 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
     text_area_w = max(text_x_end - text_x_start, 3 * cm)
     cx_text = (text_x_start + text_x_end) / 2.0  # rata tengah antar logo
 
-    def _draw_logo(path, right_align=False):
-        if not path:
+    def _draw_logo(src, right_align=False):
+        if not src:
             return
         try:
-            p = Path(str(path))
-            if not p.exists():
-                logger.warning("KOP (ReportLab): file logo tidak ada di disk: %s", p)
-                return
+            label = "base64" if str(src).startswith("data:") or _looks_like_base64(str(src)) else Path(str(src)).name
+            # Sumber base64/path keduanya diterima flatten_image_to_jpeg.
             # Flattening transparansi -> JPEG solid RGB (kompatibel ReportLab).
             # PNG RGBA/LA/P-transparan yang dilempar mentah ke ImageReader
             # dengan mask='auto' sering gagal/gambar hilang — tidak dipakai lagi.
-            out, (iw, ih) = flatten_logo_to_jpeg(p)
+            out, (iw, ih) = flatten_image_to_jpeg(src)
             if iw <= 0 or ih <= 0:
                 return
             # Skala proporsional: batasi tinggi DAN lebar sehingga logo apa pun
@@ -1558,9 +1829,9 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
             c.saveState()
             c.drawImage(ImageReader(out), x, y, width=w, height=h, preserveAspectRatio=True)
             c.restoreState()
-            logger.info("KOP (ReportLab): logo OK %s (%dx%d px -> %.1fx%.1f pt)", p.name, iw, ih, w, h)
+            logger.info("KOP (ReportLab): logo OK %s (%dx%d px -> %.1fx%.1f pt)", label, iw, ih, w, h)
         except Exception as e:
-            logger.warning("Gagal render logo PDF: %s -> %s", path, e)
+            logger.warning("Gagal render logo PDF: %s -> %s", str(src)[:60], e)
 
     _draw_logo(logo_pemda_path, right_align=False)
     _draw_logo(logo_sekolah_path, right_align=True)
@@ -3438,51 +3709,48 @@ async def save_pemda(
         except Exception:
             logger.info("save_pemda: tidak dapat membaca DB_PATH untuk logging")
 
-        # 3. Handle Upload Logo Pemda (normalisasi + simpan ke folder uploads/logos)
+        # 3. Handle Upload Logo Pemda -> SIMPAN SEBAGAI BASE64 DI DB (metode baru).
+        #    Base64 disimpan sebagai JPEG RGB terkompres: transparansi PNG sudah
+        #    di-flatten ke latar putih, dimensi dibatasi maks LOGO_MAX_DIMENSION_PX,
+        #    ukuran file dijaga <= LOGO_MAX_FILE_SIZE agar kolom DB tetap ringan.
+        #    Rantai path/nama file/ekstensi di uploads dipangkas total — inilah
+        #    akar bug "logo tidak muncul di kop". File di disk hanya artefak lama.
         if logo_pemda and logo_pemda.filename:
             raw = await logo_pemda.read()
             try:
-                data_out, ext_out = normalize_logo_file(raw)
+                # VALIDASI awal (raise ValueError bila bukan gambar) + normalisasi
+                normalize_logo_file(raw)
+                # METODE BASE64: simpan sebagai JPEG RGB solid (transparansi sudah
+                # di-flatten ke putih) agar selalu bisa dirender FPDF/ReportLab.
+                pengaturan.logo_pemda = _raw_to_storage_b64(raw)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Logo Pemda tidak valid: {e}")
-            filename = f"logo_pemda{ext_out}"
-            file_path = UPLOAD_LOGO_DIR / filename
-            # Bersihkan varian ekstensi lama agar tidak menumpuk/menggantung di DB
-            for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff"):
-                old_path = UPLOAD_LOGO_DIR / f"logo_pemda{old_ext}"
-                if old_path != file_path and old_path.exists():
-                    old_path.unlink()
-            with open(file_path, "wb") as buffer:
-                buffer.write(data_out)
-            pengaturan.logo_pemda = filename # Simpan nama filenya saja
-            logger.info("save_pemda: logo_pemda disimpan di %s (%d KB)", file_path, len(data_out) // 1024)
+            logger.info("save_pemda: logo_pemda disimpan sbg BASE64 (%d KB b64)", len(pengaturan.logo_pemda) // 1024)
 
-        # 4. Handle Upload Logo Sekolah (normalisasi + simpan ke folder uploads/logos)
+        # 4. Handle Upload Logo Sekolah -> sama: BASE64 di DB
         if logo_sekolah and logo_sekolah.filename:
             raw = await logo_sekolah.read()
             try:
-                data_out, ext_out = normalize_logo_file(raw)
+                normalize_logo_file(raw)
+                # sama seperti logo pemda: BASE64 JPEG RGB solid siap render PDF
+                pengaturan.logo_sekolah = _raw_to_storage_b64(raw)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=f"Logo Sekolah tidak valid: {e}")
-            filename = f"logo_sekolah{ext_out}"
-            file_path = UPLOAD_LOGO_DIR / filename
-            for old_ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff"):
-                old_path = UPLOAD_LOGO_DIR / f"logo_sekolah{old_ext}"
-                if old_path != file_path and old_path.exists():
-                    old_path.unlink()
-            with open(file_path, "wb") as buffer:
-                buffer.write(data_out)
-            pengaturan.logo_sekolah = filename
-            logger.info("save_pemda: logo_sekolah disimpan di %s (%d KB)", file_path, len(data_out) // 1024)
+            logger.info("save_pemda: logo_sekolah disimpan sbg BASE64 (%d KB b64)", len(pengaturan.logo_sekolah) // 1024)
 
         await db.commit()
-        # Diagnostika: pastikan file logo benar-benar ada di disk & kolom DB terisi.
-        # Jika salah satu kosong, kop PDF/preview tidak akan menampilkan logo.
+        # Diagnostika: pastikan kolom DB benar-benar terisi base64.
+        # Jika kosong, kop PDF/preview tidak akan menampilkan logo.
         try:
-            _files = sorted(f.name for f in UPLOAD_LOGO_DIR.iterdir()) if UPLOAD_LOGO_DIR.exists() else []
+            def _ringkas(v):
+                v = (v or "")
+                if v.startswith("data:image/") or _looks_like_base64(v) or re.fullmatch(r"[A-Za-z0-9+/=\s]{120,}", v):
+                    return f"BASE64({len(v)//1024} KB)"
+                return repr(v[:40])
             logger.info(
-                "save_pemda selesai | DB: logo_pemda='%s' logo_sekolah='%s' | isi uploads/logos: %s",
-                getattr(pengaturan, "logo_pemda", ""), getattr(pengaturan, "logo_sekolah", ""), _files,
+                "save_pemda selesai | DB: logo_pemda=%s logo_sekolah=%s",
+                _ringkas(getattr(pengaturan, "logo_pemda", "")),
+                _ringkas(getattr(pengaturan, "logo_sekolah", "")),
             )
             if not (getattr(pengaturan, "logo_pemda", "") or getattr(pengaturan, "logo_sekolah", "")):
                 logger.warning("save_pemda: TIDAK ADA logo yang tersimpan — simpan ulang file logo pada form Kop Surat.")
@@ -3510,19 +3778,24 @@ async def get_pemda(
 
         base_url = str(request.base_url).rstrip("/")
 
-        # Bangun URL logo lewat resolve_logo (satu sumber kebenaran yang sama
-        # dengan render PDF): menangani ekstensi berganti, nama UUID/URL lama,
-        # dan fallback ke file baku logo_pemda.*/logo_sekolah.* di disk.
-        def _logo_url(nama_db, prefix_baku):
-            # 1) nilai tersimpan di DB (dengan semua fallback di resolve_logo)
-            abs_path = resolve_logo(nama_db or "")
-            if abs_path:
-                return f"{base_url}/uploads/logos/{Path(abs_path).name}"
-            # 2) DB kosong / file hilang — pakai file baku di disk jika ada
-            for cand in sorted(UPLOAD_LOGO_DIR.glob(f"{prefix_baku}.*")):
-                if cand.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
-                    return f"{base_url}/uploads/logos/{cand.name}"
-            return None
+        # METODE BARU: logo dikembalikan sebagai data URI base64 dari DB, sehingga
+        # preview web TIDAK lagi bergantung pada serve file uploads/logos (rantai
+        # path/ekstensi yang selama ini bikin logo hilang). Untuk data lama berupa
+        # nama file/URL, load_logo_source membaca file & mengonversi ke base64
+        # otomatis (plus migrasi kolom DB), dan fallback URL statis bila file pun
+        # tidak ditemukan.
+        def _logo_datauri(nama_db, col):
+            src = load_logo_source(nama_db or "", col=col)
+            if not src:
+                return None
+            s = str(src)
+            if s.startswith("data:image/"):
+                return s
+            b64 = s.split(",", 1)[1] if s.startswith("data:") else s
+            if _looks_like_base64(f"data:image/jpeg;base64,{b64}"):
+                return f"data:image/jpeg;base64,{b64}"
+            # masih berupa path -> sajikan lewat URL statis sebagai fallback
+            return f"{base_url}/uploads/logos/{Path(s).name}"
 
         return {
             "status": "success",
@@ -3531,8 +3804,8 @@ async def get_pemda(
                 "nama_sekolah": p.nama_sekolah,
                 "alamat_sekolah": p.alamat_sekolah,
                 "tempat_surat": p.tempat_surat or "",
-                "logo_pemda": _logo_url(p.logo_pemda, "logo_pemda"),
-                "logo_sekolah": _logo_url(p.logo_sekolah, "logo_sekolah"),
+                "logo_pemda": _logo_datauri(p.logo_pemda, "logo_pemda"),
+                "logo_sekolah": _logo_datauri(p.logo_sekolah, "logo_sekolah"),
             }
         }
     except Exception as e:
@@ -3621,11 +3894,13 @@ class SPJFPDF(FPDF):
         if not d:
             return
         # Diagnostika: catat status logo setiap render kop agar mudah melacak
-        # "logo tidak muncul" (path kosong vs file hilang vs gagal decode)
+        # "logo tidak muncul" (kosong di DB vs gagal decode). Sumber kini base64.
         for _key in ("logo_pemda", "logo_sekolah"):
             _val = d.get(_key)
             if not _val:
                 logger.warning("KOP: %s kosong di DB (belum disimpan / resolve gagal)", _key)
+            elif str(_val).startswith("data:") or _looks_like_base64(str(_val)) or re.fullmatch(r"[A-Za-z0-9+/=\s]{120,}", str(_val)):
+                pass  # base64 — langsung dirender dari memori, tidak cek disk
             elif not Path(str(_val)).exists():
                 logger.warning("KOP: file %s tidak ada di disk: %s", _key, _val)
         top_y = 12
@@ -3635,8 +3910,23 @@ class SPJFPDF(FPDF):
         right_margin = self.w - self.r_margin
         max_logo_w = 24
 
-        def logo_exists(path):
-            return bool(path) and Path(str(path)).exists()
+        def logo_exists(src):
+            # Sumber bisa data URI base64 (siap render dari memori),
+            # base64 telanjang, atau path file warisan.
+            if not src:
+                return False
+            s = str(src)
+            if s.startswith("data:image/") or _looks_like_base64(s):
+                return True
+            try:
+                cand = base64.b64decode(s + "=" * (-len(s) % 4), validate=False)
+                if len(cand) > 512:
+                    with Image.open(io.BytesIO(cand)) as _t:
+                        _t.verify()
+                    return True
+            except Exception:
+                pass
+            return Path(s).exists()
 
         # Area teks = ruang di antara kedua logo (simetris, khas kop resmi)
         pad_l = (max_logo_w + 4) if logo_exists(d.get('logo_pemda')) else 0
@@ -3646,19 +3936,18 @@ class SPJFPDF(FPDF):
         cx = (x_text_start + x_text_end) / 2.0
         text_w = max(x_text_end - x_text_start, 30)
 
-        def place_logo(path, right_align=False):
-            if not path:
+        def place_logo(src, right_align=False):
+            if not src:
                 return
             try:
-                p = Path(str(path))
-                if not p.exists():
-                    logger.warning("KOP (FPDF): file logo tidak ada di disk: %s", p)
-                    return
+                label = "base64" if str(src).startswith("data:") or _looks_like_base64(str(src)) else Path(str(src)).name
+                # METODE BARU: sumber logo adalah BASE64 dari DB (hasil load_logo_source),
+                # dirender langsung dari memori — tanpa rantai path/nama file/ekstensi.
                 # Flattening transparansi -> JPEG solid RGB via helper bersama.
                 # PNG RGBA/P-transparan yang dikirim mentah ke fpdf2 bisa gagal
                 # decode / tampil hitam; JPEG solid selalu aman. Buffer sudah
                 # diberi nama palsu "logo.jpg" untuk deteksi ekstensi FPDF.
-                out, (iw, ih) = flatten_logo_to_jpeg(p)
+                out, (iw, ih) = flatten_image_to_jpeg(src)
                 if iw <= 0 or ih <= 0:
                     return
                 # Skala proporsional: batasi tinggi DAN lebar agar logo apa pun
@@ -3671,9 +3960,9 @@ class SPJFPDF(FPDF):
                 # `format=` (TypeError). Deteksi tipe gambar diandalkan dari
                 # nama buffer palsu "logo.jpg" hasil flatten_logo_to_jpeg().
                 self.image(out, x=x, y=y, h=h, w=w)
-                logger.info("KOP (FPDF): logo OK %s (%dx%d px -> %.1fx%.1f mm)", p.name, iw, ih, w, h)
+                logger.info("KOP (FPDF): logo OK %s (%dx%d px -> %.1fx%.1f mm)", label, iw, ih, w, h)
             except Exception as e:
-                logger.warning("Kop: gagal render logo %s -> %s", path, e)
+                logger.warning("Kop: gagal render logo %s -> %s", str(src)[:60], e)
 
         place_logo(d.get('logo_pemda'), right_align=False)
         place_logo(d.get('logo_sekolah'), right_align=True)
@@ -3750,8 +4039,8 @@ def generate_bast_pdf(kwitansi, pengaturan, transaksi_list):
         "nip_kepala_sekolah": pengaturan.nip_kepala_sekolah or "",
         "nama_bendahara": pengaturan.nama_bendahara or "",
         "nip_bendahara": pengaturan.nip_bendahara or "",
-        "logo_pemda": resolve_logo(pengaturan.logo_pemda),
-        "logo_sekolah": resolve_logo(pengaturan.logo_sekolah),
+        "logo_pemda": load_logo_source(pengaturan.logo_pemda, col="logo_pemda"),
+        "logo_sekolah": load_logo_source(pengaturan.logo_sekolah, col="logo_sekolah"),
         "nomor_surat": kwitansi.no_bast or "-",
         "hari_ini": tgl_bast.get("hari", ""),
         "tgl_terbilang": tgl_bast.get("terbilang_tanggal", ""),
@@ -4162,8 +4451,8 @@ def generate_rab_pdf(pengaturan, kegiatan, transaksi_list, thp_label, tahun):
         'baris1': (getattr(pengaturan, 'nama_pemda', '') or '').upper(),
         'baris2': (pengaturan.nama_sekolah or '').upper(),
         'alamat': pengaturan.alamat_sekolah or '',
-        'logo_pemda': resolve_logo(getattr(pengaturan, 'logo_pemda', '') or ''),
-        'logo_sekolah': resolve_logo(getattr(pengaturan, 'logo_sekolah', '') or ''),
+        'logo_pemda': load_logo_source(getattr(pengaturan, 'logo_pemda', '') or '', col="logo_pemda"),
+        'logo_sekolah': load_logo_source(getattr(pengaturan, 'logo_sekolah', '') or '', col="logo_sekolah"),
     }
     pdf = SPJFPDF(kop_data=rab_kop, orientation='L', unit='mm', format=(215, 330))
     pdf.set_margins(15, 15, 15)

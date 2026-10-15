@@ -495,6 +495,20 @@ def resolve_logo(path_input: str) -> str:
                 )
                 return str(cand)
 
+        # 5. Fallback kanonik: kolom DB kosong / nama lama tidak lagi ada di disk.
+        #    Logo kop disimpan dengan nama baku logo_pemda.* / logo_sekolah.*,
+        #    jadi pakai saja file baku itu selama wujud di disk. Ini menyelamatkan
+        #    dokumen lama yang menyimpan URL/UUID absolut ke uploads/logos sehingga
+        #    logos tetap muncul walau pengaturan sudah diganti/diubah.
+        for prefix in (f"logo_{stem}", "logo_pemda", "logo_sekolah"):
+            for cand in sorted(UPLOAD_LOGO_DIR.glob(f"{prefix}.*")):
+                if cand.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
+                    logger.warning(
+                        "resolve_logo: '%s' tidak ditemukan, memakai logo baku '%s'",
+                        path_input, cand.name,
+                    )
+                    return str(cand)
+
         logger.error(f"Logo tidak ditemukan: {path_input}")
         return ""
 
@@ -3425,6 +3439,18 @@ async def save_pemda(
             logger.info("save_pemda: logo_sekolah disimpan di %s (%d KB)", file_path, len(data_out) // 1024)
 
         await db.commit()
+        # Diagnostika: pastikan file logo benar-benar ada di disk & kolom DB terisi.
+        # Jika salah satu kosong, kop PDF/preview tidak akan menampilkan logo.
+        try:
+            _files = sorted(f.name for f in UPLOAD_LOGO_DIR.iterdir()) if UPLOAD_LOGO_DIR.exists() else []
+            logger.info(
+                "save_pemda selesai | DB: logo_pemda='%s' logo_sekolah='%s' | isi uploads/logos: %s",
+                getattr(pengaturan, "logo_pemda", ""), getattr(pengaturan, "logo_sekolah", ""), _files,
+            )
+            if not (getattr(pengaturan, "logo_pemda", "") or getattr(pengaturan, "logo_sekolah", "")):
+                logger.warning("save_pemda: TIDAK ADA logo yang tersimpan — simpan ulang file logo pada form Kop Surat.")
+        except Exception as _e:
+            logger.warning("save_pemda: diagnostika logo gagal: %s", _e)
         return {"status": "success", "message": "Data berhasil diperbarui"}
 
     except Exception as e:
@@ -3447,18 +3473,19 @@ async def get_pemda(
 
         base_url = str(request.base_url).rstrip("/")
 
-        # Cari file logo di disk dengan stem yang sama jika ekstensi di DB tidak
-        # cocok (mencegah preview web kosong saat nama file berganti ekstensi)
-        def _logo_url(nama_db):
-            if not nama_db:
-                return None
-            if (UPLOAD_LOGO_DIR / nama_db).exists():
-                return f"{base_url}/uploads/logos/{nama_db}"
-            stem = nama_db.rsplit(".", 1)[0]
-            for cand in sorted(UPLOAD_LOGO_DIR.glob(f"{stem}.*")):
+        # Bangun URL logo lewat resolve_logo (satu sumber kebenaran yang sama
+        # dengan render PDF): menangani ekstensi berganti, nama UUID/URL lama,
+        # dan fallback ke file baku logo_pemda.*/logo_sekolah.* di disk.
+        def _logo_url(nama_db, prefix_baku):
+            # 1) nilai tersimpan di DB (dengan semua fallback di resolve_logo)
+            abs_path = resolve_logo(nama_db or "")
+            if abs_path:
+                return f"{base_url}/uploads/logos/{Path(abs_path).name}"
+            # 2) DB kosong / file hilang — pakai file baku di disk jika ada
+            for cand in sorted(UPLOAD_LOGO_DIR.glob(f"{prefix_baku}.*")):
                 if cand.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
                     return f"{base_url}/uploads/logos/{cand.name}"
-            return f"{base_url}/uploads/logos/{nama_db}"
+            return None
 
         return {
             "status": "success",
@@ -3467,8 +3494,8 @@ async def get_pemda(
                 "nama_sekolah": p.nama_sekolah,
                 "alamat_sekolah": p.alamat_sekolah,
                 "tempat_surat": p.tempat_surat or "",
-                "logo_pemda": _logo_url(p.logo_pemda),
-                "logo_sekolah": _logo_url(p.logo_sekolah),
+                "logo_pemda": _logo_url(p.logo_pemda, "logo_pemda"),
+                "logo_sekolah": _logo_url(p.logo_sekolah, "logo_sekolah"),
             }
         }
     except Exception as e:
@@ -3556,6 +3583,14 @@ class SPJFPDF(FPDF):
         d = self.kop_data
         if not d:
             return
+        # Diagnostika: catat status logo setiap render kop agar mudah melacak
+        # "logo tidak muncul" (path kosong vs file hilang vs gagal decode)
+        for _key in ("logo_pemda", "logo_sekolah"):
+            _val = d.get(_key)
+            if not _val:
+                logger.warning("KOP: %s kosong di DB (belum disimpan / resolve gagal)", _key)
+            elif not Path(str(_val)).exists():
+                logger.warning("KOP: file %s tidak ada di disk: %s", _key, _val)
         top_y = 12
         max_logo_h = 20
         # Margin kop menyesuaikan orientasi halaman (portrait/landscape)

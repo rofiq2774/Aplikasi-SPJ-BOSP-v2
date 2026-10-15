@@ -1467,6 +1467,45 @@ def _to_float(value, default=0.0):
         return default
 
 
+def flatten_logo_to_jpeg(path, quality: int = 95):
+    """Muat file logo dengan Pillow lalu 'flattening' transparansi ke latar
+    putih dan simpan sebagai JPEG solid di io.BytesIO() — format yang paling
+    kompatibel untuk ReportLab maupun FPDF/fpdf2.
+
+    Aturan:
+    1. Image.open() -> validasi dimensi.
+    2. Deteksi alpha channel: RGBA, LA, P palet-transparan, atau 1-bit mask.
+    3. Bila ber-alpha: tempel (paste) dengan masking alpha ke latar RGB putih.
+       (Ini memperbaiki bug PNG transparan gagal render / tampil kotak hitam.)
+    4. Bila tidak ber-alpha: convert langsung ke RGB.
+    5. Simpan ke BytesIO format JPEG quality=95.
+    6. Buffer diberi nama palsu "logo.jpg" agar fpdf2 bisa mendeteksi
+       ekstensi/format saat deteksi MIME (fallback bila parameter format
+       tidak didukung versi fpdf yang terpasang).
+    Mengembalikan tuple (buffer_bytesio, (lebar_px, tinggi_px)).
+    """
+    with Image.open(str(path)) as _im:
+        im = _im
+        has_alpha = (
+            im.mode in ("RGBA", "LA")
+            or (im.mode == "P" and "transparency" in im.info)
+            or (im.mode == "1" and "transparency" in im.info)
+        )
+        if has_alpha:
+            rgba = im.convert("RGBA")
+            bg = Image.new("RGB", rgba.size, (255, 255, 255))
+            bg.paste(rgba, mask=rgba.split()[-1])  # masking alpha
+            flat = bg
+        else:
+            flat = im.convert("RGB")
+        size = flat.size
+        out = io.BytesIO()
+        flat.save(out, format="JPEG", quality=quality)
+    out.seek(0)
+    out.name = "logo.jpg"  # nama file palsu utk deteksi ekstensi FPDF
+    return out, size
+
+
 def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2, baris3, x_left, y_top, content_width):
     """
     Menggambar kop surat rapi pada canvas ReportLab:
@@ -1502,12 +1541,12 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
         try:
             p = Path(str(path))
             if not p.exists():
+                logger.warning("KOP (ReportLab): file logo tidak ada di disk: %s", p)
                 return
-            # Baca via PIL dulu: validasi + konversi ke format yang pasti bisa
-            # didekode ReportLab (TIFF/BMP/WEBM/CMYK sering gagal di ImageReader)
-            with Image.open(str(p)) as _im:
-                im = _im.convert("RGBA" if (_im.mode in ("RGBA", "LA", "P")) else "RGB")
-                iw, ih = im.size
+            # Flattening transparansi -> JPEG solid RGB (kompatibel ReportLab).
+            # PNG RGBA/LA/P-transparan yang dilempar mentah ke ImageReader
+            # dengan mask='auto' sering gagal/gambar hilang — tidak dipakai lagi.
+            out, (iw, ih) = flatten_logo_to_jpeg(p)
             if iw <= 0 or ih <= 0:
                 return
             # Skala proporsional: batasi tinggi DAN lebar sehingga logo apa pun
@@ -1516,12 +1555,10 @@ def draw_pdf_kop_reportlab(c, logo_pemda_path, logo_sekolah_path, baris1, baris2
             h, w = ih * scale, iw * scale
             y = y_top - max_logo_h + (max_logo_h - h) / 2.0
             x = (x_left + content_width - w) if right_align else x_left
-            out = io.BytesIO()
-            im.save(out, format="PNG")
-            out.seek(0)
             c.saveState()
-            c.drawImage(ImageReader(out), x, y, width=w, height=h, mask='auto', preserveAspectRatio=True)
+            c.drawImage(ImageReader(out), x, y, width=w, height=h, preserveAspectRatio=True)
             c.restoreState()
+            logger.info("KOP (ReportLab): logo OK %s (%dx%d px -> %.1fx%.1f pt)", p.name, iw, ih, w, h)
         except Exception as e:
             logger.warning("Gagal render logo PDF: %s -> %s", path, e)
 
@@ -3615,12 +3652,13 @@ class SPJFPDF(FPDF):
             try:
                 p = Path(str(path))
                 if not p.exists():
+                    logger.warning("KOP (FPDF): file logo tidak ada di disk: %s", p)
                     return
-                # Baca via PIL & konversi ke PNG bytes agar format apa pun
-                # (TIFF/BMP/WEBM/CMYK/P-GIF) pasti bisa didekode FPDF.
-                with Image.open(p) as _im:
-                    im = _im.convert("RGBA" if (_im.mode in ("RGBA", "LA", "P")) else "RGB")
-                    iw, ih = im.size
+                # Flattening transparansi -> JPEG solid RGB via helper bersama.
+                # PNG RGBA/P-transparan yang dikirim mentah ke fpdf2 bisa gagal
+                # decode / tampil hitam; JPEG solid selalu aman. Buffer sudah
+                # diberi nama palsu "logo.jpg" untuk deteksi ekstensi FPDF.
+                out, (iw, ih) = flatten_logo_to_jpeg(p)
                 if iw <= 0 or ih <= 0:
                     return
                 # Skala proporsional: batasi tinggi DAN lebar agar logo apa pun
@@ -3629,10 +3667,11 @@ class SPJFPDF(FPDF):
                 h, w = ih * scale, iw * scale
                 y = top_y + (max_logo_h - h) / 2.0
                 x = (right_margin - w) if right_align else left_margin
-                out = io.BytesIO()
-                im.save(out, format="PNG")
-                out.seek(0)
+                # CATATAN: versi fpdf/fpdf2 yang dipakai TIDAK menerima kwarg
+                # `format=` (TypeError). Deteksi tipe gambar diandalkan dari
+                # nama buffer palsu "logo.jpg" hasil flatten_logo_to_jpeg().
                 self.image(out, x=x, y=y, h=h, w=w)
+                logger.info("KOP (FPDF): logo OK %s (%dx%d px -> %.1fx%.1f mm)", p.name, iw, ih, w, h)
             except Exception as e:
                 logger.warning("Kop: gagal render logo %s -> %s", path, e)
 

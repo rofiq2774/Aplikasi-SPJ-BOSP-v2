@@ -39,6 +39,42 @@ class Pengaturan(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class IdentitasPeriode(Base):
+    """Identitas satuan pendidikan per periode waktu.
+
+    Menyatukan data kop/letterhead (pemda, nama satuan pendidikan, alamat,
+    tempat surat, logo) dengan data pejabat (kepala sekolah, bendahara,
+    pengurus barang) dalam satu entri yang berlaku antara ``tanggal_awal``
+    dan ``tanggal_akhir``. Beberapa entri dapat dibuat agar nama satuan
+    pendidikan, pejabat, maupun logo otomatis menyesuaikan diri ketika ada
+    perubahan antar periode (misal ganti kepala sekolah atau rename sekolah).
+    """
+    __tablename__ = "identitas_periode"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # --- Periode keberlakuan ---
+    tanggal_awal = Column(String, nullable=False, default="")   # ISO yyyy-mm-dd
+    tanggal_akhir = Column(String, nullable=True, default="")   # kosong = masih berlaku
+    label = Column(String, default="")                          # nama periode (opsional)
+    is_active = Column(Boolean, default=True)
+    # --- Kop / letterhead ---
+    nama_pemda = Column(String, default="")
+    nama_sekolah = Column(String, default="")
+    alamat_sekolah = Column(String, default="")
+    tempat_surat = Column(String, default="")
+    logo_pemda = Column(String, default="")     # base64 data URI
+    logo_sekolah = Column(String, default="")   # base64 data URI
+    # --- Pejabat penanda tangan ---
+    nama_kepala_sekolah = Column(String, default="")
+    nip_kepala_sekolah = Column(String, default="")
+    nama_bendahara = Column(String, default="")
+    nip_bendahara = Column(String, default="")
+    nama_pengurus_barang = Column(String, default="")
+    nip_pengurus_barang = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class MasterKegiatan(Base):
     __tablename__ = "master_kegiatan"
     

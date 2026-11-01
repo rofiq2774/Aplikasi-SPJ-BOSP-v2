@@ -339,6 +339,15 @@ IDENTITAS_KOLOM = [
     "nama_pengurus_barang", "nip_pengurus_barang",
 ]
 
+# Kolom tabel Pengaturan legacy yang dibaca sebagai identitas (fallback).
+PENGATURAN_IDENTITAS_KOLOM = [
+    "nama_pemda", "nama_sekolah", "alamat_sekolah", "tempat_surat",
+    "logo_pemda", "logo_sekolah",
+    "nama_kepala_sekolah", "nip_kepala_sekolah",
+    "nama_bendahara", "nip_bendahara",
+    "nama_pengurus_barang", "nip_pengurus_barang",
+]
+
 
 class IdentitasPeriodeRequest(BaseModel):
     """Payload JSON identitas satuan pendidikan per periode.
@@ -404,8 +413,56 @@ class MasterRekeningBelanjaBulkRequest(BaseModel):
 # penambahan kolom dengan default konstan secara aman, jadi data lama tetap
 # utuh. Fungsi ini dipanggil SETELAH create_all agar tabel baru pun ikut
 # dilengkapi bila perlu.
+def _table_columns_safe(conn, table_name: str) -> set:
+    """Kembalikan HIMPUNAN NAMA kolom sebuah tabel SQLite.
+
+    BUG ROOT CAUSE (HTTP 500 GET /api/identitas-periode): kode lama memakai
+    ``{r[0] for r in PRAGMA table_info(...)}`` yang menghasilkan nomor posisi
+    kolom (0, 1, 2, ...) — BUKAN nama kolom. Akibatnya setiap kolom model
+    dianggap "belum ada" dan ALTER TABLE gagal dengan "duplicate column
+    name"; karena seluruh DDL dibungkus satu transaksi, kegagalan itu ikut
+    membatalkan penambahan kolom yang sebenarnya hilang (mis. tempat_surat),
+    sehingga query tetap menabrak "no such column" dan endpoint menjawab 500.
+
+    Nama kolom pada hasil PRAGMA table_info ada di indeks 1; fungsi ini tahan
+    terhadap bentuk baris apa pun (Row / tuple / Mapping). Kegagalan membaca
+    dikembalikan sebagai None agar pemanggil melewatkan tabel tsb. tanpa
+    membatalkan transaksi.
+    """
+    from sqlalchemy import text
+
+    def _extract(rows):
+        names = set()
+        for r in rows:
+            try:
+                n = r[1]
+            except Exception:
+                try:
+                    n = r["name"]
+                except Exception:
+                    continue
+            if n is not None:
+                names.add(str(n))
+        return names
+
+    try:
+        rows = conn.execute(
+            text(f'PRAGMA table_info("{table_name}")')
+        ).fetchall()
+        return _extract(rows)
+    except Exception as e:
+        logger.warning(f"Gagal membaca PRAGMA table_info({table_name}): {e}")
+        try:
+            insp = sa_inspect(conn)
+            return {c["name"] for c in insp.get_columns(table_name)}
+        except Exception as e2:
+            logger.warning(f"Gagal membaca kolom via inspector: {e2}")
+            return None
+
+
 def _sync_schema_columns() -> int:
     """Tambahkan kolom model yang belum ada di tabel SQLite. Return jumlah."""
+    global _schema_sync_ok
     from sqlalchemy import create_engine as create_sync_engine, inspect as sa_inspect, text
 
     sync_url = str(engine.url).replace("sqlite+aiosqlite:///", "sqlite:///")
@@ -413,6 +470,7 @@ def _sync_schema_columns() -> int:
         return 0  # hanya diperlukan untuk SQLite (skema aplikasi ini)
 
     added = 0
+    failed = 0
     try:
         eng = create_sync_engine(sync_url)
     except Exception as e:
@@ -425,12 +483,10 @@ def _sync_schema_columns() -> int:
             for table in Base.metadata.sorted_tables:
                 if table.name not in existing_tables:
                     continue  # akan dibuat oleh create_all
-                actual_cols = {
-                    r[0]
-                    for r in conn.execute(
-                        text(f'PRAGMA table_info("{table.name}")')
-                    ).fetchall()
-                }
+                actual_cols = _table_columns_safe(conn, table.name)
+                if actual_cols is None:
+                    failed += 1
+                    continue
                 for col in table.columns:
                     if col.name in actual_cols:
                         continue
@@ -440,7 +496,13 @@ def _sync_schema_columns() -> int:
                         f'ADD COLUMN "{col.name}" {coltype}'
                     ]
                     if not col.nullable:
-                        parts.append("NOT NULL DEFAULT ''")
+                        # Kolom NOT NULL pada SQLite WAJIB punya default non-null;
+                        # tipe integer butuh 0, bukan '' (menambah '' ke kolom
+                        # INTEGER adalah kesalahan transaksional yang membatalkan
+                        # seluruh ALTER lain dalam transaksi yang sama).
+                        is_int = "INT" in coltype.upper()
+                        parts.append("NOT NULL DEFAULT 0" if is_int
+                                     else "NOT NULL DEFAULT ''")
                     elif col.default is not None and getattr(
                         col.default, "is_scalar", False
                     ):
@@ -453,13 +515,30 @@ def _sync_schema_columns() -> int:
                             escaped = str(dv).replace("'", "''")
                             parts.append(f"DEFAULT '{escaped}'")
                     ddl = " ".join(parts)
-                    conn.execute(text(ddl))
-                    added += 1
-                    logger.info(f"Auto migration kolom: {ddl}")
+                    try:
+                        conn.execute(text(ddl))
+                        added += 1
+                        actual_cols.add(col.name)
+                        logger.info(f"Auto migration kolom: {ddl}")
+                    except Exception as e:
+                        # Jangan batalkan seluruh penambalan karena satu kolom;
+                        # catat dan lanjutkan ke kolom/tabel berikutnya.
+                        failed += 1
+                        logger.warning(
+                            f"ALTER TABLE dilewati ({table.name}.{col.name}): {e}"
+                        )
+                        # Transaksi mungkin ikut rusak — coba pulihkan titik
+                        # simpan bila dialect mendukung (SQLite: rollback per
+                        # statement sudah cukup karena DDL implicit-commit).
     except Exception as e:
         logger.exception("Gagal menyelaraskan kolom skema database: %s", e)
+        failed += 1
     finally:
-        eng.dispose()
+        try:
+            eng.close()
+        except Exception:
+            pass
+    _schema_sync_ok = (failed == 0)
     return added
 
 
@@ -467,6 +546,13 @@ def _sync_schema_columns() -> int:
 # Cache nama tabel yang sudah dipastikan cocok dengan model, agar cek ulang
 # tidak dilakukan pada setiap request.
 _schema_synced_tables: set = set()
+
+# Penanda apakah penyelarasan kolom terakhir berjalan tanpa kegagalan.
+# Dipakai oleh middleware penambal di bawah: bila masih False, setiap request
+# baru akan mencoba menyelaraskan sekali lagi (harga ceknya murah — satu
+# PRAGMA per tabel) sehingga backend yang startup-nya sempat balapan dengan
+# request pertama tetap pulih dengan sendirinya.
+_schema_sync_ok: bool = False
 
 
 def _is_missing_column_error(exc: Exception) -> bool:
@@ -489,8 +575,10 @@ def _ensure_schema_columns_for(tables) -> bool:
     baru (bug v1.2.4 pada GET /api/identitas-periode). Sebagai langkah
     pertama, revisi Alembic yang tertunda dicoba ulang secara paksa (mis.
     DB ber-revisi b7b597ac8a84 yang belum pernah di-upgrade ke
-    c2f1a9d3e5b7). Return True bila minimal satu kolom berhasil
-    ditambahkan (panggilan ulang layak dicoba).
+    c2f1a9d3e5b7). Return True bila penambalan layak dicoba ulang, yaitu
+    bila minimal satu kolom berhasil ditambahkan ATAU penyelarasan berjalan
+    bersih tanpa kegagalan (kasus: kolom sebenarnya sudah ada tetapi sesi
+    membaca skema usang, atau penambahan dilakukan revisi Alembic).
     """
     global _schema_synced_tables
     names = {t if isinstance(t, str) else getattr(t, "__tablename__", None)
@@ -505,18 +593,19 @@ def _ensure_schema_columns_for(tables) -> bool:
     # 2) Jaminan terakhir: tambahkan langsung kolom model yang hilang.
     added = _sync_schema_columns()
     # Setelah sinkron berhasil penuh, tandai semua tabel sebagai sudah cocok.
-    try:
-        _schema_synced_tables |= {
-            t.name for t in Base.metadata.sorted_tables
-        }
-    except Exception:
-        pass
+    if _schema_sync_ok:
+        try:
+            _schema_synced_tables |= {
+                t.name for t in Base.metadata.sorted_tables
+            }
+        except Exception:
+            pass
     if added:
         logger.info(
             f"Penambal skema otomatis: {added} kolom ditambahkan "
             f"(tabel terkait: {', '.join(sorted(names))})."
         )
-    return bool(added)
+    return bool(added) or _schema_sync_ok
 
 
 def run_migrations(force: bool = False):

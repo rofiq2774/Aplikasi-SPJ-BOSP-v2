@@ -837,9 +837,13 @@ async function generateKwitansi() {
   loadKwitansiList();
 }
 
-// Download Kwitansi
+// Download Kwitansi (SPJ) — RENDER PDF SEPENUHNYA DI FRONTEND
+// Alur: GET /kwitansi/{id}/spj-data (JSON saja; tidak ada permintaan/ respons
+// application/pdf dari backend) -> validasi payload -> buildSpjPdf() (pdfmake,
+// font Arial via IPC Electron) -> unduh Blob dengan nama file aman.
 async function downloadKwitansi(id, noBukti = "") {
   showToast("Info", "Mengunduh SPJ...");
+  appLog("info", `downloadKwitansi: mulai render SPJ frontend id=${id}`);
 
   try {
     const res = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
@@ -849,20 +853,36 @@ async function downloadKwitansi(id, noBukti = "") {
       throw new Error(err.detail || `Gagal memuat data SPJ (HTTP ${res.status})`);
     }
 
+    // Validasi tipe konten: endpoint ini WAJIB JSON. Kalau backend (atau
+    // proxy) mengirim application/pdf, hentikan di sini — alur baru tidak
+    // boleh menerima PDF dari backend.
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      throw new Error(
+        `Respons backend bukan JSON (Content-Type: ${contentType || "kosong"}); ` +
+          "alur unduh SPJ hanya menerima data JSON untuk dirender di frontend",
+      );
+    }
+
     const payload = await res.json();
     if (payload.status !== "success" || !payload.data) {
       throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
     }
 
     const blob = await buildSpjPdf(payload.data);
+    if (!(blob instanceof Blob) || blob.size === 0) {
+      throw new Error("Renderer frontend menghasilkan PDF kosong");
+    }
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     const requestedName =
       noBukti || payload.data.document?.filename || String(id);
-    const safeFileName = requestedName
+    const safeFileName = String(requestedName)
       .replace(/\.pdf$/i, "")
-      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-");
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+      .replace(/^[. ]+/, "")
+      .slice(0, 120) || `kwitansi-${id}`;
     a.download = `SPJ-${safeFileName}.pdf`;
 
     document.body.appendChild(a);
@@ -870,9 +890,17 @@ async function downloadKwitansi(id, noBukti = "") {
 
     document.body.removeChild(a);
     window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    appLog(
+      "info",
+      `downloadKwitansi: OK id=${id} file=${a.download} ukuran=${blob.size} byte (render frontend)`,
+    );
     showToast("Berhasil!", "SPJ berhasil diunduh");
   } catch (err) {
-    showToast("Error!", "Error: " + err.message);
+    // Error JANGAN disembunyikan: tampilkan dan catat ke app.log.
+    const msg = err?.message || String(err);
+    appLog("error", `downloadKwitansi: GAGAL id=${id}: ${msg}`);
+    console.error("downloadKwitansi gagal:", err);
+    showToast("Error!", "Gagal membuat PDF SPJ: " + msg);
   }
 }
 

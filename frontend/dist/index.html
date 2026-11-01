@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+content="
+default-src 'self';
+script-src 'self' 'unsafe-inline';
+style-src 'self' 'unsafe-inline';
+img-src 'self' data: blob: http://127.0.0.1:* file:;
+connect-src 'self' http://127.0.0.1:*;
+">
+  <!-- Catatan: backend HANYA berjalan sebagai child_process dengan port dinamis.
+       Tidak ada servis localhost statis (8000) lagi — karena itu CSP memakai
+       wildcard port http://127.0.0.1:* dan BUKAN http://127.0.0.1:8000. -->
+  <title>Aplikasi SPJ BOSP</title>
+  <!-- Tema modern ala native app (dimuat lebih dulu agar tidak FOUC) -->
+  <script type="module" crossorigin src="./assets/index-DTpsGma0.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DDXwTXa6.css">
+</head>
+<body>
+  <div id="app"></div>
+</body>
+</html>

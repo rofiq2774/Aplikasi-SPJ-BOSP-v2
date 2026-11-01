@@ -1,15 +1,38 @@
-# Dependencies
+# ========================
+# Node & Dependencies
+# ========================
 node_modules/
+frontend/node_modules/
+backend/venv/
 
-# Environment Variables (Security)
-.db
+# ========================
+# Environment Variables & Secrets
+# ========================
 .env
+backend/.env
 
-# Build Outputs
+# ========================
+# Database, Logs, & Dynamic Data
+# ========================
+backend/aplikasi_spj.db
+backend/app.log
+backend/backend_log.txt
+backend/data_store.json
+backend/uploads/
+
+# ========================
+# Build Outputs & Python Caches
+# ========================
 hasil_build/
+frontend/dist/
+backend/build/
+backend/dist/
+backend/__pycache__/
+*.pyc
 
-# AI Coding Assistant (Aider) Caches & History
-.aider.tags.cache.v4/
-.aider.chat.history.md
-.aider.input.history
-.aider.tags.cache.v4/
+# ========================
+# AI Assistant (Aider) & Temp Files
+# ========================
+.aider*
+*.diff
+*.patch

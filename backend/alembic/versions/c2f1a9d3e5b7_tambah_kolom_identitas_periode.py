@@ -28,8 +28,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def _table_columns(table: str) -> set:
+    """Kembalikan HIMPUNAN NAMA kolom tabel SQLite.
+
+    BUG ROOT CAUSE (HTTP 500 GET /api/identitas-periode pada DB lama):
+    implementasi lama memakai ``{r[0] for r in PRAGMA table_info(...)}`` yang
+    menghasilkan POSISI kolom (0, 1, 2, ...) — BUKAN nama kolom. Akibatnya
+    setiap nama yang dicek ("tempat_surat", "label", dst.) dianggap hilang dan
+    batch_alter_table mencoba menambah ulang kolom yang sudah ada
+    ("duplicate column name"); karena seluruh DDL satu transaksi, revisi gagal
+    total dan DB lama tetap menjawab 500. Nama kolom berada di indeks 1.
+    Fungsi ini tahan terhadap bentuk baris apa pun (Row / tuple / Mapping).
+    """
     bind = op.get_bind()
-    return {r[0] for r in bind.exec_driver_sql(f'PRAGMA table_info("{table}")')}
+    names = set()
+    for r in bind.exec_driver_sql(f'PRAGMA table_info("{table}")'):
+        try:
+            n = r[1]
+        except Exception:
+            try:
+                n = r["name"]
+            except Exception:
+                continue
+        if n is not None:
+            names.add(str(n))
+    return names
 
 
 def upgrade():

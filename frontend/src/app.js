@@ -3449,9 +3449,24 @@ async function loadIdentitasPeriode() {
   try {
     const tglEl = document.getElementById("idn-tgl-uji");
     const tgl = tglEl ? tglEl.value || "" : "";
+    // API_BASE selalu prefix http://127.0.0.1:<port-dinamis>/api — JANGAN
+    // pakai path relatif "/api/..." karena akan mengenai origin dev server
+    // Vite (http://localhost:5173) yang tidak memiliki endpoint tersebut
+    // (proxy Vite menunjuk ke port statis 8000 yang sudah dimatikan),
+    // sehingga respons 500 kosong memicu "Unexpected end of JSON input".
     const url = `${API_BASE}/identitas-periode${tgl ? `?tanggal=${encodeURIComponent(tgl)}` : ""}`;
     const response = await apiFetch(url);
-    const res = await response.json();
+    const text = await response.text();
+    let res = null;
+    try {
+      res = text ? JSON.parse(text) : null;
+    } catch (_) {
+      res = null;
+    }
+    if (!response.ok || !res) {
+      const detail = (res && (res.detail || res.message)) || `HTTP ${response.status}`;
+      throw new Error(`Backend menolak permintaan daftar identitas (${detail})`);
+    }
     identitasPeriodeList = Array.isArray(res.data) ? res.data : [];
     identitasAktifId = res.aktif_id ?? null;
     renderIdentitasPeriodeList();

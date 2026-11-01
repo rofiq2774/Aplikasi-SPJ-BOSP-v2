@@ -167,6 +167,13 @@ async def lifespan(app):
     # lama (mis. identitas_periode.tempat_surat) harus ditambahkan terpisah,
     # jika tidak endpoint seperti GET /api/identitas-periode akan 500 dengan
     # "no such column". Lihat _sync_schema_columns().
+    #
+    # PENTING (bug v1.2.4): sinkronisasi kolom WAJIB dijalankan sebelum
+    # request pertama dilayani. Dahulu ia hanya dipanggil di sini (lifespan),
+    # sehingga bila lifespan gagal/terlewat — atau DB berubah di antara dua
+    # startup — endpoint tetap menjawab 500 "no such column". Sekarang fungsi
+    # yang sama juga dipanggil sebagai penambal otomatis saat error kolom
+    # terjadi di tengah request (lihat _ensure_schema_columns_for()).
     try:
         n = _sync_schema_columns()
         if n:
@@ -456,9 +463,69 @@ def _sync_schema_columns() -> int:
     return added
 
 
-def run_migrations():
+# ---- Penambal otomatis "no such column" saat request berjalan ----
+# Cache nama tabel yang sudah dipastikan cocok dengan model, agar cek ulang
+# tidak dilakukan pada setiap request.
+_schema_synced_tables: set = set()
+
+
+def _is_missing_column_error(exc: Exception) -> bool:
+    """True bila exception (atau rantai penyebabnya) adalah OperationalError
+    SQLite 'no such column' / 'has no column named'."""
+    e = exc
+    while e is not None:
+        msg = str(e).lower()
+        if "no such column" in msg or "has no column named" in msg:
+            return True
+        e = e.__cause__ if e.__cause__ is not e else None
+    return False
+
+
+def _ensure_schema_columns_for(tables) -> bool:
+    """Panggil ulang penyelarasan skema untuk tabel tertentu dan buang cache-nya.
+
+    Dipakai ketika sebuah query gagal dengan "no such column" di tengah
+    request — biasanya karena skema DB pengguna lama belum bertambah kolom
+    baru (bug v1.2.4 pada GET /api/identitas-periode). Sebagai langkah
+    pertama, revisi Alembic yang tertunda dicoba ulang secara paksa (mis.
+    DB ber-revisi b7b597ac8a84 yang belum pernah di-upgrade ke
+    c2f1a9d3e5b7). Return True bila minimal satu kolom berhasil
+    ditambahkan (panggilan ulang layak dicoba).
+    """
+    global _schema_synced_tables
+    names = {t if isinstance(t, str) else getattr(t, "__tablename__", None)
+             for t in tables}
+    names.discard(None)
+    _schema_synced_tables -= names
+    # 1) Coba jalankan revisi Alembic yang tertunda (idempoten & aman).
+    try:
+        run_migrations(force=True)
+    except Exception as e:
+        logger.warning(f"Retry run_migrations gagal: {e}")
+    # 2) Jaminan terakhir: tambahkan langsung kolom model yang hilang.
+    added = _sync_schema_columns()
+    # Setelah sinkron berhasil penuh, tandai semua tabel sebagai sudah cocok.
+    try:
+        _schema_synced_tables |= {
+            t.name for t in Base.metadata.sorted_tables
+        }
+    except Exception:
+        pass
+    if added:
+        logger.info(
+            f"Penambal skema otomatis: {added} kolom ditambahkan "
+            f"(tabel terkait: {', '.join(sorted(names))})."
+        )
+    return bool(added)
+
+
+def run_migrations(force: bool = False):
     global _migrated
-    if _migrated:
+
+    # force=True dipakai oleh penambal otomatis "no such column" agar
+    # revisi Alembic (mis. c2f1a9d3e5b7) benar-benar dicoba ulang walaupun
+    # proses ini sudah pernah menjalankan migrasi saat startup.
+    if _migrated and not force:
         logger.info("Migration sudah pernah dijalankan, skip.")
         return
     _migrated = True
@@ -725,6 +792,47 @@ def _periode_to_dict(ip: IdentitasPeriode) -> dict:
     d["id"] = ip.id
     d["sumber"] = "periode"
     return d
+
+
+async def _execute_with_schema_retry(db: AsyncSession, stmt):
+    """Jalankan ``db.execute(stmt)`` dengan penambalan otomatis.
+
+    Bila gagal karena kolom model belum ada di tabel SQLite lama
+    (OperationalError "no such column" — bug v1.2.4 pada GET
+    /api/identitas-periode), jalankan ulang migrasi & penyelarasan kolom
+    lalu coba query-nya sekali lagi sebelum error diteruskan ke pemanggil.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    try:
+        return await db.execute(stmt)
+    except OperationalError as e:
+        if not _is_missing_column_error(e):
+            raise
+        logger.warning(
+            "Query menabrak 'no such column'; mencoba menyelaraskan skema "
+            "lalu mengulang query: %s", e
+        )
+        # Sesi async saat ini berada dalam keadaan gagal — tutup transaksi
+        # yang rusak dan buat statement baru pada sesi yang bersih.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        if not _ensure_schema_columns_for([IdentitasPeriode]):
+            raise
+        return await db.execute(stmt)
+
+
+async def _query_identitas_periode_list(db: AsyncSession):
+    """Daftar seluruh entri IdentitasPeriode (terlama → terbaru) tahan-skema."""
+    stmt = (
+        select(IdentitasPeriode).order_by(
+            IdentitasPeriode.tanggal_awal.asc(), IdentitasPeriode.id.asc()
+        )
+    )
+    result = await _execute_with_schema_retry(db, stmt)
+    return result.scalars().all()
 
 
 async def get_identitas_base(db: AsyncSession) -> dict:
@@ -2595,13 +2703,7 @@ async def list_identitas_periode(
     menandai identitas mana yang akan tercetak pada dokumen bertanggal itu.
     """
     try:
-        rows = (
-            await db.execute(
-                select(IdentitasPeriode).order_by(
-                    IdentitasPeriode.tanggal_awal.asc(), IdentitasPeriode.id.asc()
-                )
-            )
-        ).scalars().all()
+        rows = await _query_identitas_periode_list(db)
         data = []
         for ip in rows:
             d = _periode_to_dict(ip)
@@ -2615,6 +2717,8 @@ async def list_identitas_periode(
             if ident.get("sumber") == "periode":
                 aktif_id = ident.get("id")
         return {"status": "success", "data": data, "aktif_id": aktif_id}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing identitas periode: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

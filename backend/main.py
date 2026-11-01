@@ -1191,7 +1191,11 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     ) or (kw.nama_kegiatan or "")
     def _kop_bersama():
         """SATU definisi kop (baris pemda/sekolah/alamat + logo data URI) yang
-        dipakai bersama bagian kuitansi/BAST/RAB — frontend tinggal menggambar.
+        dipakai HANYA oleh bagian BAST dan RAB — frontend menggambar kop dari
+        objek ini pada kedua halaman tersebut.
+        ATURAN PRODUK: halaman KWITANSI WAJIB TANPA KOP — karena itu objek ini
+        TIDAK boleh dikirim pada kwitansi_payload, document.kop, maupun
+        document.kop_wajib (lihat normalisasi anti-kop di bawah).
         Sumber identitas: resolve_identitas_for_tanggal() di atas; logo lewat
         load_logo_source() sehingga JANGAN ada path lokal (D:\\...) yang ikut
         terkirim ke renderer."""
@@ -1223,7 +1227,9 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
         "kode_kegiatan": kw.kode_kegiatan or "",
         "nama_kegiatan": kw.nama_kegiatan or "",
         "kota_tempat_surat": ident.get("tempat_surat") or "Jember",
-        "kop": _kop_bersama(),
+        # ATURAN PRODUK: KWITANSI TANPA KOP. Field "kop" sengaja TIDAK dikirim
+        # pada bagian kwitansi (renderer frontend juga memfilter, lihat
+        # stripKwitansiKop() di frontend/src/pdf/spjPdf.js).
     }
 
     # ---------- Bagian BAST (opsional: butuh no_bukti + transaksi) ----------
@@ -1351,16 +1357,28 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
                       "alasan": ("Kode kegiatan kosong" if not kegiatan_data
                                  else "Label tahap (thp) kosong")}
 
+    # ---------- Normalisasi anti-kop kwitansi (WAJIB, dua lapis) ----------
+    # Aturan produk: kop hanya untuk BAST & RAB. Pastikan tidak ada salinan
+    # objek kop / instruksi "kop wajib" yang tertinggal di payload pada level
+    # dokumen maupun bagian kwitansi — renderer frontend memakai data.kop ini
+    # sebagai FALLBACK saat bagian bast/rab tidak membawa kop sendiri.
+    if kwitansi_payload.pop("kop", None) is not None:
+        logger.warning(
+            "kwitansi_payload unexpectedly carried 'kop' — stripped per "
+            "no-kop rule (kwitansi id=%s)", kw.id,
+        )
+
     return {
         "schema_version": 1,
         "document": {
             "filename": filename,
             "generated_at": generated_at,
-            # Keputusan produk: SEMUA bagian SPJ (kuitansi, BAST, RAB) memakai
-            # kop + logo yang sama; frontend menggambar kop dari objek ini.
+            # Keputusan produk: KOP hanya dipakai oleh bagian BAST dan RAB;
+            # halaman KWITANSI WAJIB TANPA KOP (tidak ada field "kop" pada
+            # document maupun kwitansi, dan kop_wajib=False).
             "order": ["kwitansi", "bast", "rab"],
             "paper": {"width_mm": 215, "height_mm": 330, "margin_mm": 15},
-            "kop_wajib": True,
+            "kop_wajib": False,
         },
         "kwitansi": dict(kwitansi_payload, id=kw.id),
         "identitas": {
@@ -5771,8 +5789,14 @@ async def get_kwitansi_spj_data(
       - Frontend : memvalidasi payload, menggambar layout PDF, mengunduh Blob.
 
     Aturan bisnis TIDAK diduplikasi di sini — semuanya lewat
-    ``kumpulkan_data_spj()`` yang sama dipakai pengujian; renderer PDF lama
-    (GET /kwitansi/{id}/pdf) tetap dipertahankan sebagai fallback transisi.
+    ``kumpulkan_data_spj()`` yang sama dipakai pengujian.
+
+    Rendering PDF SPJ kini SEPENUHNYA di frontend (pdfmake): backend hanya
+    menyiapkan dan mengirim JSON ini — tidak membuat, menggabungkan, atau
+    mengirim berkas PDF untuk alur SPJ. Endpoint PDF legacy
+    GET /kwitansi/{id}/pdf telah dinonaktifkan (410 Gone) setelah dipastikan
+    tidak ada pemanggil lain; endpoint PDF tidak terkait (impor BKU/BHP)
+    tidak diubah.
     """
     try:
         data = await kumpulkan_data_spj(db, id)
@@ -5784,188 +5808,33 @@ async def get_kwitansi_spj_data(
     return {"status": "success", "data": data}
 
 
-@api_router.get("/kwitansi/{id}/pdf")
-async def get_kwitansi_pdf(
-    id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    import traceback
-    print(f"--- [START] Generate PDF ID: {id} ---")
+# ---------------------------------------------------------------------------
+# ENDPOINT PDF SPJ LEGACY — DINONAKTIFKAN (rendering PDF kini FRONTEND)
+# ---------------------------------------------------------------------------
+# Dulu: GET /kwitansi/{id}/pdf merender kwitansi+BAST+RAB dengan ReportLab dan
+# menggabungkannya dengan PyPDF2.PdfMerger lalu mengirim application/pdf.
+# Alur baru: frontend memanggil GET /kwitansi/{id}/spj-data (JSON) dan
+# merender PDF sendiri lewat pdfmake (frontend/src/pdf/spjPdf.js).
+# Verifikasi pemanggil sebelum penonaktifan: tidak ada satu pun kode frontend
+# (app.js, Index.html, preload.js, index.js Electron) yang masih memanggil
+# /kwitansi/{id}/pdf — sehingga mengubahnya menjadi 410 Gone tidak memutus
+# pemanggil lain. Endpoint PDF lain yang tidak terkait (impor BKU/BHP, dsb.)
+# tidak disentuh. Fungsi generator lama (generate_kwitansi_pdf_v2,
+# generate_bast_pdf, generate_rab_pdf, draw_pdf_kop_reportlab) tidak dipakai
+# endpoint mana pun dan ditinggalkan sebagai artefak transisi terdokumentasi;
+# backend untuk alur SPJ HANYA mengirim JSON.
+@api_router.get("/kwitansi/{id}/pdf", include_in_schema=False)
+async def get_kwitansi_pdf_legacy_disabled(id: int):
+    """410 Gone: rendering PDF SPJ pindah ke frontend (lihat /spj-data)."""
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Endpoint PDF SPJ legacy sudah dinonaktifkan. PDF dirender di "
+            "frontend dari data JSON GET /api/kwitansi/{id}/spj-data."
+        ),
+    )
 
-    # 1. AMBIL DATA UTAMA (KWITANSI & PENGATURAN)
-    try:
-        stmt = select(Kwitansi).where(Kwitansi.id == id)
-        result = await db.execute(stmt)
-        kwitansi = result.scalar_one_or_none()
-        
-        if not kwitansi:
-            raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
 
-        stmt2 = select(Pengaturan).limit(1)
-        result2 = await db.execute(stmt2)
-        pengaturan = result2.scalar_one_or_none()
-        
-        if not pengaturan:
-            raise HTTPException(status_code=404, detail="Pengaturan belum diisi")
-            
-        # Identitas per periode: pilih entri yang periodanya mencakup tanggal
-        # dokumen (kwitansi), lalu salin ke objek Pengaturan agar seluruh
-        # renderer PDF lama (kop, pejabat, logo) otomatis ikut menyesuaikan.
-        try:
-            ident_kw = await resolve_identitas_for_tanggal(db, getattr(kwitansi, "tanggal", None))
-            _terapkan_identitas_ke_pengaturan(pengaturan, ident_kw)
-        except Exception as e:
-            print(f"[WARN] Resolusi identitas periode gagal, pakai Pengaturan legacy: {e}")
-            
-        # Ambil Data Kegiatan (Log jika tidak ditemukan)
-        kegiatan_data = None
-        if kwitansi.kode_kegiatan:
-            stmt_keg = select(MasterKegiatan).where(MasterKegiatan.kode_kegiatan == kwitansi.kode_kegiatan)
-            res_keg = await db.execute(stmt_keg)
-            kegiatan_data = res_keg.scalar_one_or_none()
-        else:
-            print("--- [INFO] Kode Kegiatan kosong, RAB akan dilewati ---")
-
-    except Exception as e:
-        print(f"ERROR Fetching Data Utama: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Gagal mengambil data database")
-
-    # Inisialisasi Buffer PDF
-    kw_pdf_bytes = None
-    bast_pdf_bytes = None  # Urutan variabel tidak masalah, tapi di flow logic kita ubah
-    rab_pdf_bytes = None
-
-    # ---------------------------------------------------------
-    # A. PROSES 1: Generate KWITANSI (Wajib)
-    # ---------------------------------------------------------
-    try:
-        print("--- [PROCESS] Generating Kwitansi... ---")
-        kw_pdf_bytes = generate_kwitansi_pdf_v2(kwitansi, pengaturan)
-    except Exception as e:
-        print(f"ERROR FATAL Generate Kwitansi: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Gagal membuat PDF Kwitansi: {e}")
-
-    # ---------------------------------------------------------
-    # B. PROSES 2: Generate BAST (Dipindahkan ke Sini)
-    # ---------------------------------------------------------
-    if kwitansi.no_bukti:
-        print(f"--- [PROCESS] Generating BAST untuk {kwitansi.no_bukti}... ---")
-        try:
-            stmt_trx = select(Transaksi).where(Transaksi.no_bukti == kwitansi.no_bukti).order_by(Transaksi.id)
-            res_trx = await db.execute(stmt_trx)
-            transaksi_bast = res_trx.scalars().all()
-
-            if transaksi_bast:
-                bast_pdf_bytes = generate_bast_pdf(kwitansi, pengaturan, transaksi_bast)
-            else:
-                print("--- [INFO] Data transaksi BAST kosong ---")
-        except Exception as e:
-            print(f"ERROR Generate BAST (SKIP): {e}")
-            traceback.print_exc()
-            bast_pdf_bytes = None
-    
-    # ---------------------------------------------------------
-    # C. PROSES 3: Generate RAB (Dipindahkan ke Sini)
-    # ---------------------------------------------------------
-    print(f"--- [DEBUG] kegiatan_data={kegiatan_data}, thp='{kwitansi.thp}' ---")
-    if kegiatan_data and kwitansi.thp:
-        print("--- [PROCESS] Generating RAB... ---")
-        try:
-            stmt_rab = (
-                select(
-                    Transaksi,
-                    MasterRekeningBelanja.rekap_rekening_belanja
-                )
-                .join(Kwitansi, Transaksi.no_bukti == Kwitansi.no_bukti)
-                .join(
-                    MasterRekeningBelanja, 
-                    Transaksi.kode_rekening == MasterRekeningBelanja.kode_rekening_belanja,
-                    isouter=True
-                )
-                .where(
-                    and_(
-                        Transaksi.kode_kegiatan == kwitansi.kode_kegiatan,
-                        Kwitansi.thp == kwitansi.thp,
-                        Transaksi.pengeluaran > 0
-                    )
-                )
-                .order_by(Transaksi.tanggal, Transaksi.id)
-            )
-            
-            res_rab = await db.execute(stmt_rab)
-            transaksi_rab_raw = res_rab.all()
-            
-            # Convert Row objects to tuple format (Transaksi obj, jenis_belanja string)
-            transaksi_rab = []
-            for row in transaksi_rab_raw:
-                trx = row[0]  # Transaksi object
-                jenis = row[1] or "-"  # rekap_rekening_belanja
-                transaksi_rab.append((trx, jenis))
-
-            if transaksi_rab:
-                print(f"--- [INFO] Ditemukan {len(transaksi_rab)} transaksi untuk RAB ---")
-                rab_pdf_bytes = generate_rab_pdf(
-                    pengaturan=pengaturan,
-                    kegiatan=kegiatan_data,
-                    transaksi_list=transaksi_rab,
-                    thp_label=kwitansi.thp,
-                    tahun=kwitansi.tahun
-                )
-            else:
-                print(f"--- [INFO] Tidak ada transaksi untuk kegiatan {kwitansi.kode_kegiatan} ---")
-        except Exception as e:
-            print(f"ERROR Generate RAB (SKIP): {e}")
-            traceback.print_exc()
-            rab_pdf_bytes = None
-    else:
-        print("--- [SKIP] RAB di-skip karena kegiatan_data/thp kosong ---")
-
-    # ---------------------------------------------------------
-    # MERGE PDF
-    # ---------------------------------------------------------
-    final_buffer = BytesIO()
-    
-    try:
-        print("--- [PROCESS] Merging PDF... ---")
-        merger = PdfMerger()
-
-        # 1. Kwitansi (Halaman 1)
-        if kw_pdf_bytes:
-            merger.append(BytesIO(kw_pdf_bytes))
-        else:
-             raise Exception("Hasil generate Kwitansi kosong")
-
-        # 2. BAST (Halaman 2 - DIPINDAHKAN KE SINI)
-        if bast_pdf_bytes:
-            merger.append(BytesIO(bast_pdf_bytes))
-
-        # 3. RAB (Halaman 3 - DIPINDAHKAN KE SINI)
-        if rab_pdf_bytes:
-            merger.append(BytesIO(rab_pdf_bytes))
-
-        merger.write(final_buffer)
-        merger.close()
-        
-        final_buffer.seek(0)
-        filename = f"SPJ_Lengkap_{kwitansi.no_bukti or kwitansi.id}.pdf"
-        
-        print("--- [SUCCESS] PDF Generated ---")
-        return StreamingResponse(
-            final_buffer,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Access-Control-Expose-Headers": "Content-Disposition"
-            }
-        )
-
-    except Exception as e:
-        print(f"ERROR Merging PDF: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Gagal menggabungkan dokumen PDF")
-    
 # Include router in app (harus di akhir setelah semua routes didefinisikan)
 app.include_router(api_router)
 

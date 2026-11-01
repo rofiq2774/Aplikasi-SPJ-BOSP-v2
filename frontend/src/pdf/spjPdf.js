@@ -1,24 +1,30 @@
 // ============================================================================
 // spjPdf.js — Renderer PDF SPJ di FRONTEND (pdfmake)
 // ============================================================================
+// Alur: backend HANYA mengirim JSON (GET /api/kwitansi/{id}/spj-data);
+// seluruh pembuatan PDF terjadi di sini. Tidak ada permintaan/ respons
+// application/pdf dari backend untuk alur SPJ.
+//
+// FONT: semua teks WAJIB Arial. Empat variasi (normal/bold/italics/
+// bolditalics) dimuat saat runtime dari berkas font Arial yang terpasang di
+// Windows melalui IPC Electron yang sempit (ipcMain "get-arial-pdf-fonts"
+// hanya membaca 4 nama file tetap dari %WINDIR%\Fonts — tanpa path arbitrer
+// dari renderer, tanpa menyalin/mengemas font proprietary ke dalam installer).
+// VFS bawaan pdfmake (Roboto) TIDAK dimuat sama sekali: jika font Arial tidak
+// tersedia, render GAGAL dengan error jelas — tidak ada fallback diam-diam.
 
 import pdfMake from "pdfmake/build/pdfmake";
-import * as pdfFontsNs from "pdfmake/build/vfs_fonts";
 
-const _vfsMod = pdfFontsNs?.default ?? pdfFontsNs;
-const _vfs =
-  _vfsMod?.pdfMake?.vfs ??
-  _vfsMod?.vfs ??
-  (typeof window !== "undefined" ? window.pdfMakeVfsFonts?.pdfMake?.vfs : null);
-if (_vfs) pdfMake.vfs = _vfs;
+// Peta nama -> base64 diisi oleh ensureArialFonts() dari IPC Electron main.
+const ARIAL_VFS_NAMES = {
+  normal: "Arial.ttf",
+  bold: "Arial-Bold.ttf",
+  italics: "Arial-Italic.ttf",
+  bolditalics: "Arial-BoldItalic.ttf",
+};
 
 pdfMake.fonts = {
-  Arial: {
-    normal: "Arial.ttf",
-    bold: "Arial-Bold.ttf",
-    italics: "Arial-Italic.ttf",
-    bolditalics: "Arial-BoldItalic.ttf",
-  },
+  Arial: { ...ARIAL_VFS_NAMES },
 };
 
 let _arialFontsPromise = null;
@@ -27,21 +33,31 @@ async function ensureArialFonts() {
     _arialFontsPromise = (async () => {
       const getFonts = window.electronAPI?.getArialPdfFonts;
       if (typeof getFonts !== "function") {
-        throw new Error("Font Arial untuk PDF tidak tersedia dari proses Electron.");
+        throw new Error(
+          "Font Arial untuk PDF tidak tersedia dari proses Electron.",
+        );
       }
 
       const fonts = await getFonts();
       const fontFiles = {
-        "Arial.ttf": fonts?.regular,
-        "Arial-Bold.ttf": fonts?.bold,
-        "Arial-Italic.ttf": fonts?.italics,
-        "Arial-BoldItalic.ttf": fonts?.bolditalics,
+        [ARIAL_VFS_NAMES.normal]: fonts?.regular,
+        [ARIAL_VFS_NAMES.bold]: fonts?.bold,
+        [ARIAL_VFS_NAMES.italics]: fonts?.italics,
+        [ARIAL_VFS_NAMES.bolditalics]: fonts?.bolditalics,
       };
-      if (Object.values(fontFiles).some((font) => !font)) {
-        throw new Error("Berkas font Arial lengkap tidak ditemukan di Windows.");
+      const missing = Object.entries(fontFiles)
+        .filter(([, b64]) => !b64)
+        .map(([name]) => name);
+      if (missing.length) {
+        throw new Error(
+          `Berkas font Arial lengkap tidak ditemukan di Windows (kurang: ${missing.join(", ")}).`,
+        );
       }
 
-      pdfMake.vfs = { ...(pdfMake.vfs || {}), ...fontFiles };
+      // SENGAJA tidak menggabungkan VFS Roboto bawaan pdfmake: satu-satunya
+      // font yang boleh ada di VFS adalah keempat varian Arial, sehingga
+      // mustahil ada teks yang diam-diam dirender dengan font lain.
+      pdfMake.vfs = fontFiles;
     })().catch((error) => {
       _arialFontsPromise = null;
       throw error;
@@ -229,6 +245,28 @@ export function validateSpjPayload(data) {
 const PAGE = { size: [215, 330], margins: [15, 15, 15, 20] };
 const KOP_TEXT_W = PAGE.size[0] - PAGE.margins[0] - PAGE.margins[2] - 2 * 28;
 
+// ---------------------------------------------------------------------------
+// Penjaga anti-kop kwitansi (aturan produk: halaman KWITANSI TANPA KOP)
+// ---------------------------------------------------------------------------
+
+// Buang properti "kop" dari SEMUA node pada subtree definisi dokumen. Dipakai
+// sebagai penjaga struktural terakhir untuk bagian kwitansi: seandainya ada
+// regresi yang menyisipkan kop (langsung maupun bersarang), kop terbuang dan
+// error dikumpulkan agar tidak pernah tampil diam-diam di PDF.
+export function stripKopNodes(nodes) {
+  if (Array.isArray(nodes)) {
+    for (const n of nodes) stripKopNodes(n);
+    return nodes;
+  }
+  if (nodes && typeof nodes === "object") {
+    delete nodes.kop;
+    for (const v of Object.values(nodes)) {
+      if (v && typeof v === "object") stripKopNodes(v);
+    }
+  }
+  return nodes;
+}
+
 function kopStack(kop) {
   const logoStyle = { width: 24, height: 20 };
   const hasL = !!kop?.logo_pemda;
@@ -342,7 +380,17 @@ export function buildKwitansiSection(data) {
   const ident = data.identitas;
   const content = [];
 
-  // Sengaja tidak memangil kopStack() untuk bagian Kwitansi
+  // ATURAN PRODUK: KWITANSI TANPA KOP. Sengaja TIDAK memanggil kopStack()
+  // dan tidak menggambar logo/baris identitas/garis kop apa pun pada halaman
+  // ini — bahkan jika payload lama masih mengirim kwitansi.kop atau
+  // document.kop_wajib, metadata itu diabaikan (penjaga struktural
+  // stripKopNodes diterapkan oleh buildSpjDocumentDefinition).
+  if (kw?.kop || data.document?.kop || data.document?.kop_wajib) {
+    console.warn(
+      "[spjPdf] Payload membawa metadata kop untuk kwitansi; diabaikan " +
+        "sesuai aturan 'kwitansi tanpa kop'.",
+    );
+  }
   content.push({ text: "", margin: [0, 20, 0, 0] });
   content.push(
     ...sectionTitle("KWITANSI", `Nomor: ${kw.nomor_kwitansi || "-"}`),
@@ -1049,8 +1097,12 @@ export function buildSpjDocumentDefinition(data) {
   for (const name of order) {
     if (!included(name)) continue;
     let part;
-    if (name === "kwitansi") part = buildKwitansiSection(data);
-    else if (name === "bast") part = buildBastSection(data);
+    if (name === "kwitansi") {
+      part = buildKwitansiSection(data);
+      // Penjaga anti-kop: tidak boleh ada node kop/logo/garis kop yang
+      // lolos ke subtree kwitansi, apa pun isi payload.
+      stripKopNodes(part);
+    } else if (name === "bast") part = buildBastSection(data);
     else if (name === "rab") part = buildRabSection(data);
     else fail(`bagian tak dikenal pada document.order: ${name}`);
 
@@ -1078,12 +1130,52 @@ export function buildSpjDocumentDefinition(data) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Penjaga font Arial (level definisi dokumen)
+// ---------------------------------------------------------------------------
+// Semua teks pada semua bagian (kwitansi, BAST, RAB, judul, tabel, tanda
+// tangan, lampiran, fallback, bold/italic) wajib Arial. defaultStyle saja
+// tidak cukup — fungsi ini memindai SELURUH document definition dan menolak
+// properti `font` apa pun selain "Arial", serta style kustom yang mengganti
+// fontFamily. Roboto/serif tidak punya jalan masuk: VFS hanya berisi Arial.
+export function assertArialOnly(dd) {
+  const bad = [];
+  const walk = (node, path) => {
+    if (Array.isArray(node)) {
+      node.forEach((n, i) => walk(n, `${path}[${i}]`));
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    if (typeof node.font === "string" && node.font !== "Arial") {
+      bad.push(`${path}.font=${node.font}`);
+    }
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "font") continue;
+      walk(v, path ? `${path}.${k}` : k);
+    }
+  };
+  walk(dd.content, "content");
+  if (dd.defaultStyle?.font !== "Arial") {
+    bad.push(`defaultStyle.font=${dd.defaultStyle?.font}`);
+  }
+  for (const [name, st] of Object.entries(dd.styles || {})) {
+    if (st?.font && st.font !== "Arial") bad.push(`styles.${name}.font=${st.font}`);
+  }
+  if (bad.length) {
+    throw new Error(
+      "Dokumen SPJ menyalahi aturan font Arial: " + bad.join(", "),
+    );
+  }
+}
+
 export async function buildSpjPdf(data) {
   await ensureArialFonts();
 
   // PROSES PRE-RENDER: Hapus background putih pada logo sebelum merakit dokumen
   try {
-    const kops = [data.bast?.kop, data.rab?.kop, data.document?.kop];
+    // Hanya kop BAST & RAB — kwitansi tanpa kop, dan document.kop sudah tidak
+    // dikirim backend (aturan anti-kop kwitansi).
+    const kops = [data.bast?.kop, data.rab?.kop];
     for (const kop of kops) {
       if (kop) {
         if (kop.logo_pemda)
@@ -1100,6 +1192,9 @@ export async function buildSpjPdf(data) {
     let dd;
     try {
       dd = buildSpjDocumentDefinition(data);
+      // Penjaga font: seluruh definisi dokumen WAJIB Arial — tolak render
+      // sebelum pdfmake bekerja jika ada override font lain yang lolos.
+      assertArialOnly(dd);
     } catch (e) {
       reject(e);
       return;

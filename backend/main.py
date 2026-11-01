@@ -1,5 +1,6 @@
 import os
 import io
+import asyncio
 import httpx
 import sys
 import subprocess
@@ -161,8 +162,6 @@ async def lifespan(app):
         run_migrations()
     except Exception as e:
         logger.exception("run_migrations gagal: %s", e)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     # create_all hanya membuat tabel yang belum ada — kolom baru pada tabel
     # lama (mis. identitas_periode.tempat_surat) harus ditambahkan terpisah,
     # jika tidak endpoint seperti GET /api/identitas-periode akan 500 dengan
@@ -174,13 +173,38 @@ async def lifespan(app):
     # startup — endpoint tetap menjawab 500 "no such column". Sekarang fungsi
     # yang sama juga dipanggil sebagai penambal otomatis saat error kolom
     # terjadi di tengah request (lihat _ensure_schema_columns_for()).
+    # Sinkronkan kolom pada tabel yang SUDAH ada lebih dulu, lalu create_all
+    # untuk membuat tabel yang belum ada, lalu sinkronkan sekali lagi.
+    # Urutan ini penting (bug v1.2.4): bila create_all dijalankan terlebih
+    # dahulu pada DB rusak/kosong, beberapa kondisi membuat lifespan berhenti
+    # sebelum penyelarasan sempat berjalan — request pertama kemudian
+    # menjawab 500 "no such column".
+    try:
+        n = _sync_schema_columns()
+        if n:
+            logger.info(f"Penyelarasan skema (pra-create): {n} kolom baru ditambahkan.")
+    except Exception as e:
+        logger.exception("Penyelarasan kolom skema (pra-create) gagal: %s", e)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        logger.exception("create_all gagal (diteruskan ke sinkronisasi): %s", e)
     try:
         n = _sync_schema_columns()
         if n:
             logger.info(f"Penyelarasan skema: {n} kolom baru ditambahkan.")
     except Exception as e:
         logger.exception("Penyelarasan kolom skema gagal: %s", e)
-    logger.info("Database siap")
+    if _schema_sync_ok:
+        logger.info("Database siap")
+    else:
+        # Jangan biarkan /health melaporkan "siap" bila skema masih bermasalah;
+        # middleware penambal akan mencoba memulihkan pada request berikutnya.
+        logger.warning(
+            "Skema database belum sepenuhnya selaras — penambal otomatis "
+            "akan dicoba ulang saat ada request masuk."
+        )
     yield
 
 app = FastAPI(title="Aplikasi SPJ BOSP", lifespan=lifespan)
@@ -190,10 +214,32 @@ app = FastAPI(title="Aplikasi SPJ BOSP", lifespan=lifespan)
 # ===============================
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "siap",
-        "waktu": datetime.now(timezone.utc)
+    # Electron memakai /health untuk menentukan kapan renderer boleh memuat
+    # UI dan menembak API. Bila penyelarasan skema belum berhasil, JANGAN
+    # melaporkan "siap" — cobalah menambalnya sekali lagi sekarang; jika masih
+    # gagal, jawab 503 agar frontend tetap menunggu (retry) alih-alih langsung
+    # menerima HTTP 500 pada GET /api/identitas-periode (bug v1.2.4).
+    if not _schema_sync_ok:
+        try:
+            # Batasi waktu penambalan agar /health tidak menggantung; bila
+            # masih gagal, frontend akan mencoba lagi pada polling berikutnya.
+            await asyncio.wait_for(
+                asyncio.to_thread(_ensure_schema_columns_for, Base.metadata.sorted_tables),
+                timeout=10,
+            )
+        except Exception as e:
+            logger.warning("Health check: penambalan skema gagal: %s", e)
+    ready = _schema_sync_ok
+    body = {
+        "status": "siap" if ready else "menyiapkan-skema",
+        "skema_siap": ready,
+        # ISO string, BUKAN objek datetime — JSONResponse memakai json.dumps
+        # standar yang tidak bisa mengserialisasi datetime (TypeError -> 500).
+        "waktu": datetime.now(timezone.utc).isoformat(),
     }
+    if not ready:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 # ===============================
 # CORS

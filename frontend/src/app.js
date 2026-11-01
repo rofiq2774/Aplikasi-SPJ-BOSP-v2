@@ -22,10 +22,42 @@ const API_BASE = new Proxy(
   },
 );
 
-// Promise global agar semua pemanggil cukup melakukan `await ensureBackendReady()`
-// dan selalu mendapat origin yang benar (tidak ada race condition dengan
-// DOMContentLoaded). Retry sampai child_process melapor siap via IPC.
+// Janji (promise) global agar semua pemanggil cukup melakukan
+// `await ensureBackendReady()` dan selalu mendapat origin yang benar
+// (tidak ada race condition dengan DOMContentLoaded). Retry sampai
+// child_process melapor siap via IPC.
 let _backendInitPromise = null;
+
+// Verifikasi akhir: origin dari IPC saja TIDAK cukup. Electron menunggu
+// /health sebelum membuka jendela, tetapi pada beberapa kondisi (mis. DB lama
+// yang skemanya sedang diselaraskan ulang) backend bisa menolak request API
+// pertama dengan HTTP 500. Karena itu renderer WAJIB memeriksa sendiri
+// GET /health dan baru menganggap backend siap setelah menjawab 200 —
+// mencegah permintaan (fetch) dikirim "terlalu cepat" saat backend belum siap.
+async function waitForBackendHealth(origin, maxTries = 60) {
+  for (let i = 0; i < maxTries; i++) {
+    try {
+      const res = await fetch(`${origin}/health`, { cache: "no-store" });
+      if (res.ok) {
+        appLog("info", `Backend /health siap (percobaan ${i + 1}).`);
+        return true;
+      }
+      // 503 = backend hidup tetapi masih menyiapkan skema DB — terus menunggu.
+      appLog(
+        "warn",
+        `Backend /health belum siap (HTTP ${res.status}) — menunggu...`,
+      );
+    } catch (e) {
+      appLog("warn", `Backend /health belum dapat dijangkau: ${e.message || e}`);
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  appLog(
+    "error",
+    "Backend /health tidak kunjung siap setelah ~30 detik — permintaan API mungkin gagal.",
+  );
+  return false;
+}
 
 function ensureBackendReady() {
   if (_backendOrigin) return Promise.resolve(_backendOrigin);
@@ -40,11 +72,22 @@ function ensureBackendReady() {
           ) {
             const url = await window.electronAPI.getBackendUrl();
             if (url) {
+              // Jangan langsung mengembalikan origin — tunggu /health menjawab
+              // 200 lebih dulu agar tidak ada fetch yang mendahului kesiapan
+              // backend (penyebab "FETCH <- 500 GET /api/identitas-periode").
+              const ready = await waitForBackendHealth(url, 40); // ~20 detik
               _backendOrigin = url;
               appLog(
                 "info",
-                `Backend child_process aktif di ${_backendOrigin}`,
+                `Backend child_process aktif di ${_backendOrigin}` +
+                  (ready ? "" : " (health check belum lolos — akan dicoba ulang)"),
               );
+              if (!ready) {
+                    // Izinkan percobaan health ulang di kemudian hari.
+                    _backendReadyChecked = false;
+              } else {
+                _backendReadyChecked = true;
+              }
               return _backendOrigin;
             }
           } else {
@@ -72,6 +115,10 @@ function ensureBackendReady() {
   }
   return _backendInitPromise;
 }
+
+// Penanda apakah health check terakhir lolos; dipakai apiFetch untuk mencoba
+// ulang secara ringan bila backend sempat dilaporkan belum siap.
+let _backendReadyChecked = false;
 
 // Nama lama tetap dipertahankan (alias) demi kompatibilitas.
 async function initBackendBaseUrl() {
@@ -3444,36 +3491,58 @@ function setIdnImgPreview(imgId, src) {
   if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
 }
 
-// Muat daftar periode identitas + tandai entri aktif untuk tanggal uji
-async function loadIdentitasPeriode() {
-  try {
-    const tglEl = document.getElementById("idn-tgl-uji");
-    const tgl = tglEl ? tglEl.value || "" : "";
-    // API_BASE selalu prefix http://127.0.0.1:<port-dinamis>/api — JANGAN
-    // pakai path relatif "/api/..." karena akan mengenai origin dev server
-    // Vite (http://localhost:5173) yang tidak memiliki endpoint tersebut
-    // (proxy Vite menunjuk ke port statis 8000 yang sudah dimatikan),
-    // sehingga respons 500 kosong memicu "Unexpected end of JSON input".
-    const url = `${API_BASE}/identitas-periode${tgl ? `?tanggal=${encodeURIComponent(tgl)}` : ""}`;
-    const response = await apiFetch(url);
-    const text = await response.text();
-    let res = null;
+// Muat daftar periode identitas + tandai entri aktif untuk tanggal uji.
+// `maxRetry` menangani kasus backend menjawab 5xx sesaat setelah proses
+// child_process melapor (mis. skema DB lama masih diselaraskan saat request
+// pertama datang — bug "FETCH <- 500 GET /api/identitas-periode"). Backend
+// sudah dipaksa menahan /health sampai skema siap, tetapi retry ringan ini
+// tetap dipasang sebagai penjaga terakhir di sisi renderer.
+async function loadIdentitasPeriode(maxRetry = 3) {
+  let attempt = 0;
+  for (;;) {
+    attempt++;
     try {
-      res = text ? JSON.parse(text) : null;
-    } catch (_) {
-      res = null;
+      const tglEl = document.getElementById("idn-tgl-uji");
+      const tgl = tglEl ? tglEl.value || "" : "";
+      // API_BASE selalu prefix http://127.0.0.1:<port-dinamis>/api — JANGAN
+      // pakai path relatif "/api/..." karena akan mengenai origin dev server
+      // Vite (http://localhost:5173) yang tidak memiliki endpoint tersebut
+      // (proxy Vite menunjuk ke port statis 8000 yang sudah dimatikan),
+      // sehingga respons 500 kosong memicu "Unexpected end of JSON input".
+      const url = `${API_BASE}/identitas-periode${tgl ? `?tanggal=${encodeURIComponent(tgl)}` : ""}`;
+      const response = await apiFetch(url);
+      const text = await response.text();
+      let res = null;
+      try {
+        res = text ? JSON.parse(text) : null;
+      } catch (_) {
+        res = null;
+      }
+      if (!response.ok || !res) {
+        const detail = (res && (res.detail || res.message)) || `HTTP ${response.status}`;
+        const err = new Error(`Backend menolak permintaan daftar identitas (${detail})`);
+        // 5xx dari backend yang sedang bersiap → tunggu sebentar lalu coba lagi.
+        if (response.status >= 500 && attempt <= maxRetry) {
+          const delay = 500 * attempt; // 500ms, 1s, 1.5s
+          appLog(
+            "warn",
+            `loadIdentitasPeriode: HTTP ${response.status}, mencoba ulang (${attempt}/${maxRetry}) dalam ${delay} ms`,
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        throw err;
+      }
+      identitasPeriodeList = Array.isArray(res.data) ? res.data : [];
+      identitasAktifId = res.aktif_id ?? null;
+      renderIdentitasPeriodeList();
+      updateIdentitasAktifInfo();
+      return;
+    } catch (err) {
+      appLog("error", "loadIdentitasPeriode gagal: " + err);
+      showToast("Gagal!", "Tidak dapat memuat daftar identitas: " + err.message);
+      return;
     }
-    if (!response.ok || !res) {
-      const detail = (res && (res.detail || res.message)) || `HTTP ${response.status}`;
-      throw new Error(`Backend menolak permintaan daftar identitas (${detail})`);
-    }
-    identitasPeriodeList = Array.isArray(res.data) ? res.data : [];
-    identitasAktifId = res.aktif_id ?? null;
-    renderIdentitasPeriodeList();
-    updateIdentitasAktifInfo();
-  } catch (err) {
-    appLog("error", "loadIdentitasPeriode gagal: " + err);
-    showToast("Gagal!", "Tidak dapat memuat daftar identitas: " + err.message);
   }
 }
 

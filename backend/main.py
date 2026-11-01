@@ -1,5 +1,6 @@
 import os
 import io
+import tempfile
 import asyncio
 import httpx
 import sys
@@ -30,6 +31,7 @@ from collections import defaultdict
 from pathlib import Path
 from datetime import datetime, timezone
 from reportlab.lib.utils import simpleSplit
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm, mm
@@ -2439,8 +2441,39 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     kwitansi_height = 14.0 * cm 
     bottom_y = top_y - kwitansi_height
 
-    # --- 1. JUDUL (kwitansi TANPA kop surat sesuai permintaan) ---
-    judul_y = top_y - 0.6 * cm
+    # --- 1. KOP SURAT + JUDUL ---
+    # (Perubahan: kuitansi kini BERkop — karena endpoint GET /kwitansi/{id}/pdf
+    #  menggabungkan kuitansi sebagai HALAMAN PERTAMA berkas SPJ, logo harus
+    #  tampil di sana. Sumber identitas tetap objek `pengaturan` yang sudah
+    #  di-resolve per periode oleh resolve_identitas_for_tanggal() sebelum
+    #  fungsi ini dipanggil — jangan ambil logo dari baris `pengaturan` mentah
+    #  tanpa fallback periode karena logo bisa berbeda antarperiode.)
+    kop_x = margin_x + 1.0 * cm
+    kop_w = kwitansi_width - 2.0 * cm
+    kop_top = top_y - 0.6 * cm
+
+    logo_pemda = load_logo_source(
+        getattr(pengaturan, "logo_pemda", "") or "",
+        col="logo_pemda",
+    )
+    logo_sekolah = load_logo_source(
+        getattr(pengaturan, "logo_sekolah", "") or "",
+        col="logo_sekolah",
+    )
+
+    after_kop_y = draw_pdf_kop_reportlab(
+        c,
+        logo_pemda,
+        logo_sekolah,
+        (getattr(pengaturan, "nama_pemda", "") or "").upper(),
+        (getattr(pengaturan, "nama_sekolah", "") or "").upper(),
+        getattr(pengaturan, "alamat_sekolah", "") or "",
+        kop_x,
+        kop_top,
+        kop_w,
+    )
+
+    judul_y = after_kop_y - 0.7 * cm
     c.setFillColor(colors.black)
     c.setFont("Times-Bold", 18)
     c.drawCentredString(F4_WIDTH / 2, judul_y, "KWITANSI")
@@ -2448,6 +2481,8 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
     c.drawCentredString(F4_WIDTH / 2, judul_y - 0.55 * cm, f"Nomor: {kwitansi.nomor_kwitansi or '-'}")
 
     # --- 2. ISI FORMULIR ---
+    # content_start_y dihitung DARI judul_y sehingga seluruh isi ikut turun
+    # otomatis mengikuti tinggi kop (judul dan isi tidak pernah bertumpuk).
     content_start_y = judul_y - 1.6 * cm
     
     # Koordinat Kolom
@@ -4675,11 +4710,37 @@ class SPJFPDF(FPDF):
                 h, w = ih * scale, iw * scale
                 y = top_y + (max_logo_h - h) / 2.0
                 x = (right_margin - w) if right_align else left_margin
-                # CATATAN: versi fpdf/fpdf2 yang dipakai TIDAK menerima kwarg
-                # `format=` (TypeError). Deteksi tipe gambar diandalkan dari
-                # nama buffer palsu "logo.jpg" hasil flatten_logo_to_jpeg().
-                self.image(out, x=x, y=y, h=h, w=w)
-                logger.info("KOP (FPDF): logo OK %s (%dx%d px -> %.1fx%.1f mm)", label, iw, ih, w, h)
+                # CATATAN PENTING: PyFPDF 1.7.2 (paket `fpdf` di
+                # requirements.txt) TIDAK menerima objek BytesIO pada
+                # self.image() — ia mengharapkan path/nama file dan gagal
+                # dengan AttributeError "'_io.BytesIO' object has no
+                # attribute 'rfind'". Ini penyebab "logo hilang" di kop
+                # BAST/RAB. Solusi: tulis buffer JPEG ke file sementara lalu
+                # berikan path-nya ke FPDF; file dihapus segera setelah render.
+                # (Alternatif migrasi ke fpdf2 dimungkinkan, tetapi `fpdf` dan
+                # `fpdf2` sama-sama memakai modul bernama `fpdf` — JANGAN
+                # memasang keduanya bersamaan.)
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        prefix="spj-logo-",
+                        suffix=".jpg",
+                        delete=False,
+                    ) as temp_file:
+                        temp_file.write(out.getvalue())
+                        temp_path = Path(temp_file.name)
+
+                    self.image(str(temp_path), x=x, y=y, h=h, w=w)
+                    logger.info("KOP (FPDF): logo OK %s (%dx%d px -> %.1fx%.1f mm)", label, iw, ih, w, h)
+                finally:
+                    if temp_path is not None:
+                        try:
+                            temp_path.unlink(missing_ok=True)
+                        except OSError as cleanup_error:
+                            logger.warning(
+                                "Gagal menghapus file logo sementara %s: %s",
+                                temp_path, cleanup_error,
+                            )
             except Exception as e:
                 logger.warning("Kop: gagal render logo %s -> %s", str(src)[:60], e)
 

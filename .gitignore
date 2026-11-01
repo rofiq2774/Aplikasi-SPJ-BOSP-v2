@@ -1,3 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+=======
 # Dependencies
 node_modules/
 
@@ -13,6 +17,3 @@ hasil_build/
 .aider.chat.history.md
 .aider.input.history
 
-# Temporary Patch and Diff Files
-*.diff
-*.patch

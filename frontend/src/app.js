@@ -3328,24 +3328,47 @@ function openLogoFull(previewId) {
 }
 
 // Fungsi Simpan Data (POST ke Backend)
+// BUG v1.2.4 lanjutan: UI lama "Kop Surat / Pemda" (elemen kop-1, kop-2,
+// kop-alamat, logo-pemda, logo-sekolah, tempat_surat) sudah DIHAPUS dan
+// digabung ke form Identitas Periode (idn-*). Fungsi ini masih membaca
+// elemen lama secara langsung — `document.getElementById("kop-1").value`
+// melempar TypeError "Cannot set properties of null" begitu dipanggil, dan
+// `logo-pemda`/`logo-sekolah` pun tidak ada lagi di DOM. Karena itu seluruh
+// akses elemen kini diberi penjaga null; bila form lama memang tidak ada di
+// halaman, penyimpanan ditolak dengan pesan jelas (bukan crash senyap), dan
+// pemakai diarahkan memakai menu Identitas Periode.
 async function saveDataPemda() {
+  const elNamaPemda = document.getElementById("kop-1");
+  const elNamaSekolah = document.getElementById("kop-2");
+  const elAlamat = document.getElementById("kop-alamat");
+
+  // Form lama tidak ada di UI saat ini → jangan lanjut (mencegah crash).
+  if (!elNamaPemda || !elNamaSekolah || !elAlamat) {
+    appLog(
+      "error",
+      "saveDataPemda: elemen form Kop/Pemda lama (kop-1/kop-2/kop-alamat) tidak ditemukan di DOM — gunakan form Identitas Periode (idn-*).",
+    );
+    showToast(
+      "Perhatian!",
+      "Form Kop/Pemda lama sudah digabung ke menu Identitas Periode. Simpan identitas lewat form tersebut.",
+    );
+    return;
+  }
+
   const formData = new FormData();
 
   // Ambil nilai teks
-  formData.append("nama_pemda", document.getElementById("kop-1").value);
-  formData.append("nama_sekolah", document.getElementById("kop-2").value);
-  formData.append(
-    "alamat_sekolah",
-    document.getElementById("kop-alamat").value,
-  );
+  formData.append("nama_pemda", elNamaPemda.value);
+  formData.append("nama_sekolah", elNamaSekolah.value);
+  formData.append("alamat_sekolah", elAlamat.value);
   formData.append(
     "tempat_surat",
     document.getElementById("tempat_surat")?.value || "",
   );
 
-  // Ambil file logo
-  const filePemda = document.getElementById("logo-pemda").files[0];
-  const fileSekolah = document.getElementById("logo-sekolah").files[0];
+  // Ambil file logo (input lama opsional — tidak ada di UI baru)
+  const filePemda = document.getElementById("logo-pemda")?.files?.[0];
+  const fileSekolah = document.getElementById("logo-sekolah")?.files?.[0];
 
   if (filePemda) formData.append("logo_pemda", filePemda);
   if (fileSekolah) formData.append("logo_sekolah", fileSekolah);
@@ -3366,6 +3389,7 @@ async function saveDataPemda() {
       showToast("Gagal!", String(detail));
     }
   } catch (err) {
+    appLog("error", "saveDataPemda gagal: " + ((err && err.stack) || err));
     showToast("Gagal!", "Terjadi kesalahan koneksi ke server: " + err.message);
   }
 }
@@ -3389,35 +3413,65 @@ function assetUrl(path) {
 }
 
 // Fungsi Load Data (Panggil saat aplikasi dibuka atau tab diklik)
+// BUG v1.2.4 lanjutan (toast "Error loading data: TypeError: Cannot set
+// properties of null (setting 'value')"): GET /api/get-pemda menjawab 200,
+// tetapi baris berikutnya `document.getElementById("kop-1").value = ...`
+// crash karena elemen UI lama Kop/Pemda (kop-1, kop-2, kop-alamat,
+// preview-logo-pemda, preview-logo-sekolah) sudah dihapus dari DOM dan
+// digabung ke form Identitas Periode (idn-*).
+//
+// Perbaikan sesuai analisa: BUKAN sekadar `if (element)` senyap — data
+// legacy /get-pemda kini disimpan ke state `_dataPemdaLegacy` agar tetap
+// berguna sebagai FALLBACK (mis. saat form idn baru kosong), sementara
+// pengisian elemen dilakukan lewat helper null-safe sehingga tidak ada
+// lagi TypeError apa pun. Error juga dicatat ke app.log (sebelumnya blok
+// catch hanya menampilkan toast sehingga kegagalan pasca-HTTP-200 tidak
+// pernah terlihat di console/log).
+let _dataPemdaLegacy = null;
+
 async function loadDataPemda() {
+  // Helper null-safe: isi .value hanya bila elemennya benar-benar ada.
+  const setValSafe = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.value = v ?? "";
+    return !!el;
+  };
   try {
     const response = await apiFetch(`${API_BASE}/get-pemda`);
     const res = await response.json();
 
     if (res.data) {
-      document.getElementById("kop-1").value = res.data.nama_pemda || "";
-      document.getElementById("kop-2").value = res.data.nama_sekolah || "";
-      document.getElementById("kop-alamat").value =
-        res.data.alamat_sekolah || "";
+      // Simpan salinan legacy untuk fallback/preview fitur lain.
+      _dataPemdaLegacy = res.data;
+
+      // Elemen form lama (opsional — hilang di UI Identitas Periode baru).
+      const adaFormLama =
+        setValSafe("kop-1", res.data.nama_pemda || "") |
+        setValSafe("kop-2", res.data.nama_sekolah || "") |
+        setValSafe("kop-alamat", res.data.alamat_sekolah || "");
 
       if (res.data.logo_pemda) {
         const img = document.getElementById("preview-logo-pemda");
-        // Logo kini dikirim backend sebagai data URI base64 — pakai langsung,
-        // tanpa assetUrl/cache-buster (data URI tidak perlu di-cache-bust).
-        img.src = res.data.logo_pemda.startsWith("data:")
-          ? res.data.logo_pemda
-          : `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`;
-        img.style.display = "block";
-        if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
+        if (img) {
+          // Logo kini dikirim backend sebagai data URI base64 — pakai langsung,
+          // tanpa assetUrl/cache-buster (data URI tidak perlu di-cache-bust).
+          img.src = res.data.logo_pemda.startsWith("data:")
+            ? res.data.logo_pemda
+            : `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`;
+          img.style.display = "block";
+          if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
+        }
       }
 
       if (res.data.logo_sekolah) {
         const img = document.getElementById("preview-logo-sekolah");
-        img.src = res.data.logo_sekolah.startsWith("data:")
-          ? res.data.logo_sekolah
-          : `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
-        img.style.display = "block";
-        if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
+        if (img) {
+          img.src = res.data.logo_sekolah.startsWith("data:")
+            ? res.data.logo_sekolah
+            : `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
+          img.style.display = "block";
+          if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
+        }
       }
 
       // tempat_surat
@@ -3427,8 +3481,17 @@ async function loadDataPemda() {
         const preview = document.getElementById("preview-tempat-surat");
         if (preview) preview.innerText = res.data.tempat_surat || "";
       }
+
+      if (!adaFormLama) {
+        appLog(
+          "info",
+          "loadDataPemda: form Kop/Pemda lama tidak ada di DOM — data legacy disimpan di state (_dataPemdaLegacy) sebagai fallback; UI memakai form Identitas Periode.",
+        );
+      }
     }
   } catch (err) {
+    // Catat ke app.log agar kegagalan pasca-HTTP-200 terlihat (bukan hanya toast).
+    appLog("error", "loadDataPemda gagal: " + ((err && err.stack) || err));
     showToast("Gagal!", "Error loading data: " + err);
   }
 }
@@ -3684,7 +3747,11 @@ function updateIdentitasAktifInfo() {
   }
 }
 
-// Kosongkan form untuk membuat entri baru
+// Kosongkan form untuk membuat entri baru.
+// FALLBACK DATA LAMA: saat menambah entri baru, field kop yang masih kosong
+// diisi dari data legacy /get-pemda (_dataPemdaLegacy) — hasil pemetaan inilah
+// yang dipakai backend bila belum ada satupun entri IdentitasPeriode, sehingga
+// data warisan tidak hilang dan pengguna tinggal menyesuaikan periode barunya.
 function resetIdentitasForm() {
   identitasFormMode = "new";
   identitasEditingId = null;
@@ -3700,6 +3767,23 @@ function resetIdentitasForm() {
   if (sel) sel.value = "1";
   setIdnImgPreview("idn-preview-logo-pemda", "");
   setIdnImgPreview("idn-preview-logo-sekolah", "");
+
+  // Isi awal dari data Pengaturan lama (fallback) bila sudah dimuat.
+  const legacy = _dataPemdaLegacy || {};
+  const prefill = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && !el.value && v) el.value = v;
+  };
+  prefill("idn-pemda", legacy.nama_pemda);
+  prefill("idn-sekolah", legacy.nama_sekolah);
+  prefill("idn-alamat", legacy.alamat_sekolah);
+  prefill("idn-tempat", legacy.tempat_surat);
+  // Logo legacy datang sebagai data URI dari /get-pemda → tampilkan di preview.
+  setIdnImgPreview("idn-preview-logo-pemda", legacy.logo_pemda || "");
+  setIdnImgPreview("idn-preview-logo-sekolah", legacy.logo_sekolah || "");
+  _idnLogoPemdaKeep = "";
+  _idnLogoSekolahKeep = "";
+
   const title = document.getElementById("idn-form-title");
   if (title) title.innerHTML = `${iconSvg("edit", 17)} Tambah Identitas Periode`;
   updateIdentitasPreview();
@@ -4116,13 +4200,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   loadMasterRekeningBelanja();
   loadKwitansiList();
   loadDataBKU();
-  loadDataPemda().then(() => updatePemdaPreview());
 
   // Tab awal adalah "identitas": siapkan tanggal uji + muat daftar periode.
   const tglUji = document.getElementById("idn-tgl-uji");
   if (tglUji && !tglUji.value) {
     tglUji.value = new Date().toISOString().slice(0, 10);
   }
+  // Uratan baru (bug toast "Error loading data: Cannot set properties of
+  // null"): resetIdentitasForm() kini memakai _dataPemdaLegacy sebagai
+  // isian awal fallback, sehingga data kop/lama dari /get-pemda HARUS
+  // sudah selesai dimuat sebelum form di-reset — kalau tidak, prefill
+  // selalu kosong saat aplikasi pertama dibuka.
+  await loadDataPemda();
+  updatePemdaPreview();
   resetIdentitasForm();
   loadIdentitasPeriode();
 

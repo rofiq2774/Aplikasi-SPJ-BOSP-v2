@@ -1188,7 +1188,22 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
             select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti)
         )).scalars().all() if t.uraian]
     ) or (kw.nama_kegiatan or "")
+    def _kop_bersama():
+        """SATU definisi kop (baris pemda/sekolah/alamat + logo data URI) yang
+        dipakai bersama bagian kuitansi/BAST/RAB — frontend tinggal menggambar.
+        Sumber identitas: resolve_identitas_for_tanggal() di atas; logo lewat
+        load_logo_source() sehingga JANGAN ada path lokal (D:\\...) yang ikut
+        terkirim ke renderer."""
+        return {
+            "baris1": (ident.get("nama_pemda") or "").upper(),
+            "baris2": (ident.get("nama_sekolah") or "").upper(),
+            "alamat": ident.get("alamat_sekolah") or "",
+            "logo_pemda": logo_pemda_uri or "",
+            "logo_sekolah": logo_sekolah_uri or "",
+        }
+
     kwitansi_payload = {
+        "id": kw.id,
         "nomor_kwitansi": kw.nomor_kwitansi or "-",
         "no_bukti": kw.no_bukti or "",
         "no_bast": kw.no_bast or "",
@@ -1206,6 +1221,8 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
         "tahun": kw.tahun or "",
         "kode_kegiatan": kw.kode_kegiatan or "",
         "nama_kegiatan": kw.nama_kegiatan or "",
+        "kota_tempat_surat": ident.get("tempat_surat") or "Jember",
+        "kop": _kop_bersama(),
     }
 
     # ---------- Bagian BAST (opsional: butuh no_bukti + transaksi) ----------
@@ -1241,6 +1258,11 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
             "tahun_terbilang": tb.get("terbilang_tahun", ""),
             "tgl_full": tb.get("full", ""),
             "nama_penyedia": kw.nama_toko or "",
+            "nama_penerima": ident.get("nama_pengurus_barang") or "",
+            "nip_penerima": ident.get("nip_pengurus_barang") or "",
+            "jabatan_penerima": "Pengurus Barang",
+            "kota": ident.get("tempat_surat") or "Jember",
+            "kop": _kop_bersama(),
             "items": bast_items,
             "total_volume": None,  # dihitung di bawah dari jumlah item
             "grand_total": bast_total_num,
@@ -1314,6 +1336,8 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
                 "grand_total": rab_grand,
                 "grand_total_fmt": format_rupiah(rab_grand),
                 "tanggal_surat": _rab_tanggal_surat(lokasi_rab, kw.thp, kw.tahun),
+                "satuan_pendidikan": ident.get("nama_sekolah") or "",
+                "kop": _kop_bersama(),
             }
             rab_status = {"status": "included", "alasan": None}
         else:
@@ -1331,8 +1355,13 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
         "document": {
             "filename": filename,
             "generated_at": generated_at,
+            # Keputusan produk: SEMUA bagian SPJ (kuitansi, BAST, RAB) memakai
+            # kop + logo yang sama; frontend menggambar kop dari objek ini.
+            "order": ["kwitansi", "bast", "rab"],
+            "paper": {"width_mm": 215, "height_mm": 330, "margin_mm": 15},
+            "kop_wajib": True,
         },
-        "kwitansi": kwitansi_payload,
+        "kwitansi": dict(kwitansi_payload, id=kw.id),
         "identitas": {
             "id": ident.get("id"),
             "sumber": ident.get("sumber", ""),

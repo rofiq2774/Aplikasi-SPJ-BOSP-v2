@@ -12,3 +12,4 @@ reportlab
 python-multipart
 jinja2
 starlette
+tzdata

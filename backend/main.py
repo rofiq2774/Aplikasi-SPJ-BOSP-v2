@@ -1071,6 +1071,300 @@ def _terapkan_identitas_ke_pengaturan(p: "Pengaturan", ident: dict):
         setattr(p, f, ident.get(f) or "")
 
 
+def _terbilang_safe(jumlah) -> str:
+    """Terbilang yang tidak pernah melempar — dipakai payload SPJ & renderer."""
+    try:
+        return f"{terbilang(_to_float(jumlah)).capitalize()} rupiah"
+    except Exception as e:  # pragma: no cover - defensip
+        logger.warning("terbilang gagal untuk %r -> %s", jumlah, e)
+        return "................ rupiah"
+
+
+def _rab_tanggal_surat(lokasi: str, thp: str, thn: str) -> str:
+    """SATU formatter tanggal surat RAB (dipakai backend & dikirim ke frontend).
+
+    Dulu menghasilkan '..., ... Juli 2026' (hari '...' terbawa dari template
+    lama). Kini: '<Kota>, ... <Bulan> <Tahun>' dengan satu titik-titik sebagai
+    placeholder tanggal penandatanganan. Bulan mengikuti label tahap
+    (THP I -> Januari, THP II -> Juli); logika filter data TIDAK berubah.
+    """
+    bulan = "Januari"  # Default
+    if thp:
+        thp_str = str(thp).upper()
+        if "THP II" in thp_str or "2" in thp_str or "DUA" in thp_str:
+            bulan = "Juli"
+        elif "THP I" in thp_str or "1" in thp_str or "SATU" in thp_str:
+            bulan = "Januari"
+    return f"{lokasi or 'Jember'}, ... {bulan} {thn or ''}".strip()
+
+
+def _foto_bukti_list(kwitansi) -> list:
+    """Daftar mentah foto bukti kwitansi (support string lama & object baru)."""
+    raw = getattr(kwitansi, "foto_bukti", None)
+    if isinstance(raw, list):
+        return raw
+    try:
+        parsed = json.loads(raw or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def _lampiran_foto_payload(kwitansi) -> dict:
+    """Kelompokkan foto bukti per jenis untuk frontend (path relatif /uploads)."""
+    grouped: dict = {}
+    for item in _foto_bukti_list(kwitansi):
+        if isinstance(item, str):
+            path, jenis = item, "barang"
+        elif isinstance(item, dict):
+            path = item.get("path") or ""
+            jenis = item.get("jenis", "barang")
+        else:
+            continue
+        if not path:
+            continue
+        p = resolve_foto_path(path)
+        grouped.setdefault(jenis, []).append({
+            "path": f"/uploads/{Path(path).as_posix().lstrip('/\\')}",
+            "available": bool(p),
+        })
+    return grouped
+
+
+def _parse_bast_tanggal(raw_date_str) -> datetime:
+    """Parser tanggal BAST yang selama ini hanya ada di dalam
+    generate_bast_pdf — diangkat ke level modul agar endpoint data SPJ bisa
+    memakai pemformatan yang SAMA dengan renderer backend (satu sumber
+    kebenaran)."""
+    try:
+        if not raw_date_str:
+            return datetime.now()
+        s = str(raw_date_str)
+        if "/" in s:
+            return datetime.strptime(s, "%d/%m/%Y")
+        if "-" in s and s.find("-") == 4:
+            return datetime.strptime(s, "%Y-%m-%d")
+        if "-" in s:
+            return datetime.strptime(s, "%d-%m-%Y")
+    except Exception:
+        pass
+    return datetime.now()
+
+
+async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
+    """Satu-satunya sumber kebenaran data dokumen SPJ (schema_version 1).
+
+    Dipakai oleh GET /api/kwitansi/{id}/spj-data (rendering frontend/pdfmake)
+    dan tetap konsisten dengan aturan renderer lama:
+      - identitas dipilih PERIODE-nya berdasarkan tanggal kwitansi
+        (resolve_identitas_for_tanggal), bukan baris `pengaturan` mentah;
+      - BAST: transaksi dengan no_bukti sama (urut id);
+      - RAB: transaksi kegiatan + thp kwitansi, pengeluaran > 0, join
+        master rekening belanja untuk kategori rekap;
+      - status tiap bagian eksplisit (included/skip + alasan) supaya PDF
+        parsial tidak diam-diam dianggap lengkap.
+    """
+    from zoneinfo import ZoneInfo
+
+    kw = (await db.execute(select(Kwitansi).where(Kwitansi.id == kwitansi_id))).scalar_one_or_none()
+    if not kw:
+        raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
+
+    ident = await resolve_identitas_for_tanggal(db, getattr(kw, "tanggal", None))
+
+    logo_pemda_uri = _logo_datauri_from_db(
+        ident.get("logo_pemda") or "", "logo_pemda", "")
+    logo_sekolah_uri = _logo_datauri_from_db(
+        ident.get("logo_sekolah") or "", "logo_sekolah", "")
+
+    tz = ZoneInfo("Asia/Jakarta")
+    generated_at = datetime.now(tz).isoformat(timespec="seconds")
+    safe_no = re.sub(r"[^A-Za-z0-9._-]", "-", (kw.no_bukti or str(kw.id)))
+    filename = f"SPJ-{safe_no}.pdf"
+
+    # ---------- Bagian KWITANSI (wajib) ----------
+    uraian_rab_text = " | ".join(
+        [t.uraian for t in (await db.execute(
+            select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti)
+        )).scalars().all() if t.uraian]
+    ) or (kw.nama_kegiatan or "")
+    kwitansi_payload = {
+        "nomor_kwitansi": kw.nomor_kwitansi or "-",
+        "no_bukti": kw.no_bukti or "",
+        "no_bast": kw.no_bast or "",
+        "tanggal": kw.tanggal or "",
+        "tanggal_indo": format_tanggal_indo(kw.tanggal or "")["full"],
+        "jumlah": _to_float(kw.jumlah),
+        "jumlah_rupiah": format_rupiah(_to_float(kw.jumlah)),
+        "terbilang": _terbilang_safe(kw.jumlah),
+        "uraian_pembayaran": kw.nama_kegiatan or "",
+        "uraian_detail": uraian_rab_text,
+        "nama_toko": kw.nama_toko or "",
+        "npwp_toko": kw.npwp_toko or "",
+        "alamat_toko": kw.alamat_toko or "",
+        "thp": kw.thp or "",
+        "tahun": kw.tahun or "",
+        "kode_kegiatan": kw.kode_kegiatan or "",
+        "nama_kegiatan": kw.nama_kegiatan or "",
+    }
+
+    # ---------- Bagian BAST (opsional: butuh no_bukti + transaksi) ----------
+    bast_items: list = []
+    bast_total_num = 0.0
+    if kw.no_bukti:
+        trx_rows = (await db.execute(
+            select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti).order_by(Transaksi.id)
+        )).scalars().all()
+        for idx, t in enumerate(trx_rows, start=1):
+            vol = _to_float(t.volume)
+            hrg = _to_float(t.harga_satuan)
+            sub = vol * hrg
+            bast_total_num += sub
+            bast_items.append({
+                "no": idx,
+                "uraian": t.uraian or "-",
+                "volume": int(vol) if float(vol).is_integer() else vol,
+                "satuan": t.satuan or "-",
+                "harga_satuan": hrg,
+                "harga_satuan_fmt": format_rupiah(hrg),
+                "jumlah": sub,
+                "jumlah_fmt": format_rupiah(sub),
+            })
+    if kw.no_bukti and bast_items:
+        tgl_bast_obj = _parse_bast_tanggal(kw.tanggal_nota or kw.tanggal)
+        tb = format_tanggal_indo(tgl_bast_obj.strftime("%Y-%m-%d"))
+        bast_payload = {
+            "nomor_surat": kw.no_bast or "-",
+            "hari_ini": tb.get("hari", ""),
+            "tgl_terbilang": tb.get("terbilang_tanggal", ""),
+            "bulan_indo": tb.get("bulan", ""),
+            "tahun_terbilang": tb.get("terbilang_tahun", ""),
+            "tgl_full": tb.get("full", ""),
+            "nama_penyedia": kw.nama_toko or "",
+            "items": bast_items,
+            "total_volume": None,  # dihitung di bawah dari jumlah item
+            "grand_total": bast_total_num,
+            "grand_total_fmt": format_rupiah(bast_total_num),
+        }
+        total_vol = sum(_to_float(i["volume"]) for i in bast_items)
+        bast_payload["total_volume"] = int(total_vol) if float(total_vol).is_integer() else total_vol
+        bast_status = {"status": "included", "alasan": None}
+    else:
+        bast_payload = None
+        bast_status = {
+            "status": "skip",
+            "alasan": ("Kwitansi tidak memiliki no_bukti" if not kw.no_bukti
+                       else "Tidak ada transaksi untuk no_bukti ini"),
+        }
+
+    # ---------- Bagian RAB (opsional: butuh kode_kegiatan + thp) ----------
+    kegiatan_data = None
+    if kw.kode_kegiatan:
+        kegiatan_data = (await db.execute(
+            select(MasterKegiatan).where(MasterKegiatan.kode_kegiatan == kw.kode_kegiatan)
+        )).scalar_one_or_none()
+
+    if kegiatan_data and kw.thp:
+        rab_raw = (await db.execute(
+            select(Transaksi, MasterRekeningBelanja.rekap_rekening_belanja)
+            .join(Kwitansi, Transaksi.no_bukti == Kwitansi.no_bukti)
+            .join(MasterRekeningBelanja,
+                  Transaksi.kode_rekening == MasterRekeningBelanja.kode_rekening_belanja,
+                  isouter=True)
+            .where(and_(
+                Transaksi.kode_kegiatan == kw.kode_kegiatan,
+                Kwitansi.thp == kw.thp,
+                Transaksi.pengeluaran > 0,
+            ))
+            .order_by(Transaksi.tanggal, Transaksi.id)
+        )).all()
+        rab_rows = []
+        rab_grand = 0.0
+        no_row = 1
+        for row in rab_raw:
+            trx = row[0]
+            jenis = row[1] or "-"
+            uraian_l = (trx.uraian or "").lower()
+            if "ppn" in uraian_l or "pph" in uraian_l:
+                continue  # aturan lama: buang pajak, tanpa filter tahap
+            vol = _to_float(trx.volume)
+            hrg = _to_float(trx.harga_satuan)
+            sub = vol * hrg
+            rab_grand += sub
+            rab_rows.append({
+                "no": no_row,
+                "uraian": trx.uraian or "-",
+                "volume": int(vol) if float(vol).is_integer() else vol,
+                "satuan": trx.satuan or "",
+                "harga_satuan": hrg,
+                "harga_satuan_fmt": format_rupiah(hrg),
+                "jumlah": sub,
+                "jumlah_fmt": format_rupiah(sub),
+                "jenis_belanja": str(jenis),
+                "keterangan": "",
+            })
+            no_row += 1
+        if rab_rows:
+            lokasi_rab = ident.get("tempat_surat") or "Jember"
+            rab_payload = {
+                "kegiatan": kegiatan_data.nama_kegiatan or "-",
+                "thp_label": kw.thp or "",
+                "tahun": kw.tahun or "",
+                "rows": rab_rows,
+                "grand_total": rab_grand,
+                "grand_total_fmt": format_rupiah(rab_grand),
+                "tanggal_surat": _rab_tanggal_surat(lokasi_rab, kw.thp, kw.tahun),
+            }
+            rab_status = {"status": "included", "alasan": None}
+        else:
+            rab_payload = None
+            rab_status = {"status": "skip",
+                          "alasan": "Tidak ada transaksi non-pajak untuk kegiatan/thap ini"}
+    else:
+        rab_payload = None
+        rab_status = {"status": "skip",
+                      "alasan": ("Kode kegiatan kosong" if not kegiatan_data
+                                 else "Label tahap (thp) kosong")}
+
+    return {
+        "schema_version": 1,
+        "document": {
+            "filename": filename,
+            "generated_at": generated_at,
+        },
+        "kwitansi": kwitansi_payload,
+        "identitas": {
+            "id": ident.get("id"),
+            "sumber": ident.get("sumber", ""),
+            "label": ident.get("label") or "",
+            "tanggal_awal": ident.get("tanggal_awal") or "",
+            "tanggal_akhir": ident.get("tanggal_akhir") or "",
+            "nama_pemda": ident.get("nama_pemda") or "",
+            "nama_sekolah": ident.get("nama_sekolah") or "",
+            "alamat_sekolah": ident.get("alamat_sekolah") or "",
+            "tempat_surat": ident.get("tempat_surat") or "Jember",
+            "logo_pemda": logo_pemda_uri or "",
+            "logo_sekolah": logo_sekolah_uri or "",
+            "nama_kepala_sekolah": ident.get("nama_kepala_sekolah") or "",
+            "nip_kepala_sekolah": ident.get("nip_kepala_sekolah") or "",
+            "nama_bendahara": ident.get("nama_bendahara") or "",
+            "nip_bendahara": ident.get("nip_bendahara") or "",
+            "nama_pengurus_barang": ident.get("nama_pengurus_barang") or "",
+            "nip_pengurus_barang": ident.get("nip_pengurus_barang") or "",
+        },
+        "transaksi_bast": bast_payload["items"] if bast_payload else [],
+        "bast": bast_payload,
+        "transaksi_rab": rab_payload["rows"] if rab_payload else [],
+        "rab": rab_payload,
+        "lampiran_foto": _lampiran_foto_payload(kw),
+        "sections": {
+            "kwitansi": {"status": "included", "alasan": None},
+            "bast": bast_status,
+            "rab": rab_status,
+        },
+    }
+
+
 def _logo_datauri_from_db(value: str, col: str, base_url: str) -> Optional[str]:
     """Konversi nilai kolom logo (base64 / nama file / URL) menjadi data URI
     untuk preview web; fallback URL statis bila file pun tak ditemukan."""
@@ -5396,9 +5690,10 @@ def generate_rab_pdf(pengaturan, kegiatan, transaksi_list, thp_label, tahun):
 
     pdf.set_font("helvetica", "", 11)
 
-    # Lokasi & Tanggal (Otomatis Juli jika Tahap II, Januari jika Tahap I)
-    lokasi = pengaturan.tempat_surat if pengaturan.tempat_surat else "Jember"
-    tgl_cetak = get_tanggal_surat_custom(lokasi, thp_label, tahun)
+    # Lokasi & Tanggal — formatter TERPADU (sama dengan payload spj-data;
+    # dulu menghasilkan "..., ... Juli 2026" dengan titik-titik ganda).
+    lokasi = getattr(pengaturan, 'tempat_surat', '') or "Jember"
+    tgl_cetak = _rab_tanggal_surat(lokasi, thp_label, tahun)
     
     x_sign = 230
     y_ttd = pdf.get_y()
@@ -5430,6 +5725,34 @@ def generate_rab_pdf(pengaturan, kegiatan, transaksi_list, thp_label, tahun):
     except Exception as e:
         print(f"Error output PDF: {e}")
         raise
+
+@api_router.get("/kwitansi/{id}/spj-data")
+async def get_kwitansi_spj_data(
+    id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Payload JSON lengkap satu dokumen SPJ (kuitansi + BAST + RAB + identitas
+    periode + lampiran foto) untuk rendering PDF di FRONTEND (pdfmake).
+
+    Prinsip pemisahan tanggung jawab:
+      - Backend  : membaca DB, MEMILIH IDENTITAS PERIODE berdasarkan tanggal
+                   kwitansi (resolve_identitas_for_tanggal), menyusun baris
+                   transaksi & kategori rekening, status tiap bagian.
+      - Frontend : memvalidasi payload, menggambar layout PDF, mengunduh Blob.
+
+    Aturan bisnis TIDAK diduplikasi di sini — semuanya lewat
+    ``kumpulkan_data_spj()`` yang sama dipakai pengujian; renderer PDF lama
+    (GET /kwitansi/{id}/pdf) tetap dipertahankan sebagai fallback transisi.
+    """
+    try:
+        data = await kumpulkan_data_spj(db, id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("spj-data gagal untuk kwitansi %s: %s", id, e)
+        raise HTTPException(status_code=500, detail=f"Gagal menyiapkan data SPJ: {e}")
+    return {"status": "success", "data": data}
+
 
 @api_router.get("/kwitansi/{id}/pdf")
 async def get_kwitansi_pdf(

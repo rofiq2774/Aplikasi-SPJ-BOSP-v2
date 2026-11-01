@@ -1,0 +1,82 @@
+2026-11-01 07:34:58,379 - main - INFO - Log file aktif di: /workspace/backend/app.log
+2026-11-01 07:34:58,380 - main - INFO - CORS allow_origins=['*']
+2026-11-01 07:34:58,424 - backend.stdout - INFO - IMPOR main.py OK
+2026-11-01 07:34:58,424 - backend.stdout - INFO - flatten_image_to_jpeg tersedia:
+2026-11-01 07:34:58,424 - backend.stdout - INFO - True
+2026-11-01 07:35:13,619 - main - INFO - Log file aktif di: /workspace/backend/app.log
+2026-11-01 07:35:13,621 - main - INFO - CORS allow_origins=['*']
+2026-11-01 07:35:13,669 - backend.stderr - INFO - Traceback (most recent call last):
+2026-11-01 07:35:13,669 - backend.stderr - INFO -   File "<stdin>", line 28, in <module>
+2026-11-01 07:35:13,669 - backend.stderr - INFO -   File "/usr/local/lib/python3.12/site-packages/fpdf/fpdf.py", line 150, in wrapper
+2026-11-01 07:35:13,669 - backend.stderr - INFO - return fn(self, *args, **kwargs)
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,669 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO -   File "/usr/local/lib/python3.12/site-packages/fpdf/fpdf.py", line 755, in cell
+2026-11-01 07:35:13,670 - backend.stderr - INFO - txt2 = self._escape(txt)
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,670 - backend.stderr - INFO -   File "/usr/local/lib/python3.12/site-packages/fpdf/fpdf.py", line 1899, in _escape
+2026-11-01 07:35:13,671 - backend.stderr - INFO - return s.replace('\\','\\\\').replace(')','\\)').replace('(','\\(').replace('\r','\\r')
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - ^
+2026-11-01 07:35:13,671 - backend.stderr - INFO - TypeError
+2026-11-01 07:35:13,671 - backend.stderr - INFO - :
+2026-11-01 07:35:13,671 - backend.stderr - INFO - a bytes-like object is required, not 'str'

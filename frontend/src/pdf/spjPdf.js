@@ -12,6 +12,12 @@
 // dari renderer, tanpa menyalin/mengemas font proprietary ke dalam installer).
 // VFS bawaan pdfmake (Roboto) TIDAK dimuat sama sekali: jika font Arial tidak
 // tersedia, render GAGAL dengan error jelas — tidak ada fallback diam-diam.
+//
+// Dev browser murni (vite tanpa Electron): karena jendela utama selalu dibuka
+// setelah backend/Electron siap, kegagalan font harus terlihat sebagai error
+// nyata — tetapi agar modul ini tetap dapat diuji/dijalankan di browser biasa,
+// tersedia jembatan dev eksplisit `window.__spjGetArialFonts` (lihat
+// ensureArialFonts). Tidak pernah ada unduhan font diam-diam dari internet.
 
 import pdfMake from "pdfmake/build/pdfmake";
 
@@ -28,13 +34,25 @@ pdfMake.fonts = {
 };
 
 let _arialFontsPromise = null;
-async function ensureArialFonts() {
+export async function ensureArialFonts() {
   if (!_arialFontsPromise) {
     _arialFontsPromise = (async () => {
-      const getFonts = window.electronAPI?.getArialPdfFonts;
+      // Sumber resmi: IPC Electron main (build & dev dalam aplikasi desktop).
+      let getFonts =
+        typeof window !== "undefined" && window.electronAPI?.getArialPdfFonts;
+      // Jembatan dev/test browser non-Elektron (mis. vitest atau debugging
+      // langsung di browser). Ini bukan fallback diam-diam: bila tidak ada
+      // sumber font sama sekali, error di bawah tetap muncul.
+      if (typeof getFonts !== "function") {
+        getFonts =
+          typeof window !== "undefined" ? window.__spjGetArialFonts : undefined;
+      }
       if (typeof getFonts !== "function") {
         throw new Error(
-          "Font Arial untuk PDF tidak tersedia dari proses Electron.",
+          "Font Arial untuk PDF tidak tersedia: jalankan aplikasi lewat " +
+            "Electron (npm start di root) agar berkas Arial dari Windows " +
+            "Fonts dapat dibaca melalui IPC, atau sediakan jembatan dev " +
+            "window.__spjGetArialFonts.",
         );
       }
 

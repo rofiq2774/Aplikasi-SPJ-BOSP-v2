@@ -165,16 +165,31 @@ async function apiFetch(url, options = {}) {
       "Backend child_process belum siap. Tidak ada servis localhost statis sebagai fallback.",
     );
   }
-  appLog("info", `FETCH -> ${method} ${url}`);
+  // BUG v1.2.4 (lanjutan): sebagian pemanggil masih menulis url relatif seperti
+  // "/api/identitas-periode". Di mode dev, fetch relatif mengenai origin Vite
+  // (http://localhost:5173) — BUKAN backend child_process di port dinamis —
+  // sehingga muncul "FETCH <- 500 GET /api/identitas-periode" dari log renderer.
+  // Karena itu setiap URL yang belum absolut selalu digabung dulu ke origin
+  // backend yang sebenarnya.
+  let finalUrl = url;
   try {
-    const res = await fetch(url, options);
+    if (typeof url === "string" && !/^https?:\/\//i.test(url)) {
+      const pathPart = url.startsWith("/") ? url : `/${url}`;
+      finalUrl = `${_backendOrigin}${pathPart}`;
+    }
+  } catch (_) {
+    finalUrl = url;
+  }
+  appLog("info", `FETCH -> ${method} ${finalUrl}`);
+  try {
+    const res = await fetch(finalUrl, options);
     appLog(
       res.status >= 400 ? "error" : "info",
-      `FETCH <- ${res.status} ${method} ${url}`,
+      `FETCH <- ${res.status} ${method} ${finalUrl}`,
     );
     return res;
   } catch (e) {
-    appLog("error", `FETCH GAGAL ${method} ${url}: ${e.message || e}`);
+    appLog("error", `FETCH GAGAL ${method} ${finalUrl}: ${e.message || e}`);
     throw e;
   }
 }
@@ -3497,10 +3512,19 @@ function setIdnImgPreview(imgId, src) {
 // pertama datang — bug "FETCH <- 500 GET /api/identitas-periode"). Backend
 // sudah dipaksa menahan /health sampai skema siap, tetapi retry ringan ini
 // tetap dipasang sebagai penjaga terakhir di sisi renderer.
+//
+// BUG v1.2.4 lanjutan: error 5xx harus di-retry TANPA terjebak di blok catch
+// yang langsung berhenti. Dahulu `throw err` di dalam blok try tertangkap oleh
+// `catch` fungsi itu sendiri sehingga percobaan ulang tidak pernah terjadi dan
+// pengguna melihat "loadIdentitasPeriode gagal" sejak HTTP 500 pertama.
+// Sekarang kegagalan 5xx dicatat lewat variabel `lastError` dan loop benar-
+// benar mengulang; pesan error final baru ditampilkan setelah semua retry habis.
 async function loadIdentitasPeriode(maxRetry = 3) {
   let attempt = 0;
+  let lastError = null;
   for (;;) {
     attempt++;
+    lastError = null;
     try {
       const tglEl = document.getElementById("idn-tgl-uji");
       const tgl = tglEl ? tglEl.value || "" : "";
@@ -3520,7 +3544,7 @@ async function loadIdentitasPeriode(maxRetry = 3) {
       }
       if (!response.ok || !res) {
         const detail = (res && (res.detail || res.message)) || `HTTP ${response.status}`;
-        const err = new Error(`Backend menolak permintaan daftar identitas (${detail})`);
+        lastError = new Error(`Backend menolak permintaan daftar identitas (${detail})`);
         // 5xx dari backend yang sedang bersiap → tunggu sebentar lalu coba lagi.
         if (response.status >= 500 && attempt <= maxRetry) {
           const delay = 500 * attempt; // 500ms, 1s, 1.5s
@@ -3531,18 +3555,32 @@ async function loadIdentitasPeriode(maxRetry = 3) {
           await new Promise((r) => setTimeout(r, delay));
           continue;
         }
-        throw err;
+      } else {
+        identitasPeriodeList = Array.isArray(res.data) ? res.data : [];
+        identitasAktifId = res.aktif_id ?? null;
+        renderIdentitasPeriodeList();
+        updateIdentitasAktifInfo();
+        return;
       }
-      identitasPeriodeList = Array.isArray(res.data) ? res.data : [];
-      identitasAktifId = res.aktif_id ?? null;
-      renderIdentitasPeriodeList();
-      updateIdentitasAktifInfo();
-      return;
     } catch (err) {
-      appLog("error", "loadIdentitasPeriode gagal: " + err);
-      showToast("Gagal!", "Tidak dapat memuat daftar identitas: " + err.message);
-      return;
+      // Kegagalan jaringan total (backend mati/di-blok) juga layak di-retry
+      // beberapa kali selama masa startup, bukan langsung menyerah.
+      lastError = err;
+      if (attempt <= maxRetry) {
+        const delay = 500 * attempt;
+        appLog(
+          "warn",
+          `loadIdentitasPeriode: ${err && err.message ? err.message : err}, mencoba ulang (${attempt}/${maxRetry}) dalam ${delay} ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
     }
+    // Semua percobaan habis (atau respons non-5xx yang tetap ditolak) → lapor.
+    const err = lastError || new Error("loadIdentitasPeriode: kegagalan tak terdefinisi");
+    appLog("error", "loadIdentitasPeriode gagal: " + err);
+    showToast("Gagal!", "Tidak dapat memuat daftar identitas: " + err.message);
+    return;
   }
 }
 

@@ -45,7 +45,7 @@ from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
-from database import engine, get_db, Base, BASE_DIR
+from database import engine, get_db, Base, BASE_DIR, AsyncSessionLocal
 from models import (
     Pengaturan,
     IdentitasPeriode,
@@ -929,18 +929,26 @@ def _periode_to_dict(ip: IdentitasPeriode) -> dict:
     return d
 
 
-async def _execute_with_schema_retry(db: AsyncSession, stmt):
-    """Jalankan ``db.execute(stmt)`` dengan penambalan otomatis.
+async def _execute_with_schema_retry(db: AsyncSession, make_stmt):
+    """Jalankan query buatan ``make_stmt()`` dengan penambalan otomatis.
 
     Bila gagal karena kolom model belum ada di tabel SQLite lama
     (OperationalError "no such column" — bug v1.2.4 pada GET
     /api/identitas-periode), jalankan ulang migrasi & penyelarasan kolom
     lalu coba query-nya sekali lagi sebelum error diteruskan ke pemanggil.
+
+    PENTING (bug v1.2.4 lanjutan): parameter kedua adalah FUNGSI pembuat
+    statement, bukan statement jadi. Setelah terjadi OperationalError,
+    SQLAlchemy 2.x meletakkan AsyncSession dalam keadaan "expired"; memakai
+    ulang objek statement yang sama pada sesi itu dapat memunculkan
+    "Statement is already attached to a different session" sehingga retry
+    justru gagal dan endpoint tetap menjawab 500. Karena itu statement selalu
+    dibangun ulang lewat ``make_stmt()`` sebelum dieksekusi pada sesi bersih.
     """
     from sqlalchemy.exc import OperationalError
 
     try:
-        return await db.execute(stmt)
+        return await db.execute(make_stmt())
     except OperationalError as e:
         if not _is_missing_column_error(e):
             raise
@@ -949,37 +957,45 @@ async def _execute_with_schema_retry(db: AsyncSession, stmt):
             "lalu mengulang query: %s", e
         )
         # Sesi async saat ini berada dalam keadaan gagal — tutup transaksi
-        # yang rusak dan buat statement baru pada sesi yang bersih.
+        # yang rusak dan pakai sesi BARU yang bersih untuk eksekusi ulang.
         try:
             await db.rollback()
         except Exception:
             pass
+        finally:
+            try:
+                await db.close()
+            except Exception:
+                pass
         if not _ensure_schema_columns_for([IdentitasPeriode]):
             raise
-        return await db.execute(stmt)
+        async with AsyncSessionLocal() as fresh:
+            return await fresh.execute(make_stmt())
 
 
 async def _query_identitas_periode_list(db: AsyncSession):
     """Daftar seluruh entri IdentitasPeriode (terlama → terbaru) tahan-skema."""
-    stmt = (
-        select(IdentitasPeriode).order_by(
+    def _make_stmt():
+        return select(IdentitasPeriode).order_by(
             IdentitasPeriode.tanggal_awal.asc(), IdentitasPeriode.id.asc()
         )
-    )
-    result = await _execute_with_schema_retry(db, stmt)
+
+    result = await _execute_with_schema_retry(db, _make_stmt)
     return result.scalars().all()
 
 
 async def get_identitas_base(db: AsyncSession) -> dict:
     """Identitas default (fallback): periode aktif terbaru, jika kosong pakai
     baris Pengaturan lama (kompatibilitas data existing)."""
-    stmt = (
-        select(IdentitasPeriode)
-        .where(IdentitasPeriode.is_active == True)  # noqa: E712
-        .order_by(IdentitasPeriode.tanggal_awal.desc(), IdentitasPeriode.id.desc())
-        .limit(1)
-    )
-    ip = (await db.execute(stmt)).scalar_one_or_none()
+    def _make_stmt():
+        return (
+            select(IdentitasPeriode)
+            .where(IdentitasPeriode.is_active == True)  # noqa: E712
+            .order_by(IdentitasPeriode.tanggal_awal.desc(), IdentitasPeriode.id.desc())
+            .limit(1)
+        )
+
+    ip = (await _execute_with_schema_retry(db, _make_stmt)).scalar_one_or_none()
     if ip is not None:
         return _periode_to_dict(ip)
     p = (await db.execute(select(Pengaturan).limit(1))).scalar_one_or_none()
@@ -1000,12 +1016,15 @@ async def resolve_identitas_for_tanggal(
     tgl = parse_tanggal_flex(tanggal_terbit)
     if tgl is None:
         return base
-    stmt = (
-        select(IdentitasPeriode)
-        .where(IdentitasPeriode.is_active == True)  # noqa: E712
-        .order_by(IdentitasPeriode.tanggal_awal.desc(), IdentitasPeriode.id.desc())
-    )
-    rows = (await db.execute(stmt)).scalars().all()
+
+    def _make_stmt():
+        return (
+            select(IdentitasPeriode)
+            .where(IdentitasPeriode.is_active == True)  # noqa: E712
+            .order_by(IdentitasPeriode.tanggal_awal.desc(), IdentitasPeriode.id.desc())
+        )
+
+    rows = (await _execute_with_schema_retry(db, _make_stmt)).scalars().all()
     for ip in rows:
         awal = parse_tanggal_flex(ip.tanggal_awal)
         akhir = parse_tanggal_flex(ip.tanggal_akhir)

@@ -163,6 +163,16 @@ async def lifespan(app):
         logger.exception("run_migrations gagal: %s", e)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # create_all hanya membuat tabel yang belum ada — kolom baru pada tabel
+    # lama (mis. identitas_periode.tempat_surat) harus ditambahkan terpisah,
+    # jika tidak endpoint seperti GET /api/identitas-periode akan 500 dengan
+    # "no such column". Lihat _sync_schema_columns().
+    try:
+        n = _sync_schema_columns()
+        if n:
+            logger.info(f"Penyelarasan skema: {n} kolom baru ditambahkan.")
+    except Exception as e:
+        logger.exception("Penyelarasan kolom skema gagal: %s", e)
     logger.info("Database siap")
     yield
 
@@ -367,6 +377,84 @@ class MasterRekeningBelanjaRequest(BaseModel):
 
 class MasterRekeningBelanjaBulkRequest(BaseModel):
     data: List[MasterRekeningBelanjaRequest]
+
+
+# ===============================
+# AUTO MIGRATION KOLOM (SQLite)
+# ===============================
+# Catatan bug (v1.2.4): GET /api/identitas-periode menjawab 500 dengan
+# "no such column: identitas_periode.tempat_surat" pada database milik
+# pengguna lama. Penyebabnya: tabel ``identitas_periode`` dibuat oleh
+# ``Base.metadata.create_all``, yang HANYA membuat tabel yang belum ada dan
+# tidak pernah menambah kolom baru pada tabel yang sudah eksis. Alembic juga
+# tidak menolong karena satu-satunya revisi (b7b597ac8a84) hanya menyentuh
+# tabel ``pengaturan`` — sehingga DB lama yang ber-revisi == head di-"upgrade"
+# tanpa apa-apa, sementara model menuntut kolom tambahan (tempat_surat, label,
+# is_active, dst).
+#
+# Solusi: perbandingan ringan model vs skema aktual (PRAGMA table_info) dan
+# ALTER TABLE ADD COLUMN untuk kolom yang hilang. SQLite mengizinkan
+# penambahan kolom dengan default konstan secara aman, jadi data lama tetap
+# utuh. Fungsi ini dipanggil SETELAH create_all agar tabel baru pun ikut
+# dilengkapi bila perlu.
+def _sync_schema_columns() -> int:
+    """Tambahkan kolom model yang belum ada di tabel SQLite. Return jumlah."""
+    from sqlalchemy import create_engine as create_sync_engine, inspect as sa_inspect, text
+
+    sync_url = str(engine.url).replace("sqlite+aiosqlite:///", "sqlite:///")
+    if not sync_url.startswith("sqlite"):
+        return 0  # hanya diperlukan untuk SQLite (skema aplikasi ini)
+
+    added = 0
+    try:
+        eng = create_sync_engine(sync_url)
+    except Exception as e:
+        logger.error(f"Gagal membuka engine sinkron untuk cek skema: {e}")
+        return 0
+    try:
+        with eng.begin() as conn:
+            inspector = sa_inspect(conn)
+            existing_tables = set(inspector.get_table_names())
+            for table in Base.metadata.sorted_tables:
+                if table.name not in existing_tables:
+                    continue  # akan dibuat oleh create_all
+                actual_cols = {
+                    r[0]
+                    for r in conn.execute(
+                        text(f'PRAGMA table_info("{table.name}")')
+                    ).fetchall()
+                }
+                for col in table.columns:
+                    if col.name in actual_cols:
+                        continue
+                    coltype = col.type.compile(dialect=eng.dialect)
+                    parts = [
+                        f'ALTER TABLE "{table.name}" '
+                        f'ADD COLUMN "{col.name}" {coltype}'
+                    ]
+                    if not col.nullable:
+                        parts.append("NOT NULL DEFAULT ''")
+                    elif col.default is not None and getattr(
+                        col.default, "is_scalar", False
+                    ):
+                        dv = col.default.arg
+                        if isinstance(dv, bool):
+                            parts.append(f"DEFAULT {1 if dv else 0}")
+                        elif isinstance(dv, (int, float)):
+                            parts.append(f"DEFAULT {dv}")
+                        else:
+                            escaped = str(dv).replace("'", "''")
+                            parts.append(f"DEFAULT '{escaped}'")
+                    ddl = " ".join(parts)
+                    conn.execute(text(ddl))
+                    added += 1
+                    logger.info(f"Auto migration kolom: {ddl}")
+    except Exception as e:
+        logger.exception("Gagal menyelaraskan kolom skema database: %s", e)
+    finally:
+        eng.dispose()
+    return added
+
 
 def run_migrations():
     global _migrated

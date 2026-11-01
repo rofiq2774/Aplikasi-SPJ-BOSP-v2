@@ -1,6 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Perbaikan error Windows "No time zone found with key Asia/Jakarta":
+# kemas database zona waktu IANA dari paket `tzdata` + runtime hook yang
+# mendaftarkannya ke TZPATH ZoneInfo saat aplikasi frozen start.
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 block_cipher = None
+
+tz_datas = collect_data_files('tzdata')
+# copy_metadata agar dist-info tzdata ikut terprovisioning (PEP 653/tzsearch).
+tz_datas += copy_metadata('tzdata')
 
 a = Analysis(
     ['main.py'],
@@ -11,7 +19,7 @@ a = Analysis(
         ('alembic', 'alembic'),
         ('alembic.ini', '.'),
         ('.env', '.'),
-    ],
+    ] + tz_datas,
     hiddenimports=[
         'uvicorn.logging',
         'uvicorn.loops',
@@ -33,11 +41,13 @@ a = Analysis(
         'reportlab.graphics.barcode.ecc200datamatrix', 
         'reportlab.graphics.barcode.fourstate',
         'sqlalchemy.ext.asyncio',
-        'sqlalchemy.dialects.sqlite'
+        'sqlalchemy.dialects.sqlite',
+        'zoneinfo',
+        'tzdata',
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['runtime_hook_tz.py'],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

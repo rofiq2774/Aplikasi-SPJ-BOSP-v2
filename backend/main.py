@@ -1152,6 +1152,65 @@ def _parse_bast_tanggal(raw_date_str) -> datetime:
     return datetime.now()
 
 
+# Lokasi database zona waktu sistem standar (Linux/macOS). Di Windows biasanya
+# tidak ada — di situ tzdata (dependency) / hasil kemasan main.spec yang berperan.
+TZDB_SYSTEM_DIRS = ("/usr/share/zoneinfo", "/usr/lib/zoneinfo", "/usr/lib64/zoneinfo")
+
+
+def _zone_wib():
+    """Zona Asia/Jakarta (WIB, UTC+7) dengan urutan pencarian eksplisit.
+
+    Error produksi yang diperbaiki: pada Windows (dan executable PyInstaller)
+    `ZoneInfo("Asia/Jakarta")` melempar KeyError 'No time zone found with key
+    Asia/Jakarta' bila OS tidak menyediakan database zona waktu IANA dan paket
+    `tzdata` tidak terpasang/terprovisioning.
+
+    Urutan pencarian (semuanya adalah WIB ASLI — TIDAK ADA fallback diam-diam
+    ke waktu lokal komputer atau zona lain):
+      1. tzdata yang ter-provisioning lewat PEP 653 (`pip install tzdata`).
+      2. Direktori sistem standar Linux/macOS (/usr/share/zoneinfo).
+      3. Folder `_internal/tzdata/zoneinfo` milik executable PyInstaller
+         (main.spec mengemas tzdata ke sana; TzPathFinder membaca dari sana).
+    Bila ketiganya gagal, KeyError dibiarkan naik apa adanya supaya muncul di
+    log/error response — bukan digantikan waktu yang salah.
+    """
+    from zoneinfo import ZoneInfo, reset_tzpath
+
+    try:
+        return ZoneInfo("Asia/Jakarta")
+    except (KeyError, FileNotFoundError):
+        pass
+    # Cari database zona waktu di lokasi yang diketahui, lalu ulangi SEKALI.
+    candidates = []
+    for p in TZDB_SYSTEM_DIRS:
+        if os.path.isdir(p) and os.path.exists(os.path.join(p, "Asia", "Jakarta")):
+            candidates.append(p)
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+        for rel in ("tzdata/zoneinfo", "zoneinfo"):
+            p = os.path.join(base, rel)
+            if os.path.isdir(p) and os.path.exists(os.path.join(p, "Asia", "Jakarta")):
+                candidates.insert(0, p)
+    if candidates:
+        reset_tzpath(candidates + [str(x) for x in __import__("zoneinfo").TZPATH])
+        try:
+            return ZoneInfo("Asia/Jakarta")
+        except (KeyError, FileNotFoundError):
+            pass
+    raise RuntimeError(
+        "Database zona waktu 'Asia/Jakarta' tidak ditemukan. "
+        "Instal dependency 'tzdata' (pip install -r requirements.txt) atau, "
+        "untuk aplikasi terpaket, pastikan build memakai main.spec terbaru "
+        "(yang mengemas tzdata ke _internal/tzdata)."
+    )
+
+
+def _waktu_terbit_iso() -> str:
+    """Timestamp `generated_at` payload SPJ: waktu Asia/Jakarta nyata, format
+    ISO-8601 dengan offset +07:00 (contoh: 2026-11-01T18:47:28+07:00)."""
+    return datetime.now(_zone_wib()).isoformat(timespec="seconds")
+
+
 async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     """Satu-satunya sumber kebenaran data dokumen SPJ (schema_version 1).
 
@@ -1165,8 +1224,6 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
       - status tiap bagian eksplisit (included/skip + alasan) supaya PDF
         parsial tidak diam-diam dianggap lengkap.
     """
-    from zoneinfo import ZoneInfo
-
     kw = (await db.execute(select(Kwitansi).where(Kwitansi.id == kwitansi_id))).scalar_one_or_none()
     if not kw:
         raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
@@ -1178,8 +1235,8 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     logo_sekolah_uri = _logo_datauri_from_db(
         ident.get("logo_sekolah") or "", "logo_sekolah", "")
 
-    tz = ZoneInfo("Asia/Jakarta")
-    generated_at = datetime.now(tz).isoformat(timespec="seconds")
+    # WIB via _zone_wib(): tahan-Windows/tahan-frozen (lihat dokstring fungsi).
+    generated_at = _waktu_terbit_iso()
     safe_no = re.sub(r"[^A-Za-z0-9._-]", "-", (kw.no_bukti or str(kw.id)))
     filename = f"SPJ-{safe_no}.pdf"
 

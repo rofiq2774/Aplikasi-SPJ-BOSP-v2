@@ -14,7 +14,10 @@ Semua DB memakai sqlite temporer di tmp_path — TIDAK menyentuh data produksi.
 import asyncio
 import base64
 import json
+import os
+import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -173,3 +176,103 @@ def test_no_pdf_media_type_anywhere_in_spj_flow(spj_client):
     assert "pdf" not in ct.lower()
     # payload harus serializable sebagai JSON murni
     json.loads(res.text)
+
+
+# ---------------------------------------------------------------------------
+# Regresi zona waktu (error produksi Windows, lihat backend/app.log):
+#   GET /api/kwitansi/{id}/spj-data -> 500 "No time zone found with key
+#   Asia/Jakarta" karena runtime tidak punya database TZ IANA.
+# ---------------------------------------------------------------------------
+def test_zone_survives_without_system_tzdb(tmp_path):
+    """Simulasi Windows TANPA database TZ sistem dan TANPA tzdata terpasang.
+
+    Dijalankan pada interpreter Python bersih (subprocess) karena state
+    TZPATH/provisioning zoneinfo bersifat per-proses:
+      - env TZPATH=<dir kosong>  -> mematikan provisioning PEP 653 paket tzdata
+        (persis kondisi user Windows di backend/app.log),
+      - zoneinfo.reset_tzpath([kosong]) -> tidak ada database zona sistem,
+      - direct ZoneInfo("Asia/Jakarta") -> WAJIB gagal (bukti reproduksi bug),
+      - dengan sys.frozen + _MEIPASS berisi tzdata/zoneinfo hasil kemasan
+        main.spec -> _zone_wib() harus menemukan WIB ASLI (+07:00).
+    """
+    empty = tmp_path / "no_zoneinfo"
+    empty.mkdir()
+    meipass = tmp_path / "_MEIPASS"
+    (meipass / "tzdata" / "zoneinfo" / "Asia").mkdir(parents=True)
+    import tzdata as _tzpkg
+    src_jkt = Path(_tzpkg.__file__).parent / "zoneinfo" / "Asia" / "Jakarta"
+    (meipass / "tzdata" / "zoneinfo" / "Asia" / "Jakarta").write_bytes(src_jkt.read_bytes())
+
+    helper_code = r'''
+import os, sys
+sys.path.insert(0, os.environ["BACKEND_DIR"])
+# HANYA menimpa loader Python murni (fallback saat modul C _zoneinfo tidak ada);
+# sumber TZ sistem & provisioning PEP 653 dinonaktifkan secara terkendali.
+import zoneinfo._tzpath as _tzp
+_orig_find = _tzp.find_tzfile
+_tzp.find_tzfile = lambda key: None             # simulasi Windows tanpa TZDB sistem
+import zoneinfo._zoneinfo as _zimod
+_zimod.get_tz_search_paths = lambda: set()      # simulasi tzdata TIDAK terpasang
+try:                                            # paksa pakai loader Python murni
+    import _zoneinfo as _czi; _czi.ZoneInfo = None
+except Exception:
+    pass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+try:
+    ZoneInfo("Asia/Jakarta")
+    print("direct=FOUND")
+except ZoneInfoNotFoundError:
+    print("direct=NOTFOUND")
+if os.environ.get("SIM_FROZEN") == "1":
+    sys.frozen = True
+    sys._MEIPASS = os.environ["MEIPASS"]
+    def _find_from_meipass(key):
+        p = os.path.join(os.environ["MEIPASS"], "tzdata", "zoneinfo", *key.split("/"))
+        return p if os.path.isfile(p) else None
+    _tzp.find_tzfile = _find_from_meipass       # setara hasil kemasan main.spec
+import main
+try:
+    from datetime import datetime
+    tz = main._zone_wib()
+    ts = main._waktu_terbit_iso()
+    print(f"zone={datetime.now(tz).utcoffset()} ts={ts}")
+except Exception as e:
+    print(f"error={type(e).__name__}: {e}")
+'''
+
+    def run(sim_frozen):
+        env = dict(os.environ)
+        env.update({
+            "BACKEND_DIR": str(BACKEND_DIR),
+            "EMPTY_TZPATH": str(empty),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        })
+        if sim_frozen:
+            env["SIM_FROZEN"] = "1"
+            env["MEIPASS"] = str(meipass)
+        else:
+            env.pop("SIM_FROZEN", None)
+        p = subprocess.run([sys.executable, "-c", helper_code],
+                           capture_output=True, text=True, env=env, timeout=180)
+        return p.stdout + p.stderr
+
+    out_plain = run(False)
+    # Kondisi rusak seperti app.log: tanpa sumber TZ apa pun, lookup gagal...
+    assert "direct=NOTFOUND" in out_plain, out_plain
+    # ...dan _zone_wib memberi ERROR JELAS, bukan waktu salah.
+    assert "error=RuntimeError" in out_plain and "Asia/Jakarta" in out_plain, out_plain
+
+    out_frozen = run(True)
+    # Build main.spec (tzdata terkemas + frozen marker) memulihkan WIB asli.
+    assert "direct=NOTFOUND" in out_frozen, out_frozen
+    assert "zone=7:00:00" in out_frozen, out_frozen
+    assert "+07:00" in out_frozen, out_frozen
+
+
+def test_generated_at_from_production_endpoint(spj_client):
+    """Endpoint nyata: generated_at ber-offset +07:00 (diuji juga di atas via
+    test_generated_at_offset_wib; ini menegaskan bentuk string ISO penuh)."""
+    data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]
+    ts = data["document"]["generated_at"]
+    dt = datetime.fromisoformat(ts)
+    assert dt.utcoffset() == timedelta(hours=7)

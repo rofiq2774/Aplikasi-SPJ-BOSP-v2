@@ -1,0 +1,440 @@
+From 99aabcedfcf67ca04124f0317ebcd3169255f813 Mon Sep 17 00:00:00 2001
+From: "qwen.ai[bot]" <qwenlm-intl@service.alibaba.com>
+Date: Sun, 1 Nov 2026 04:11:50 +0000
+Subject: [PATCH 4/5] task snapshot a966bba6-c2aa-4c78-9a71-1fdc403f95d9
+
+---
+ frontend/src/app.js   | 379 ++++++++++++++++++++++++++++++++++++++++++
+ frontend/src/icons.js |   5 +
+ 2 files changed, 384 insertions(+)
+
+diff --git a/frontend/src/app.js b/frontend/src/app.js
+index d178c7c..66c5faf 100644
+--- a/frontend/src/app.js
++++ b/frontend/src/app.js
+@@ -1311,6 +1311,8 @@ window.switchTab = function (tab) {
+       case "identitas":
+         // Sembunyikan search bar di menu identitas karena tidak relevan
+         if (searchContainer) searchContainer.classList.add("hidden");
++        // Segarkan daftar periode identitas setiap kali menu dibuka
++        if (typeof loadIdentitasPeriode === "function") loadIdentitasPeriode();
+         break;
+ 
+       case "rekap":
+@@ -3408,6 +3410,366 @@ function updatePemdaPreview() {
+   } else if (small2) small2.style.display = "none";
+ }
+ 
++// ==========================================================================
++// IDENTITAS SATUAN PENDIDIKAN PER PERIODE (menu terpadu: kop + surat + pejabat)
++// Backend: /identitas-periode (list, detail, simpan POST, hapus DELETE).
++// Satu entri memuat kop/letterhead, logo, dan pejabat penanda tangan yang
++// berlaku antara tanggal_awal..tanggal_akhir. Dokumen (Kwitansi/BAST/RAB)
++// otomatis memakai entri yang periodanya mencakup tanggal dokumen.
++// ==========================================================================
++
++// Ambil nilai file <input type=file> sebagai data URI base64 (null bila kosong)
++function readFileAsDataUri(input) {
++  return new Promise((resolve, reject) => {
++    const f = input && input.files && input.files[0];
++    if (!f) return resolve(null);
++    const reader = new FileReader();
++    reader.onload = () => resolve(String(reader.result));
++    reader.onerror = () => reject(new Error(`Gagal membaca file ${f.name}`));
++    reader.readAsDataURL(f);
++  });
++}
++
++// Tampilkan/sembunyikan <img> preview beserta placeholder kotaknya
++function setIdnImgPreview(imgId, src) {
++  const img = document.getElementById(imgId);
++  if (!img) return;
++  if (src) {
++    img.src = src;
++    img.style.display = "block";
++  } else {
++    img.src = "#";
++    img.style.display = "none";
++  }
++  if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
++}
++
++// Muat daftar periode identitas + tandai entri aktif untuk tanggal uji
++async function loadIdentitasPeriode() {
++  try {
++    const tglEl = document.getElementById("idn-tgl-uji");
++    const tgl = tglEl ? tglEl.value || "" : "";
++    const url = `${API_BASE}/identitas-periode${tgl ? `?tanggal=${encodeURIComponent(tgl)}` : ""}`;
++    const response = await apiFetch(url);
++    const res = await response.json();
++    identitasPeriodeList = Array.isArray(res.data) ? res.data : [];
++    identitasAktifId = res.aktif_id ?? null;
++    renderIdentitasPeriodeList();
++    updateIdentitasAktifInfo();
++  } catch (err) {
++    appLog("error", "loadIdentitasPeriode gagal: " + err);
++    showToast("Gagal!", "Tidak dapat memuat daftar identitas: " + err.message);
++  }
++}
++
++function idnEscapeHtml(s) {
++  return String(s ?? "")
++    .replace(/&/g, "&amp;")
++    .replace(/</g, "&lt;")
++    .replace(/>/g, "&gt;")
++    .replace(/"/g, "&quot;");
++}
++
++function idnFormatTgl(iso) {
++  if (!iso) return "";
++  const d = new Date(iso + "T00:00:00");
++  if (isNaN(d)) return iso;
++  return d.toLocaleDateString("id-ID", {
++    day: "numeric",
++    month: "short",
++    year: "numeric",
++  });
++}
++
++// Render tabel daftar periode identitas
++function renderIdentitasPeriodeList() {
++  const wrap = document.getElementById("idn-list");
++  const cnt = document.getElementById("idn-count");
++  if (cnt) cnt.textContent = identitasPeriodeList.length;
++  if (!wrap) return;
++
++  if (!identitasPeriodeList.length) {
++    wrap.innerHTML = `<p style="color:#64748b;font-size:13px;margin:8px 0;">Belum ada entri identitas. Klik <strong>Tambah Identitas</strong> untuk membuat identitas pertama (kop, logo, dan pejabat untuk satu periode).</p>`;
++    return;
++  }
++
++  const rows = identitasPeriodeList
++    .map((it) => {
++      const isAktif = identitasAktifId != null && it.id === identitasAktifId;
++      const badge = isAktif
++        ? `<span class="badge-ref" style="background:#dcfce7;color:#166534;">Tercetak utk tanggal uji</span>`
++        : "";
++      const statusBadge = it.is_active
++        ? `<span class="badge-ref" style="background:#e0f2fe;color:#075985;">Aktif</span>`
++        : `<span class="badge-ref" style="background:#f1f5f9;color:#64748b;">Arsip</span>`;
++      const periode = `${idnFormatTgl(it.tanggal_awal) || "-"} &ndash; ${it.tanggal_akhir ? idnFormatTgl(it.tanggal_akhir) : "sekarang"}`;
++      return `
++        <tr${isAktif ? ' style="background:#f0fdf4;"' : ""}>
++          <td>
++            <strong>${idnEscapeHtml(it.nama_sekolah) || "<em style='color:#94a3b8'>(nama kosong)</em>"}</strong><br>
++            <small style="color:#64748b;">${idnEscapeHtml(it.label) || idnEscapeHtml(it.nama_pemda)}</small>
++          </td>
++          <td>${periode}</td>
++          <td>${idnEscapeHtml(it.nama_kepala_sekolah) || "-"}<br><small style="color:#64748b;">NIP: ${idnEscapeHtml(it.nip_kepala_sekolah) || "-"}</small></td>
++          <td style="text-align:center;">${it.logo_pemda ? iconSvg("check", 15) : '<span style="color:#cbd5e1;">&mdash;</span>'} / ${it.logo_sekolah ? iconSvg("check", 15) : '<span style="color:#cbd5e1;">&mdash;</span>'}</td>
++          <td>${statusBadge} ${badge}</td>
++          <td style="white-space:nowrap;">
++            <button class="btn btn-secondary btn-sm" title="Edit entri ini" onclick="editIdentitasPeriode(${it.id})">${iconSvg("edit", 14)} Edit</button>
++            <button class="btn btn-secondary btn-sm" title="Duplikat sebagai periode baru" onclick="duplicateIdentitasPeriode(${it.id})">${iconSvg("plus", 14)} Duplikat</button>
++            <button class="btn btn-danger btn-sm" title="Hapus entri ini" onclick="deleteIdentitasPeriode(${it.id})">${iconSvg("trash", 14)} Hapus</button>
++          </td>
++        </tr>`;
++    })
++    .join("");
++
++  wrap.innerHTML = `
++    <table class="data-table">
++      <thead><tr>
++        <th>Satuan Pendidikan / Label</th><th>Periode Berlaku</th><th>Kepala Satuan Pendidikan</th>
++        <th style="text-align:center;">Logo Pemda / Sekolah</th><th>Status</th><th>Aksi</th>
++      </tr></thead>
++      <tbody>${rows}</tbody>
++    </table>`;
++}
++
++// Info singkat: entri mana yang akan tercetak untuk tanggal uji
++function updateIdentitasAktifInfo() {
++  const el = document.getElementById("idn-aktif-info");
++  if (!el) return;
++  const tglEl = document.getElementById("idn-tgl-uji");
++  const tgl = tglEl ? tglEl.value : "";
++  if (identitasAktifId != null) {
++    const it = identitasPeriodeList.find((x) => x.id === identitasAktifId);
++    el.innerHTML = `Dokumen bertanggal <strong>${idnFormatTgl(tgl)}</strong> akan memakai: <strong>${idnEscapeHtml(it?.nama_sekolah || "-")}</strong> (pejabat: ${idnEscapeHtml(it?.nama_kepala_sekolah || "-")})`;
++  } else {
++    el.innerHTML = `<span style="color:#b45309;">Tidak ada periode yang mencakup tanggal uji — sistem memakai fallback (entri aktif terbaru / pengaturan lama).</span>`;
++  }
++}
++
++// Kosongkan form untuk membuat entri baru
++function resetIdentitasForm() {
++  identitasFormMode = "new";
++  identitasEditingId = null;
++  const form = document.getElementById("form-identitas");
++  if (form) form.reset();
++  ["idn-label", "idn-tanggal-awal", "idn-tanggal-akhir", "idn-pemda", "idn-sekolah", "idn-alamat", "idn-tempat", "idn-kepala", "idn-nip-kepala", "idn-bendahara", "idn-nip-bendahara", "idn-pengurus", "idn-nip-pengurus"].forEach(
++    (id) => {
++      const el = document.getElementById(id);
++      if (el) el.value = "";
++    },
++  );
++  const sel = document.getElementById("idn-active");
++  if (sel) sel.value = "1";
++  setIdnImgPreview("idn-preview-logo-pemda", "");
++  setIdnImgPreview("idn-preview-logo-sekolah", "");
++  const title = document.getElementById("idn-form-title");
++  if (title) title.innerHTML = `${iconSvg("edit", 17)} Tambah Identitas Periode`;
++  updateIdentitasPreview();
++}
++
++// Isi form dari satu entri (dipakai Edit & Duplikat)
++function isiFormDariIdentitas(d, { duplikat = false } = {}) {
++  const setVal = (id, v) => {
++    const el = document.getElementById(id);
++    if (el) el.value = v ?? "";
++  };
++  setVal("idn-label", d.label);
++  setVal("idn-tanggal-awal", d.tanggal_awal);
++  setVal("idn-tanggal-akhir", d.tanggal_akhir);
++  setVal("idn-pemda", d.nama_pemda);
++  setVal("idn-sekolah", d.nama_sekolah);
++  setVal("idn-alamat", d.alamat_sekolah);
++  setVal("idn-tempat", d.tempat_surat);
++  setVal("idn-kepala", d.nama_kepala_sekolah);
++  setVal("idn-nip-kepala", d.nip_kepala_sekolah);
++  setVal("idn-bendahara", d.nama_bendahara);
++  setVal("idn-nip-bendahara", d.nip_bendahara);
++  setVal("idn-pengurus", d.nama_pengurus_barang);
++  setVal("idn-nip-pengurus", d.nip_pengurus_barang);
++  const sel = document.getElementById("idn-active");
++  if (sel) sel.value = d.is_active ? "1" : "0";
++
++  // Logo: kirim apa adanya ke backend agar tetap dipertahankan saat update
++  // (nilai non-empty yang bukan data URI dianggap "pertahankan").
++  setIdnImgPreview("idn-preview-logo-pemda", d.logo_pemda || "");
++  setIdnImgPreview("idn-preview-logo-sekolah", d.logo_sekolah || "");
++  _idnLogoPemdaKeep = d.logo_pemda || "";
++  _idnLogoSekolahKeep = d.logo_sekolah || "";
++
++  if (duplikat) {
++    identitasFormMode = "new";
++    identitasEditingId = null;
++    const title = document.getElementById("idn-form-title");
++    if (title) title.innerHTML = `${iconSvg("plus", 17)} Tambah Identitas (hasil duplikat — sesuaikan tanggal & datanya)`;
++  } else {
++    identitasFormMode = "edit";
++    identitasEditingId = d.id;
++    const title = document.getElementById("idn-form-title");
++    if (title) title.innerHTML = `${iconSvg("edit", 17)} Edit Identitas #${d.id} — ${d.nama_sekolah || "(tanpa nama)"}`;
++  }
++  updateIdentitasPreview();
++}
++
++// Penanda "logo lama dipertahankan" selama mode edit (diisi oleh isiFormDariIdentitas)
++var _idnLogoPemdaKeep = "";
++var _idnLogoSekolahKeep = "";
++
++async function editIdentitasPeriode(id) {
++  try {
++    const response = await apiFetch(`${API_BASE}/identitas-periode/${id}`);
++    const res = await response.json();
++    if (!res || res.status !== "success" || !res.data) {
++      showToast("Gagal!", res?.detail || "Entri tidak ditemukan");
++      return;
++    }
++    isiFormDariIdentitas(res.data);
++    document.getElementById("idn-form-card")?.scrollIntoView({ behavior: "smooth" });
++  } catch (err) {
++    showToast("Gagal!", "Error memuat detail: " + err.message);
++  }
++}
++
++async function duplicateIdentitasPeriode(id) {
++  try {
++    const response = await apiFetch(`${API_BASE}/identitas-periode/${id}`);
++    const res = await response.json();
++    if (!res || res.status !== "success" || !res.data) {
++      showToast("Gagal!", res?.detail || "Entri tidak ditemukan");
++      return;
++    }
++    isiFormDariIdentitas(res.data, { duplikat: true });
++    document.getElementById("idn-form-card")?.scrollIntoView({ behavior: "smooth" });
++  } catch (err) {
++    showToast("Gagal!", "Error menduplikat: " + err.message);
++  }
++}
++
++async function deleteIdentitasPeriode(id) {
++  const it = identitasPeriodeList.find((x) => x.id === id);
++  const ok = await UI.confirm(
++    `Hapus identitas "${it?.nama_sekolah || "#" + id}" (periode ${idnFormatTgl(it?.tanggal_awal) || "-"} s.d. ${it?.tanggal_akhir ? idnFormatTgl(it.tanggal_akhir) : "sekarang"})?\n\nDokumen pada rentang tanggal tersebut akan jatuh ke entri lain/fallback.`,
++    { title: "Hapus Identitas Periode", okText: "Hapus", danger: true },
++  );
++  if (!ok) return;
++  try {
++    const response = await apiFetch(`${API_BASE}/identitas-periode/${id}`, {
++      method: "DELETE",
++    });
++    const res = await response.json().catch(() => null);
++    if (res && res.status === "success") {
++      showToast("Berhasil!", res.message || "Entri identitas dihapus.");
++      if (identitasEditingId === id) resetIdentitasForm();
++      loadIdentitasPeriode();
++      loadDataPemda().then(() => {
++        if (typeof updatePemdaPreview === "function") updatePemdaPreview();
++      });
++    } else {
++      showToast("Gagal!", String(res?.detail || "Gagal menghapus entri"));
++    }
++  } catch (err) {
++    showToast("Gagal!", "Error koneksi: " + err.message);
++  }
++}
++
++// Simpan entri (POST JSON). File logo dibaca menjadi data URI base64.
++async function saveIdentitasPeriode() {
++  const val = (id) => document.getElementById(id)?.value?.trim() || "";
++  const tanggalAwal = val("idn-tanggal-awal");
++  if (!tanggalAwal) {
++    showToast("Perhatian!", "Tanggal awal berlaku wajib diisi.");
++    return;
++  }
++  const tanggalAkhir = val("idn-tanggal-akhir");
++  if (tanggalAkhir && tanggalAkhir < tanggalAwal) {
++    showToast("Perhatian!", "Tanggal akhir tidak boleh lebih kecil dari tanggal awal.");
++    return;
++  }
++
++  let logoPemda, logoSekolah;
++  try {
++    logoPemda = await readFileAsDataUri(document.getElementById("idn-logo-pemda"));
++    logoSekolah = await readFileAsDataUri(document.getElementById("idn-logo-sekolah"));
++  } catch (err) {
++    showToast("Gagal!", err.message);
++    return;
++  }
++  // Tidak ada file baru → pertahankan logo lama (kirim penanda non-empty)
++  if (!logoPemda) logoPemda = identitasFormMode === "edit" ? _idnLogoPemdaKeep || "" : "";
++  if (!logoSekolah) logoSekolah = identitasFormMode === "edit" ? _idnLogoSekolahKeep || "" : "";
++
++  const payload = {
++    id: identitasFormMode === "edit" ? identitasEditingId : null,
++    label: val("idn-label"),
++    tanggal_awal: tanggalAwal,
++    tanggal_akhir: tanggalAkhir,
++    is_active: (document.getElementById("idn-active")?.value || "1") === "1",
++    nama_pemda: val("idn-pemda"),
++    nama_sekolah: val("idn-sekolah"),
++    alamat_sekolah: val("idn-alamat"),
++    tempat_surat: val("idn-tempat"),
++    logo_pemda: logoPemda,
++    logo_sekolah: logoSekolah,
++    nama_kepala_sekolah: val("idn-kepala"),
++    nip_kepala_sekolah: val("idn-nip-kepala"),
++    nama_bendahara: val("idn-bendahara"),
++    nip_bendahara: val("idn-nip-bendahara"),
++    nama_pengurus_barang: val("idn-pengurus"),
++    nip_pengurus_barang: val("idn-nip-pengurus"),
++  };
++
++  try {
++    const response = await apiFetch(`${API_BASE}/identitas-periode`, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(payload),
++    });
++    const res = await response.json().catch(() => null);
++    if (res && res.status === "success") {
++      showToast("Berhasil!", res.message);
++      resetIdentitasForm();
++      await loadIdentitasPeriode();
++      // Sinkronkan pratinjau menu lama (kop/pemda legacy ikut terbarukan)
++      loadDataPemda().then(() => {
++        if (typeof updatePemdaPreview === "function") updatePemdaPreview();
++      });
++    } else {
++      showToast("Gagal!", String(res?.detail || "Gagal menyimpan identitas"));
++    }
++  } catch (err) {
++    showToast("Gagal!", "Terjadi kesalahan koneksi ke server: " + err.message);
++  }
++}
++
++// Pratinjau kop surat langsung (live) dari isi form
++function updateIdentitasPreview() {
++  const val = (id) => document.getElementById(id)?.value?.trim() || "";
++  const setText = (id, t, fb) => {
++    const el = document.getElementById(id);
++    if (el) el.textContent = t || fb;
++  };
++  setText("idn-kop-1", val("idn-pemda"), "NAMA PEMERINTAH DAERAH");
++  setText("idn-kop-2", val("idn-sekolah"), "NAMA SATUAN PENDIDIKAN");
++  setText("idn-kop-alamat", val("idn-alamat"), "Alamat akan tampil di sini");
++  setText("idn-kop-tempat", val("idn-tempat"), "-");
++  setText("idn-kop-kepala", val("idn-kepala"), "-");
++
++  const awl = val("idn-tanggal-awal");
++  const akh = val("idn-tanggal-akhir");
++  setText(
++    "idn-kop-periode",
++    awl ? `${idnFormatTgl(awl)} – ${akh ? idnFormatTgl(akh) : "sekarang"}` : "",
++    "Periode: -",
++  );
++
++  // Logo: file baru > src preview; tanpa file > src preview saat ini (dari edit)
++  const lp = document.getElementById("idn-preview-logo-pemda");
++  const ls = document.getElementById("idn-preview-logo-sekolah");
++  const validSrc = (img) =>
++    img && img.src && img.src !== "#" && img.style.display !== "none" ? img.src : "";
++  setIdnImgPreview("idn-kop-logo-pemda", validSrc(lp));
++  setIdnImgPreview("idn-kop-logo-sekolah", validSrc(ls));
++}
++
+ // --- LOGIKA NOTIFIKASI TOAST --
+ 
+ // --- LOGIKA UPDATE ---
+@@ -3618,6 +3980,14 @@ document.addEventListener("DOMContentLoaded", async () => {
+   loadDataBKU();
+   loadDataPemda().then(() => updatePemdaPreview());
+ 
++  // Tab awal adalah "identitas": siapkan tanggal uji + muat daftar periode.
++  const tglUji = document.getElementById("idn-tgl-uji");
++  if (tglUji && !tglUji.value) {
++    tglUji.value = new Date().toISOString().slice(0, 10);
++  }
++  resetIdentitasForm();
++  loadIdentitasPeriode();
++
+   // SETUP EVENT LISTENER PENCARIAN SETELAH initApp() SELESAI
+   setupSearchListener();
+ });
+@@ -4241,6 +4611,15 @@ window.previewImage = previewImage;
+ window.openLogoFull = openLogoFull;
+ window.updatePemdaPreview = updatePemdaPreview;
+ window.saveDataPemda = saveDataPemda;
++// Identitas Satuan Pendidikan per periode (menu terpadu kop+surat+pejabat)
++window.loadIdentitasPeriode = loadIdentitasPeriode;
++window.renderIdentitasPeriodeList = renderIdentitasPeriodeList;
++window.resetIdentitasForm = resetIdentitasForm;
++window.editIdentitasPeriode = editIdentitasPeriode;
++window.duplicateIdentitasPeriode = duplicateIdentitasPeriode;
++window.deleteIdentitasPeriode = deleteIdentitasPeriode;
++window.saveIdentitasPeriode = saveIdentitasPeriode;
++window.updateIdentitasPreview = updateIdentitasPreview;
+ window.openManualBKUForm = openManualBKUForm;
+ window.deleteMasterRekening = deleteMasterRekening;
+ window.loadDataPemda = loadDataPemda;
+diff --git a/frontend/src/icons.js b/frontend/src/icons.js
+index a124e29..62fbd2a 100644
+--- a/frontend/src/icons.js
++++ b/frontend/src/icons.js
+@@ -46,6 +46,11 @@ const PATHS = {
+     panelLeft: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+     logOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+     trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
++    calendar: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
++    user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
++    eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
++    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
++    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+ };
+ 
+ /**
+-- 
+2.39.5
+

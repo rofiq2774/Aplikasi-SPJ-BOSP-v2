@@ -353,6 +353,7 @@ async function createWindow() {
         ...details.responseHeaders,
         "Content-Security-Policy": [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+            "worker-src 'self' blob:; " +
             "img-src 'self' data: blob: http://127.0.0.1:* file:; " +
             "connect-src 'self' http://127.0.0.1:* https://api.github.com https://github.com https://objects.githubusercontent.com; " +
             "style-src 'self' 'unsafe-inline';",

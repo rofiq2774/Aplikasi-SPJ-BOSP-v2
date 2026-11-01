@@ -1,23 +1,6 @@
 // ============================================================================
 // spjPdf.js — Renderer PDF SPJ di FRONTEND (pdfmake)
 // ============================================================================
-// Alur: backend HANYA mengirim JSON (GET /api/kwitansi/{id}/spj-data);
-// seluruh pembuatan PDF terjadi di sini. Tidak ada permintaan/ respons
-// application/pdf dari backend untuk alur SPJ.
-//
-// FONT: semua teks WAJIB Arial. Empat variasi (normal/bold/italics/
-// bolditalics) dimuat saat runtime dari berkas font Arial yang terpasang di
-// Windows melalui IPC Electron yang sempit (ipcMain "get-arial-pdf-fonts"
-// hanya membaca 4 nama file tetap dari %WINDIR%\Fonts — tanpa path arbitrer
-// dari renderer, tanpa menyalin/mengemas font proprietary ke dalam installer).
-// VFS bawaan pdfmake (Roboto) TIDAK dimuat sama sekali: jika font Arial tidak
-// tersedia, render GAGAL dengan error jelas — tidak ada fallback diam-diam.
-//
-// Dev browser murni (vite tanpa Electron): karena jendela utama selalu dibuka
-// setelah backend/Electron siap, kegagalan font harus terlihat sebagai error
-// nyata — tetapi agar modul ini tetap dapat diuji/dijalankan di browser biasa,
-// tersedia jembatan dev eksplisit `window.__spjGetArialFonts` (lihat
-// ensureArialFonts). Tidak pernah ada unduhan font diam-diam dari internet.
 
 import pdfMake from "pdfmake/build/pdfmake";
 
@@ -93,7 +76,8 @@ export async function ensureArialFonts() {
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         // PDFKit menolak font yang bukan TTF/OTF — validasi dini agar kegagalan
         // berkas font dilaporkan jelas, bukan error kabur saat layout.
-        const sig = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+        const sig =
+          (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
         if (sig !== 0x00010000 && sig !== 0x4f54544f && sig !== 0x74727565) {
           throw new Error(
             `Berkas font ${name} bukan TrueType/OpenType valid (kemungkinan rusak atau salah berkas).`,
@@ -104,7 +88,10 @@ export async function ensureArialFonts() {
       if (typeof pdfMake.addFontContainer === "function") {
         // Jalur resmi pdfmake 0.3.x (browser build): menyalin data base64 ke
         // VFS internal + mendaftarkan font descriptors Arial saja.
-        pdfMake.addFontContainer({ fonts: { Arial: { ...ARIAL_VFS_NAMES } }, vfs: fontFiles });
+        pdfMake.addFontContainer({
+          fonts: { Arial: { ...ARIAL_VFS_NAMES } },
+          vfs: fontFiles,
+        });
       } else {
         pdfMake.vfs = fontFiles;
         const vfs = pdfMake.virtualfs;
@@ -125,11 +112,14 @@ export async function ensureArialFonts() {
           if (pdfMake.virtualfs?.existsSync?.(filename)) return true;
         } catch (e) {}
         try {
-          if (typeof pdfMake.vfs === "object" && pdfMake.vfs?.[filename]) return true;
+          if (typeof pdfMake.vfs === "object" && pdfMake.vfs?.[filename])
+            return true;
         } catch (e) {}
         return false;
       };
-      const notReady = Object.values(ARIAL_VFS_NAMES).filter((f) => !checkVfs(f));
+      const notReady = Object.values(ARIAL_VFS_NAMES).filter(
+        (f) => !checkVfs(f),
+      );
       if (notReady.length) {
         throw new Error(
           `Font Arial gagal dipasang ke VFS pdfmake: ${notReady.join(", ")}. ` +
@@ -159,11 +149,14 @@ function absoluteize(url) {
 const SUPPORTED_SCHEMA_VERSION = 1;
 
 // ---------------------------------------------------------------------------
-// Helper untuk menghapus background putih dari gambar via Canvas
+// Normalisasi gambar PDF; logo dapat menghapus latar putih tanpa mengubah warna.
 // ---------------------------------------------------------------------------
-function removeWhiteBackground(src) {
-  return new Promise((resolve) => {
-    if (!src || typeof src !== "string") return resolve(src);
+function processPdfImage(src, { monochrome = true, removeWhite = false } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!src || typeof src !== "string") {
+      reject(new Error("Sumber gambar hitam-putih tidak valid."));
+      return;
+    }
 
     const fullUrl = absoluteize(src);
     const img = new Image();
@@ -175,6 +168,7 @@ function removeWhiteBackground(src) {
         canvas.width = img.width;
         canvas.height = img.height;
         const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas 2D tidak tersedia.");
         ctx.drawImage(img, 0, 0);
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -185,20 +179,29 @@ function removeWhiteBackground(src) {
           const g = data[i + 1];
           const b = data[i + 2];
 
-          if (r > 240 && g > 240 && b > 240) {
+          if (removeWhite && r > 240 && g > 240 && b > 240) {
             data[i + 3] = 0;
+          } else if (monochrome) {
+            const luminance = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+            data[i] = luminance;
+            data[i + 1] = luminance;
+            data[i + 2] = luminance;
           }
         }
 
         ctx.putImageData(imageData, 0, 0);
         resolve(canvas.toDataURL("image/png"));
       } catch (e) {
-        console.warn("Canvas terblokir CORS, fallback ke gambar asli", e);
-        resolve(src);
+        reject(
+          new Error(
+            `Gambar tidak dapat diubah menjadi hitam-putih: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
       }
     };
 
-    img.onerror = () => resolve(src);
+    img.onerror = () =>
+      reject(new Error(`Gambar untuk PDF tidak dapat dibaca: ${fullUrl}`));
     img.src = fullUrl;
   });
 }
@@ -320,9 +323,20 @@ export function validateSpjPayload(data) {
 // Blok presentasi bersama
 // ---------------------------------------------------------------------------
 
-const PAGE = { size: [215, 330], margins: [15, 15, 15, 20] };
-const KOP_TEXT_W = PAGE.size[0] - PAGE.margins[0] - PAGE.margins[2] - 2 * 28;
-
+const MM_TO_PT = 72 / 25.4;
+const mmToPt = (millimeters) => millimeters * MM_TO_PT;
+const PDF_COLORS = {
+  ink: "black",
+  navy: "black",
+  muted: "black",
+  border: "black",
+  header: "white",
+  total: "white",
+};
+const PAGE = {
+  size: [mmToPt(215), mmToPt(330)],
+  margins: [mmToPt(15), mmToPt(15), mmToPt(15), mmToPt(20)],
+};
 // ---------------------------------------------------------------------------
 // Penjaga anti-kop kwitansi (aturan produk: halaman KWITANSI TANPA KOP)
 // ---------------------------------------------------------------------------
@@ -345,8 +359,11 @@ export function stripKopNodes(nodes) {
   return nodes;
 }
 
-function kopStack(kop) {
-  const logoStyle = { width: 24, height: 20 };
+function kopStack(kop, orientation = "portrait") {
+  const logoStyle = { width: mmToPt(24), height: mmToPt(20) };
+  const pageWidth = orientation === "landscape" ? PAGE.size[1] : PAGE.size[0];
+  const kopTextWidth =
+    pageWidth - PAGE.margins[0] - PAGE.margins[2];
   const hasL = !!kop?.logo_pemda;
   const hasR = !!kop?.logo_sekolah;
   const stack = [];
@@ -394,12 +411,12 @@ function kopStack(kop) {
     },
     {
       canvas: [
-        { type: "line", x1: 0, y1: 0, x2: KOP_TEXT_W, y2: 0, lineWidth: 1.8 },
+        { type: "line", x1: 0, y1: 0, x2: kopTextWidth, y2: 0, lineWidth: 1.8 },
         {
           type: "line",
           x1: 0,
           y1: 2.5,
-          x2: KOP_TEXT_W,
+          x2: kopTextWidth,
           y2: 2.5,
           lineWidth: 0.6,
         },
@@ -410,43 +427,61 @@ function kopStack(kop) {
 }
 
 function sectionTitle(title, subtitle) {
-  const out = [{ text: title, bold: true, fontSize: 15, alignment: "center" }];
+  const out = [
+    {
+      text: title,
+      bold: true,
+      fontSize: 15,
+      color: PDF_COLORS.navy,
+      alignment: "center",
+      margin: [0, 0, 0, 2],
+    },
+  ];
   if (subtitle) {
     out.push({
       text: subtitle,
       fontSize: 11,
+      color: PDF_COLORS.muted,
       alignment: "center",
-      margin: [0, 3, 0, 0],
+      margin: [0, 2, 0, 0],
     });
   }
   return out;
 }
 
-function labelRow(label, value, labelW = 40) {
+function reportTableLayout(headerRows = 1) {
   return {
-    columns: [
-      { text: label, width: labelW, fontSize: 11 },
-      { text: `:  ${value ?? "-"}`, flex: {}, colSpan: 1, fontSize: 11 },
-    ],
-    margin: [0, 2, 0, 2],
+    fillColor: (rowIndex, node) => {
+      if (rowIndex < headerRows) return PDF_COLORS.header;
+      if (rowIndex === node.table.body.length - 1) return PDF_COLORS.total;
+      return null;
+    },
+    hLineWidth: (lineIndex) =>
+      lineIndex === 0 || lineIndex === headerRows ? 0.8 : 0.45,
+    vLineWidth: () => 0.45,
+    hLineColor: () => PDF_COLORS.border,
+    vLineColor: () => PDF_COLORS.border,
+    paddingLeft: () => 5,
+    paddingRight: () => 5,
+    paddingTop: () => 4,
+    paddingBottom: () => 4,
   };
 }
 
-function ttdBlock(name, nip, align = "left") {
-  return [
-    {
-      text: name || ".................................",
-      bold: true,
-      fontSize: 11,
-      alignment: align,
-      margin: [0, 45, 0, 2],
-    },
-    {
-      text: nip ? `NIP. ${nip}` : "NIP. .............................",
-      fontSize: 11,
-      alignment: align,
-    },
-  ];
+function labelRow(label, value, labelW = 40) {
+  return {
+    columns: [
+      { text: label, width: labelW, fontSize: 10, color: PDF_COLORS.muted },
+      {
+        text: `:  ${value ?? "-"}`,
+        flex: {},
+        colSpan: 1,
+        fontSize: 10,
+        color: PDF_COLORS.ink,
+      },
+    ],
+    margin: [0, 2, 0, 3],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -458,214 +493,294 @@ export function buildKwitansiSection(data) {
   const ident = data.identitas;
   const content = [];
 
-  // ATURAN PRODUK: KWITANSI TANPA KOP. Sengaja TIDAK memanggil kopStack()
-  // dan tidak menggambar logo/baris identitas/garis kop apa pun pada halaman
-  // ini — bahkan jika payload lama masih mengirim kwitansi.kop atau
-  // document.kop_wajib, metadata itu diabaikan (penjaga struktural
-  // stripKopNodes diterapkan oleh buildSpjDocumentDefinition).
+  // ATURAN PRODUK: KWITANSI TANPA KOP
   if (kw?.kop || data.document?.kop || data.document?.kop_wajib) {
     console.warn(
       "[spjPdf] Payload membawa metadata kop untuk kwitansi; diabaikan " +
         "sesuai aturan 'kwitansi tanpa kop'.",
     );
   }
-  content.push({ text: "", margin: [0, 20, 0, 0] });
-  content.push(
-    ...sectionTitle("KWITANSI", `Nomor: ${kw.nomor_kwitansi || "-"}`),
-  );
-  content.push({ text: "", margin: [0, 10, 0, 0] });
 
+  // Persiapan data teks
   const jumlahFmt = kw.jumlah_rupiah || formatRupiah(kw.jumlah);
-  const terbilang = kw.terbilang || "................ rupiah";
+  let terbilangStr = kw.terbilang || "................ rupiah";
+  terbilangStr = terbilangStr.charAt(0).toUpperCase() + terbilangStr.slice(1);
 
-  content.push(
-    labelRow(
-      "Telah terima dari",
-      `BENDAHARA BOSP ${(ident.nama_sekolah || "").toUpperCase()}`,
-      110,
-    ),
-  );
-  content.push(labelRow("Uang sejumlah", `${terbilang} (${jumlahFmt})`, 110));
-  content.push(
-    labelRow(
-      "Untuk pembayaran",
-      kw.uraian_pembayaran || kw.nama_kegiatan || "-",
-      110,
-    ),
-  );
-  if (kw.no_bast) content.push(labelRow("No. BAST", kw.no_bast, 110));
-  if (kw.nama_toko)
-    content.push(
-      labelRow(
-        "Penyedia",
-        `${kw.nama_toko}${kw.npwp_toko ? ` (NPWP: ${kw.npwp_toko})` : ""}`,
-        110,
-      ),
-    );
-  if (kw.alamat_toko) content.push(labelRow("Alamat", kw.alamat_toko, 110));
+  const noKwitansi =
+    kw.nomor_kwitansi || "....................................";
+  const namaSekolah = `BENDAHARA BOSP ${(ident.nama_sekolah || "").toUpperCase()}`;
+  const uraian =
+    kw.uraian_pembayaran ||
+    kw.nama_kegiatan ||
+    "....................................";
+  const kota = kw.kota_tempat_surat || ident.tempat_surat || "Jember";
+  const tgl = formatTanggalIndo(kw.tanggal);
 
-  content.push({ text: "", margin: [0, 10, 0, 0] });
-
-  const rows = [
-    [
-      { text: "No", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
-      {
-        text: "Rincian Barang/Jasa",
-        bold: true,
-        alignment: "center",
-        margin: [0, 4, 0, 4],
-      },
-      { text: "Jumlah", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
-    ],
-  ];
-
-  const items = Array.isArray(data.transaksi_bast) ? data.transaksi_bast : [];
-  if (items.length) {
-    items.forEach((it) => {
-      rows.push([
-        {
-          text: String(it.no ?? ""),
-          alignment: "center",
-          margin: [0, 4, 0, 4],
-        },
-        { text: it.uraian || "-", alignment: "left", margin: [4, 4, 0, 4] },
-        {
-          text: it.jumlah_fmt || formatRupiah(it.jumlah),
-          alignment: "right",
-          margin: [0, 4, 4, 4],
-        },
-      ]);
-    });
-  } else {
-    rows.push([
-      { text: "1", alignment: "center", margin: [0, 4, 0, 4] },
-      {
-        text: kw.uraian_detail || kw.uraian_pembayaran || "-",
-        alignment: "left",
-        margin: [4, 4, 0, 4],
-      },
-      { text: jumlahFmt, alignment: "right", margin: [0, 4, 4, 4] },
-    ]);
-  }
-
-  rows.push([
-    { text: "", border: [false, false, false, false] },
-    { text: "JUMLAH", bold: true, alignment: "right", margin: [0, 6, 4, 6] },
-    { text: jumlahFmt, bold: true, alignment: "right", margin: [0, 6, 4, 6] },
-  ]);
-
-  content.push({
+  // Susunan formulir mengikuti format kwitansi yang digunakan.
+  const headerBox = {
     table: {
-      headerRows: 1,
-      widths: [25, "*", 100],
-      body: rows,
-    },
-    layout: {
-      fillColor: (_, rowIndex) =>
-        rowIndex === 0 || rowIndex === rows.length - 1 ? "#f5f5f5" : null,
-    },
-    fontSize: 10,
-    margin: [0, 10, 0, 15],
-  });
-
-  content.push({
-    table: {
-      widths: ["*", 120],
+      widths: ["*"],
       body: [
         [
-          { text: "", border: [false, false, false, false] },
           {
-            text: `Rp. ${jumlahFmt.replace("Rp ", "")}`,
+            text: "KWITANSI",
             bold: true,
+            fontSize: 16,
+            color: PDF_COLORS.ink,
             alignment: "center",
-            fontSize: 12,
-            margin: [0, 6, 0, 6],
-            fillColor: "#f0f0f0",
+            fillColor: "#f2f2f2",
+            margin: [0, 5, 0, 5],
           },
         ],
       ],
     },
     layout: {
-      hLineWidth: (i, node) =>
-        i === 0 || i === node.table.body.length ? 0 : 0.5,
-      vLineWidth: (i) => (i === 1 ? 0.5 : 0),
-      hLineColor: () => "#000",
-      vLineColor: () => "#000",
+      hLineWidth: () => 0.9,
+      vLineWidth: () => 0.9,
+      hLineColor: () => PDF_COLORS.ink,
+      vLineColor: () => PDF_COLORS.ink,
     },
-    margin: [0, 0, 0, 30],
+  };
+
+  const valueCell = (text, options = {}) => ({
+    text,
+    fontSize: 11,
+    color: PDF_COLORS.ink,
+    margin: [0, 4, 0, 4],
+    border: [false, false, false, true],
+    borderColor: [null, null, null, PDF_COLORS.ink],
+    ...options,
   });
 
-  const kota = kw.kota_tempat_surat || ident.tempat_surat || "Jember";
-  const tgl = formatTanggalIndo(kw.tanggal);
-  content.push({
+  const fieldLabel = (text) => ({
+    text,
+    fontSize: 11,
+    color: PDF_COLORS.muted,
+    margin: [0, 4, 0, 4],
+    border: [false, false, false, false],
+  });
+
+  const contentTable = {
+    table: {
+      widths: [130, 12, "*"],
+      body: [
+        [
+          fieldLabel("Nomor"),
+          {
+            text: ":",
+            fontSize: 11,
+            color: PDF_COLORS.ink,
+            border: [false, false, false, false],
+          },
+          valueCell(noKwitansi, { bold: true }),
+        ],
+        [
+          fieldLabel("Telah terima dari"),
+          {
+            text: ":",
+            fontSize: 11,
+            color: PDF_COLORS.ink,
+            border: [false, false, false, false],
+          },
+          valueCell(namaSekolah),
+        ],
+        [
+          fieldLabel("Uang sejumlah"),
+          {
+            text: ":",
+            fontSize: 11,
+            color: PDF_COLORS.ink,
+            border: [false, false, false, false],
+          },
+          {
+            ...valueCell(terbilangStr, {
+              bold: true,
+              fillColor: "#f2f2f2",
+              border: [false, false, false, false],
+              margin: [4, 5, 4, 5],
+            }),
+          },
+        ],
+        [
+          fieldLabel("Untuk pembayaran"),
+          {
+            text: ":",
+            fontSize: 11,
+            color: PDF_COLORS.ink,
+            border: [false, false, false, false],
+          },
+          valueCell(uraian, { margin: [0, 4, 0, 22] }),
+        ],
+      ],
+    },
+    layout: {
+      hLineWidth: () => 0.6,
+      vLineWidth: () => 0,
+      hLineColor: () => PDF_COLORS.ink,
+    },
+  };
+
+  const amountBlock = {
+    columns: [
+      {
+        text: "Rp.",
+        width: 38,
+        fontSize: 12,
+        margin: [0, 8, 0, 0],
+      },
+      {
+        table: {
+          widths: [220],
+          body: [
+            [
+              {
+                text: jumlahFmt.replace(/^Rp\s*/i, ""),
+                bold: true,
+                italics: true,
+                alignment: "center",
+                fontSize: 12,
+                fillColor: "#f2f2f2",
+                margin: [0, 5, 0, 5],
+              },
+            ],
+          ],
+        },
+        layout: {
+          hLineWidth: () => 0.8,
+          vLineWidth: () => 0,
+          hLineColor: () => PDF_COLORS.ink,
+        },
+        width: "auto",
+      },
+      { text: "", width: "*" },
+      {
+        canvas: [
+          {
+            type: "line",
+            x1: 0,
+            y1: 0,
+            x2: 145,
+            y2: 0,
+            lineWidth: 0.6,
+            lineColor: PDF_COLORS.ink,
+          },
+        ],
+        width: 145,
+        margin: [0, 24, 0, 0],
+      },
+    ],
+    margin: [55, 14, 0, 0],
+  };
+
+  const signatureLine = () => ({
+    canvas: [
+      {
+        type: "line",
+        x1: 0,
+        y1: 0,
+        x2: 145,
+        y2: 0,
+        lineWidth: 0.6,
+        lineColor: PDF_COLORS.ink,
+      },
+    ],
+    margin: [0, 0, 0, 4],
+  });
+
+  const signatures = {
     columns: [
       {
         stack: [
           {
-            text: "Setuju Dibayar",
+            text: "Setuju Dibayar\nKepala Sekolah",
             fontSize: 11,
-            alignment: "center",
-            bold: true,
+            lineHeight: 1.2,
+          },
+          { text: "", margin: [0, 0, 0, 48] },
+          {
+            text: (
+              ident.nama_kepala_sekolah || "................................."
+            ).toUpperCase(),
+            fontSize: 8.5,
           },
           {
-            text: "Kepala Sekolah",
-            fontSize: 11,
-            alignment: "center",
-            margin: [0, 0, 0, 5],
+            text: ident.nip_kepala_sekolah
+              ? `NIP. ${ident.nip_kepala_sekolah}`
+              : "NIP. .............................",
+            fontSize: 8.5,
           },
-          ...ttdBlock(
-            ident.nama_kepala_sekolah,
-            ident.nip_kepala_sekolah,
-            "center",
-          ),
         ],
         width: "*",
       },
       {
         stack: [
           {
-            text: "Lunas Dibayar",
-            fontSize: 11,
-            alignment: "center",
-            bold: true,
+            text: `Lunas Dibayar, ${tgl}`,
+            fontSize: 8.5,
           },
           {
             text: "Bendahara BOSP",
-            fontSize: 11,
-            alignment: "center",
-            margin: [0, 0, 0, 5],
+            fontSize: 10,
           },
-          ...ttdBlock(ident.nama_bendahara, ident.nip_bendahara, "center"),
+          { text: "", margin: [0, 0, 0, 48] },
+          {
+            text: (
+              ident.nama_bendahara || "................................."
+            ).toUpperCase(),
+            fontSize: 8.5,
+          },
+          {
+            text: ident.nip_bendahara
+              ? `NIP. ${ident.nip_bendahara}`
+              : "NIP. .............................",
+            fontSize: 8.5,
+          },
         ],
         width: "*",
       },
       {
         stack: [
-          {
-            text: `${kota}, ${tgl}`,
-            fontSize: 11,
-            alignment: "center",
-            bold: true,
-          },
-          {
-            text: "Penerima",
-            fontSize: 11,
-            alignment: "center",
-            margin: [0, 0, 0, 5],
-          },
-          {
-            text: kw.nama_toko || ".................................",
-            bold: true,
-            fontSize: 11,
-            alignment: "center",
-            margin: [0, 45, 0, 2],
-          },
+          { text: `${kota}, ${tgl}`, fontSize: 9.5 },
+          signatureLine(),
+          { text: "Penerima", fontSize: 11, margin: [0, 14, 0, 0] },
+          { text: "", margin: [0, 0, 0, 48] },
+          signatureLine(),
         ],
         width: "*",
       },
     ],
-    margin: [0, 10, 0, 0],
-    preserveLeadingSpaces: true,
+    columnGap: 18,
+    margin: [0, 4, 0, 0],
+  };
+
+  content.push({
+    table: {
+      widths: ["*"],
+      body: [
+        [
+          {
+            stack: [
+              headerBox,
+              { text: "", margin: [0, 8, 0, 0] },
+              contentTable,
+              signatures,
+              amountBlock,
+            ],
+          },
+        ],
+      ],
+    },
+    layout: {
+      hLineWidth: () => 0.8,
+      vLineWidth: () => 0.8,
+      hLineColor: () => PDF_COLORS.border,
+      vLineColor: () => PDF_COLORS.border,
+      paddingLeft: () => 14,
+      paddingRight: () => 14,
+      paddingTop: () => 12,
+      paddingBottom: () => 12,
+    },
+    margin: [0, 0, 0, 0],
   });
 
   return content;
@@ -826,20 +941,15 @@ export function buildBastSection(data) {
   content.push({
     table: { headerRows: 2, widths: [15, "*", 45, 30, 30, 50, 25], body },
     layout: {
-      fillColor: (_, rowIndex) =>
-        rowIndex >= body.length - 2
-          ? rowIndex === body.length - 1
-            ? "#eaeaea"
-            : "#f5f5f5"
-          : null,
+      ...reportTableLayout(2),
     },
-    fontSize: 9,
-    margin: [0, 5, 0, 15],
+    fontSize: 8.5,
+    margin: [0, 5, 0, 12],
   });
 
   content.push({
     text: "Demikian Berita Acara Serah Terima Barang ini dibuat dalam rangkap 2 (dua) untuk digunakan sebagaimana mestinya.",
-    fontSize: 11,
+    fontSize: 10,
     margin: [0, 10, 0, 20],
     alignment: "justify",
   });
@@ -848,10 +958,15 @@ export function buildBastSection(data) {
   content.push({
     columns: [
       { text: "", width: "*" },
-      { text: `${kota}, ${b.tgl_full || ""}`, width: "*", alignment: "center" },
+      {
+        text: `${kota}, ${b.tgl_full || ""}`,
+        width: "*",
+        alignment: "center",
+        fontSize: 9,
+        color: PDF_COLORS.muted,
+      },
     ],
-    margin: [0, 0, 0, 5],
-    fontSize: 11,
+    margin: [0, 2, 0, 3],
   });
 
   content.push({
@@ -861,21 +976,37 @@ export function buildBastSection(data) {
           {
             text: "Yang Menyerahkan",
             alignment: "center",
-            fontSize: 11,
+            fontSize: 9,
             bold: true,
+            color: PDF_COLORS.navy,
           },
           {
             text: "Penyedia Barang",
             alignment: "center",
-            fontSize: 11,
-            margin: [0, 0, 0, 5],
+            fontSize: 9,
+            color: PDF_COLORS.muted,
+            margin: [0, 2, 0, 0],
+          },
+          {
+            canvas: [
+              {
+                type: "line",
+                x1: 15,
+                y1: 0,
+                x2: 145,
+                y2: 0,
+                lineWidth: 0.6,
+                lineColor: PDF_COLORS.border,
+              },
+            ],
+            alignment: "center",
+            margin: [0, 42, 0, 5],
           },
           {
             text: b.nama_penyedia || "-",
             bold: true,
             alignment: "center",
-            fontSize: 11,
-            margin: [0, 45, 0, 2],
+            fontSize: 9,
           },
         ],
         width: "*",
@@ -885,21 +1016,37 @@ export function buildBastSection(data) {
           {
             text: "Yang Menerima",
             alignment: "center",
-            fontSize: 11,
+            fontSize: 9,
             bold: true,
+            color: PDF_COLORS.navy,
           },
           {
             text: b.jabatan_penerima || "Pengurus Barang",
             alignment: "center",
-            fontSize: 11,
-            margin: [0, 0, 0, 5],
+            fontSize: 9,
+            color: PDF_COLORS.muted,
+            margin: [0, 2, 0, 0],
+          },
+          {
+            canvas: [
+              {
+                type: "line",
+                x1: 15,
+                y1: 0,
+                x2: 145,
+                y2: 0,
+                lineWidth: 0.6,
+                lineColor: PDF_COLORS.border,
+              },
+            ],
+            alignment: "center",
+            margin: [0, 42, 0, 5],
           },
           {
             text: b.nama_penerima || ident.nama_pengurus_barang || "-",
             bold: true,
             alignment: "center",
-            fontSize: 11,
-            margin: [0, 45, 0, 2],
+            fontSize: 9,
           },
           {
             text: b.nip_penerima
@@ -908,33 +1055,65 @@ export function buildBastSection(data) {
                 ? `NIP. ${ident.nip_pengurus_barang}`
                 : "",
             alignment: "center",
-            fontSize: 11,
+            fontSize: 8,
+            color: PDF_COLORS.muted,
+          },
+        ],
+        width: "*",
+      },
+      {
+        stack: [
+          {
+            text: "Mengetahui,",
+            alignment: "center",
+            fontSize: 9,
+            bold: true,
+            color: PDF_COLORS.navy,
+          },
+          {
+            text: "Kepala Sekolah",
+            alignment: "center",
+            fontSize: 9,
+            color: PDF_COLORS.muted,
+            margin: [0, 2, 0, 0],
+          },
+          {
+            canvas: [
+              {
+                type: "line",
+                x1: 15,
+                y1: 0,
+                x2: 145,
+                y2: 0,
+                lineWidth: 0.6,
+                lineColor: PDF_COLORS.border,
+              },
+            ],
+            alignment: "center",
+            margin: [0, 42, 0, 5],
+          },
+          {
+            text:
+              ident.nama_kepala_sekolah ||
+              ".................................",
+            bold: true,
+            alignment: "center",
+            fontSize: 9,
+          },
+          {
+            text: ident.nip_kepala_sekolah
+              ? `NIP. ${ident.nip_kepala_sekolah}`
+              : "NIP. .............................",
+            alignment: "center",
+            fontSize: 8,
+            color: PDF_COLORS.muted,
           },
         ],
         width: "*",
       },
     ],
-    margin: [0, 0, 0, 25],
-  });
-
-  content.push({
-    stack: [
-      { text: "Mengetahui,", alignment: "center", fontSize: 11, bold: true },
-      {
-        text: "Kepala Sekolah",
-        alignment: "center",
-        fontSize: 11,
-        margin: [0, 0, 0, 5],
-      },
-      ...ttdBlock(
-        ident.nama_kepala_sekolah,
-        ident.nip_kepala_sekolah,
-        "center",
-      ),
-    ],
-    width: "50%",
-    margin: [0, 0, 0, 0],
-    relativePosition: { x: 130, y: 0 },
+    columnGap: 10,
+    margin: [0, 0, 0, 20],
   });
 
   const lamp = data.lampiran_foto || {};
@@ -952,39 +1131,79 @@ export function buildBastSection(data) {
     content.push({
       text: `LAMPIRAN ${judul}`,
       bold: true,
-      fontSize: 14,
+      color: PDF_COLORS.navy,
+      fontSize: 13,
       alignment: "center",
-      margin: [0, 10, 0, 5],
+      margin: [0, 8, 0, 4],
     });
     content.push({
       text: `Nomor Kwitansi : ${data.kwitansi.nomor_kwitansi || "-"}`,
-      fontSize: 11,
+      fontSize: 9,
+      color: PDF_COLORS.muted,
       alignment: "center",
-      margin: [0, 0, 0, 15],
+      margin: [0, 0, 0, 12],
     });
-    const imgs = [];
+    const photos = [];
     for (const f of daftar) {
       const raw = typeof f === "string" ? f : f.path || "";
       const url = absoluteize(raw);
       const ok =
         (typeof f === "string" ? true : f.available !== false) && !!url;
       if (ok) {
-        imgs.push({ image: url, fit: [100, 85], margin: [0, 0, 5, 5] });
-      } else {
-        imgs.push({
-          canvas: [{ type: "rect", x: 0, y: 0, w: 60, h: 85, lineWidth: 0.5 }],
-          margin: [0, 0, 5, 5],
+        photos.push({
+          stack: [
+            {
+              image: url,
+              fit: [235, 175],
+              alignment: "center",
+            },
+            {
+              text: judul.replace("FOTO ", ""),
+              fontSize: 8,
+              color: PDF_COLORS.muted,
+              alignment: "center",
+              margin: [0, 5, 0, 0],
+            },
+          ],
+          width: "*",
         });
-        imgs.push({
-          text: "Foto Tidak Ditemukan",
-          italics: true,
-          fontSize: 8,
-          margin: [0, 0, 5, 5],
+      } else {
+        photos.push({
+          stack: [
+            {
+              canvas: [
+                {
+                  type: "rect",
+                  x: 0,
+                  y: 0,
+                  w: 220,
+                  h: 150,
+                  lineWidth: 0.6,
+                  lineColor: PDF_COLORS.border,
+                },
+              ],
+              alignment: "center",
+            },
+            {
+              text: "Foto tidak ditemukan",
+              italics: true,
+              fontSize: 8,
+              color: PDF_COLORS.muted,
+              alignment: "center",
+              margin: [0, 5, 0, 0],
+            },
+          ],
+          width: "*",
         });
       }
     }
-    for (let i = 0; i < imgs.length; i += 4) {
-      content.push({ columns: imgs.slice(i, i + 4), margin: [0, 0, 0, 10] });
+    for (let i = 0; i < photos.length; i += 2) {
+      content.push({
+        columns: photos.slice(i, i + 2),
+        columnGap: 14,
+        margin: [0, 0, 0, 16],
+        unbreakable: true,
+      });
     }
   }
 
@@ -1000,11 +1219,11 @@ export function buildRabSection(data) {
   const ident = data.identitas;
   const content = [];
 
-  content.push(...kopStack(r.kop || data.document?.kop));
+  content.push(...kopStack(r.kop || data.document?.kop, "landscape"));
   content.push(
     ...sectionTitle("RINCIAN ANGGARAN BIAYA (RAB)", r.kegiatan || ""),
   );
-  content.push({ text: "", margin: [0, 15, 0, 0] });
+  content.push({ text: "", margin: [0, 10, 0, 0] });
 
   content.push(labelRow("Kegiatan", r.kegiatan || "-", 80));
   content.push(labelRow("Tahap", r.thp_label || "-", 80));
@@ -1086,65 +1305,91 @@ export function buildRabSection(data) {
       bold: true,
       alignment: "right",
       colSpan: 5,
-      margin: [0, 6, 5, 6],
+      margin: [0, 5, 5, 5],
     },
     {},
     {},
     {},
     {},
     { text: grandFmt, bold: true, alignment: "right", margin: [0, 6, 4, 6] },
-    { text: "", fillColor: "#f0f0f0" },
-    { text: "", fillColor: "#f0f0f0" },
+    { text: "" },
+    { text: "" },
   ]);
 
   content.push({
     table: {
       headerRows: 1,
-      widths: [15, "*", 30, 35, 55, 60, 50, 45],
+      widths: [24, "*", 42, 48, 75, 78, 80, 105],
       body,
     },
-    layout: {
-      fillColor: (_, rowIndex) =>
-        rowIndex === 0 || rowIndex === body.length - 1 ? "#f5f5f5" : null,
-    },
-    fontSize: 9,
-    margin: [0, 5, 0, 15],
+    layout: reportTableLayout(1),
+    fontSize: 8.5,
+    margin: [0, 5, 0, 12],
   });
 
   content.push({
-    stack: [
+    columns: [
+      { text: "", width: "*" },
       {
-        text: r.tanggal_surat || "",
-        alignment: "right",
-        fontSize: 11,
-        margin: [0, 20, 0, 5],
-        bold: true,
-      },
-      { text: "Mengetahui,", alignment: "right", fontSize: 11, bold: true },
-      {
-        text: "Kepala Sekolah",
-        alignment: "right",
-        fontSize: 11,
-        margin: [0, 0, 0, 5],
-      },
-      {
-        text: ident.nama_kepala_sekolah || ".................................",
-        bold: true,
-        alignment: "right",
-        fontSize: 11,
-        margin: [0, 45, 0, 2],
-      },
-      {
-        text: ident.nip_kepala_sekolah
-          ? `NIP. ${ident.nip_kepala_sekolah}`
-          : "NIP. .............................",
-        alignment: "right",
-        fontSize: 11,
+        stack: [
+          {
+            text: r.tanggal_surat || "",
+            alignment: "center",
+            fontSize: 9,
+            color: PDF_COLORS.muted,
+            margin: [0, 4, 0, 2],
+          },
+          {
+            text: "Mengetahui,",
+            alignment: "center",
+            fontSize: 9,
+            bold: true,
+            color: PDF_COLORS.navy,
+          },
+          {
+            text: "Kepala Sekolah",
+            alignment: "center",
+            fontSize: 9,
+            color: PDF_COLORS.muted,
+            margin: [0, 2, 0, 0],
+          },
+          {
+            canvas: [
+              {
+                type: "line",
+                x1: 15,
+                y1: 0,
+                x2: 145,
+                y2: 0,
+                lineWidth: 0.6,
+                lineColor: PDF_COLORS.border,
+              },
+            ],
+            alignment: "center",
+            margin: [0, 42, 0, 5],
+          },
+          {
+            text:
+              ident.nama_kepala_sekolah ||
+              ".................................",
+            bold: true,
+            alignment: "center",
+            fontSize: 9,
+          },
+          {
+            text: ident.nip_kepala_sekolah
+              ? `NIP. ${ident.nip_kepala_sekolah}`
+              : "NIP. .............................",
+            alignment: "center",
+            fontSize: 8,
+            color: PDF_COLORS.muted,
+          },
+        ],
+        width: 220,
       },
     ],
-    width: "50%",
-    margin: [0, 0, 0, 0],
-    preserveLeadingSpaces: true,
+    columnGap: 10,
+    margin: [0, 2, 0, 0],
   });
 
   return content;
@@ -1171,6 +1416,7 @@ export function buildSpjDocumentDefinition(data) {
   };
 
   const content = [];
+  const firstSection = order.find(included);
   let first = true;
   for (const name of order) {
     if (!included(name)) continue;
@@ -1184,7 +1430,13 @@ export function buildSpjDocumentDefinition(data) {
     else if (name === "rab") part = buildRabSection(data);
     else fail(`bagian tak dikenal pada document.order: ${name}`);
 
-    if (!first) part.unshift({ text: "", pageBreak: "before" });
+    if (!first) {
+      part.unshift({
+        text: "",
+        pageBreak: "before",
+        pageOrientation: name === "rab" ? "landscape" : "portrait",
+      });
+    }
     content.push(...part);
     first = false;
   }
@@ -1192,12 +1444,16 @@ export function buildSpjDocumentDefinition(data) {
 
   const paper = doc.paper || {};
   return {
-    pageSize: [num(paper.width_mm) || 215, num(paper.height_mm) || 330],
+    pageSize: {
+      width: mmToPt(num(paper.width_mm) || 215),
+      height: mmToPt(num(paper.height_mm) || 330),
+    },
+    pageOrientation: firstSection === "rab" ? "landscape" : "portrait",
     pageMargins: [
-      num(paper.margin_mm) || 15,
-      num(paper.margin_mm) || 15,
-      num(paper.margin_mm) || 15,
-      num(paper.margin_bottom_mm) || 20,
+      mmToPt(num(paper.margin_mm) || 15),
+      mmToPt(num(paper.margin_mm) || 15),
+      mmToPt(num(paper.margin_mm) || 15),
+      mmToPt(num(paper.margin_bottom_mm) || 20),
     ],
     defaultStyle: { font: "Arial", fontSize: 10, lineHeight: 1.2 },
     info: {
@@ -1237,7 +1493,8 @@ export function assertArialOnly(dd) {
     bad.push(`defaultStyle.font=${dd.defaultStyle?.font}`);
   }
   for (const [name, st] of Object.entries(dd.styles || {})) {
-    if (st?.font && st.font !== "Arial") bad.push(`styles.${name}.font=${st.font}`);
+    if (st?.font && st.font !== "Arial")
+      bad.push(`styles.${name}.font=${st.font}`);
   }
   if (bad.length) {
     throw new Error(
@@ -1249,44 +1506,50 @@ export function assertArialOnly(dd) {
 export async function buildSpjPdf(data) {
   await ensureArialFonts();
 
-  // PROSES PRE-RENDER: Hapus background putih pada logo sebelum merakit dokumen
-  try {
-    // Hanya kop BAST & RAB — kwitansi tanpa kop, dan document.kop sudah tidak
-    // dikirim backend (aturan anti-kop kwitansi).
-    const kops = [data.bast?.kop, data.rab?.kop];
-    for (const kop of kops) {
-      if (kop) {
-        if (kop.logo_pemda)
-          kop.logo_pemda = await removeWhiteBackground(kop.logo_pemda);
-        if (kop.logo_sekolah)
-          kop.logo_sekolah = await removeWhiteBackground(kop.logo_sekolah);
-      }
-    }
-  } catch (err) {
-    console.warn("Gagal memproses transparansi gambar:", err);
+  // Logo kop mempertahankan warna; foto lampiran tetap hitam-putih.
+  const kops = new Set([
+    data.document?.kop,
+    data.bast?.kop,
+    data.rab?.kop,
+  ]);
+  for (const kop of kops) {
+    if (!kop) continue;
+    if (kop.logo_pemda)
+      kop.logo_pemda = await processPdfImage(kop.logo_pemda, {
+        monochrome: false,
+        removeWhite: true,
+      });
+    if (kop.logo_sekolah)
+      kop.logo_sekolah = await processPdfImage(kop.logo_sekolah, {
+        monochrome: false,
+        removeWhite: true,
+      });
   }
 
-  return new Promise((resolve, reject) => {
-    let dd;
-    try {
-      dd = buildSpjDocumentDefinition(data);
-      // Penjaga font: seluruh definisi dokumen WAJIB Arial — tolak render
-      // sebelum pdfmake bekerja jika ada override font lain yang lolos.
-      assertArialOnly(dd);
-    } catch (e) {
-      reject(e);
-      return;
+  for (const daftar of Object.values(data.lampiran_foto || {})) {
+    if (!Array.isArray(daftar)) continue;
+    for (let i = 0; i < daftar.length; i++) {
+      const foto = daftar[i];
+      if (typeof foto === "string") {
+        daftar[i] = await processPdfImage(foto, { monochrome: false });
+      } else if (foto?.available !== false && foto?.path) {
+        foto.path = await processPdfImage(foto.path, { monochrome: false });
+      }
     }
-    try {
-      pdfMake.createPdf(dd).getBlob((blob) => {
-        if (!blob || blob.size === 0) {
-          reject(new Error("Renderer menghasilkan PDF kosong"));
-          return;
-        }
-        resolve(blob);
-      });
-    } catch (e) {
-      reject(e instanceof Error ? e : new Error(String(e)));
+  }
+
+  const dd = buildSpjDocumentDefinition(data);
+  // Penjaga font: seluruh definisi dokumen WAJIB Arial — tolak render
+  // sebelum pdfmake bekerja jika ada override font lain yang lolos.
+  assertArialOnly(dd);
+
+  try {
+    const blob = await pdfMake.createPdf(dd).getBlob();
+    if (!blob || blob.size === 0) {
+      throw new Error("Renderer menghasilkan PDF kosong");
     }
-  });
+    return blob;
+  } catch (e) {
+    throw e instanceof Error ? e : new Error(String(e));
+  }
 }

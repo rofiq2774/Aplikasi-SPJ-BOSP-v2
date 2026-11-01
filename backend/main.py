@@ -703,6 +703,12 @@ async def sync_pengaturan_from_identitas(db: AsyncSession, ident: dict):
     """Salin identitas terpilih ke baris Pengaturan legacy (kop + pejabat),
     sehingga kode/diagnostik lama yang membaca tabel pengaturan tidak rusak."""
     p = await ensure_pengaturan_row(db)
+    _terapkan_identitas_ke_pengaturan(p, ident)
+
+
+def _terapkan_identitas_ke_pengaturan(p: "Pengaturan", ident: dict):
+    """Salin (in-memory) dict identitas seragam ke objek Pengaturan tanpa
+    commit — dipakai renderer PDF agar kop/pejabat/logo mengikuti periode."""
     for f in (
         "nama_pemda", "nama_sekolah", "alamat_sekolah", "tempat_surat",
         "logo_pemda", "logo_sekolah",
@@ -2465,6 +2471,183 @@ async def generate_kwitansi_final(db: AsyncSession = Depends(get_db)):
         logger.exception("ERROR GENERATE KWITANSI")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ======================================================================
+# IDENTITAS SATUAN PENDIDIKAN PER PERIODE
+# Menu "Identitas Satuan Pendidikan" kini MENYATU dengan kop & surat
+# (nama pemda, alamat, tempat surat, logo) serta pejabat penanda tangan.
+# Beberapa entri dapat dibuat berdasarkan tanggal_awal s.d. tanggal_akhir
+# sehingga dokumen otomatis memakai identitas yang berlaku pada tanggalnya.
+# ======================================================================
+
+def _normalisasi_logo(value) -> str:
+    """Validasi nilai logo (data URI base64). Return string bersih atau ''."""
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s or s == "#":
+        return ""
+    if s.startswith("data:image/"):
+        return s
+    if _looks_like_base64(s):
+        return f"data:image/jpeg;base64,{s}"
+    # Nilai warisan (nama file/path) dipertahankan apa adanya
+    return s
+
+
+@api_router.get("/identitas-periode")
+async def list_identitas_periode(
+    tanggal: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Daftar seluruh entri identitas per periode (terlama → terbaru).
+
+    Bila ``tanggal`` (yyyy-mm-dd) diberikan, respons juga memuat ``aktif``
+    yaitu entri yang periodanya mencakup tanggal tersebut — dipakai UI untuk
+    menandai identitas mana yang akan tercetak pada dokumen bertanggal itu.
+    """
+    try:
+        rows = (
+            await db.execute(
+                select(IdentitasPeriode).order_by(
+                    IdentitasPeriode.tanggal_awal.asc(), IdentitasPeriode.id.asc()
+                )
+            )
+        ).scalars().all()
+        data = []
+        for ip in rows:
+            d = _periode_to_dict(ip)
+            # Jangan kirim base64 penuh ke daftar — hanya penanda keberadaan
+            d["logo_pemda"] = bool(d.get("logo_pemda"))
+            d["logo_sekolah"] = bool(d.get("logo_sekolah"))
+            data.append(d)
+        aktif_id = None
+        if tanggal:
+            ident = await resolve_identitas_for_tanggal(db, tanggal)
+            if ident.get("sumber") == "periode":
+                aktif_id = ident.get("id")
+        return {"status": "success", "data": data, "aktif_id": aktif_id}
+    except Exception as e:
+        logger.error(f"Error listing identitas periode: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/identitas-periode/{item_id}")
+async def get_identitas_periode(item_id: int, db: AsyncSession = Depends(get_db)):
+    """Detail satu entri identitas, termasuk logo sebagai data URI base64."""
+    try:
+        ip = (
+            await db.execute(
+                select(IdentitasPeriode).where(IdentitasPeriode.id == item_id)
+            )
+        ).scalar_one_or_none()
+        if ip is None:
+            raise HTTPException(status_code=404, detail="Entri identitas tidak ditemukan")
+        return {"status": "success", "data": _periode_to_dict(ip)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting identitas periode: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/identitas-periode")
+async def save_identitas_periode(
+    request: IdentitasPeriodeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Buat/perbarui entri identitas per periode.
+
+    - ``id`` kosong → buat entri baru; ``id`` diisi → update entri tsb.
+    - Logo bernilai ``None`` saat update berarti "pertahankan logo lama".
+    - Entri terpilih (atau terbaru) disinkronkan ke tabel Pengaturan legacy
+      agar fitur lama tetap berjalan.
+    """
+    try:
+        if not (request.tanggal_awal or "").strip():
+            raise HTTPException(
+                status_code=400, detail="Tanggal awal keberlakuan wajib diisi"
+            )
+
+        if request.id:
+            ip = (
+                await db.execute(
+                    select(IdentitasPeriode).where(IdentitasPeriode.id == request.id)
+                )
+            ).scalar_one_or_none()
+            if ip is None:
+                raise HTTPException(status_code=404, detail="Entri identitas tidak ditemukan")
+        else:
+            ip = IdentitasPeriode()
+            db.add(ip)
+
+        for col in ("label", "tanggal_awal", "tanggal_akhir",
+                    "nama_pemda", "nama_sekolah", "alamat_sekolah", "tempat_surat",
+                    "nama_kepala_sekolah", "nip_kepala_sekolah",
+                    "nama_bendahara", "nip_bendahara",
+                    "nama_pengurus_barang", "nip_pengurus_barang"):
+            setattr(ip, col, getattr(request, col, "") or "")
+        if request.is_active is not None:
+            ip.is_active = bool(request.is_active)
+
+        logo_pemda = _normalisasi_logo(request.logo_pemda)
+        logo_sekolah = _normalisasi_logo(request.logo_sekolah)
+        if logo_pemda:
+            ip.logo_pemda = logo_pemda
+        if logo_sekolah:
+            ip.logo_sekolah = logo_sekolah
+
+        await db.flush()
+
+        # Segarkan baris Pengaturan legacy (kop + pejabat) dari identitas
+        # terbaru/tercocok agar fitur lama yang membaca tabel pengaturan tetap
+        # konsisten — berlaku juga saat entri dinonaktifkan atau diedit periodanya.
+        ident_now = await get_identitas_base(db)
+        await sync_pengaturan_from_identitas(db, ident_now)
+
+        await db.commit()
+        await db.refresh(ip)
+        return {
+            "status": "success",
+            "message": "Identitas satuan pendidikan berhasil disimpan",
+            "data": _periode_to_dict(ip),
+        }
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error saving identitas periode: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.delete("/identitas-periode/{item_id}")
+async def delete_identitas_periode(item_id: int, db: AsyncSession = Depends(get_db)):
+    """Hapus satu entri identitas periode, lalu segarkan sinkronisasi legacy."""
+    try:
+        ip = (
+            await db.execute(
+                select(IdentitasPeriode).where(IdentitasPeriode.id == item_id)
+            )
+        ).scalar_one_or_none()
+        if ip is None:
+            raise HTTPException(status_code=404, detail="Entri identitas tidak ditemukan")
+        await db.delete(ip)
+        await db.flush()
+        # Refresh baris legacy dari sisa identitas (atau fallback Pengaturan)
+        ident = await get_identitas_base(db)
+        await sync_pengaturan_from_identitas(db, ident)
+        await db.commit()
+        return {"status": "success", "message": "Entri identitas berhasil dihapus"}
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error deleting identitas periode: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Pengaturan (Settings) Routes
 @api_router.get("/pengaturan")
 async def get_pengaturan(
@@ -2504,39 +2687,41 @@ async def save_pengaturan(
     request: PengaturanRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """Save or update application settings"""
+    """Save or update application settings
+
+    Data dari menu lama ditulis ke entri IdentitasPeriode "umum" (tanpa batas
+    tanggal) sekaligus ke baris Pengaturan legacy, sehingga kedua sumber tetap
+    sinkron dengan model identitas per periode.
+    """
     try:
-        stmt = select(Pengaturan).limit(1)
-        result = await db.execute(stmt)
-        pengaturan = result.scalar_one_or_none()
-        
-        if pengaturan:
-            # Update existing
-            pengaturan.nama_sekolah = request.nama_sekolah
-            pengaturan.nama_kepala_sekolah = request.nama_kepala_sekolah
-            pengaturan.nip_kepala_sekolah = request.nip_kepala_sekolah
-            pengaturan.nama_bendahara = request.nama_bendahara
-            pengaturan.nip_bendahara = request.nip_bendahara
-            pengaturan.nama_pengurus_barang = request.nama_pengurus_barang
-            pengaturan.nip_pengurus_barang = request.nip_pengurus_barang
-            pengaturan.alamat_sekolah = request.alamat_sekolah
-            pengaturan.tempat_surat = request.tempat_surat
-        else:
-            # Create new
-            pengaturan = Pengaturan(
-                nama_sekolah=request.nama_sekolah,
-                nama_kepala_sekolah=request.nama_kepala_sekolah,
-                nip_kepala_sekolah=request.nip_kepala_sekolah,
-                nama_bendahara=request.nama_bendahara,
-                nip_bendahara=request.nip_bendahara,
-                nama_pengurus_barang=request.nama_pengurus_barang,
-                nip_pengurus_barang=request.nip_pengurus_barang,
-                alamat_sekolah=request.alamat_sekolah,
-                tempat_surat=request.tempat_surat
+        ip = (
+            await db.execute(
+                select(IdentitasPeriode)
+                .where(IdentitasPeriode.tanggal_awal == "")
+                .order_by(IdentitasPeriode.id.asc())
+                .limit(1)
             )
-            db.add(pengaturan)
-        
+        ).scalar_one_or_none()
+        if ip is None:
+            ip = IdentitasPeriode(tanggal_awal="", is_active=True)
+            db.add(ip)
+
+        for col in (
+            "nama_sekolah", "nama_kepala_sekolah", "nip_kepala_sekolah",
+            "nama_bendahara", "nip_bendahara",
+            "nama_pengurus_barang", "nip_pengurus_barang",
+            "alamat_sekolah", "tempat_surat",
+        ):
+            setattr(ip, col, getattr(request, col, "") or "")
+
+        await db.flush()
+
+        # Salin hasil ke baris Pengaturan legacy (kompatibilitas fitur lama)
+        p_legacy = await ensure_pengaturan_row(db)
+        _terapkan_identitas_ke_pengaturan(p_legacy, await get_identitas_base(db))
+
         await db.commit()
+        return {"status": "success", "message": "Pengaturan berhasil disimpan"}
         return {"status": "success", "message": "Pengaturan berhasil disimpan"}
     except Exception as e:
         await db.rollback()
@@ -4862,6 +5047,15 @@ async def get_kwitansi_pdf(
         
         if not pengaturan:
             raise HTTPException(status_code=404, detail="Pengaturan belum diisi")
+            
+        # Identitas per periode: pilih entri yang periodanya mencakup tanggal
+        # dokumen (kwitansi), lalu salin ke objek Pengaturan agar seluruh
+        # renderer PDF lama (kop, pejabat, logo) otomatis ikut menyesuaikan.
+        try:
+            ident_kw = await resolve_identitas_for_tanggal(db, getattr(kwitansi, "tanggal", None))
+            _terapkan_identitas_ke_pengaturan(pengaturan, ident_kw)
+        except Exception as e:
+            print(f"[WARN] Resolusi identitas periode gagal, pakai Pengaturan legacy: {e}")
             
         # Ambil Data Kegiatan (Log jika tidak ditemukan)
         kegiatan_data = None

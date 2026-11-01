@@ -152,10 +152,15 @@ function appLog(level, message) {
 // Hook pembungkus fetch: catat SETIAP request API (mulai, status, error) ke app.log.
 async function apiFetch(url, options = {}) {
   const method = (options.method || "GET").toUpperCase();
-  if (!_backendOrigin) {
-    // Tunggu sampai child_process melapor siap (retry via IPC), bukan langsung menolak.
-    await ensureBackendReady();
-  }
+  // BUG v1.2.4 (akar masalah "FETCH <- 500 GET /api/identitas-periode"):
+  // tunggu origin child_process SIAP lebih dulu, BARU URL dibentuk.
+  // Selama ini beberapa pemanggil (mis. loadIdentitasPeriode) menyusun URL
+  // dari Proxy API_BASE SEBELUM _backendOrigin terisi. Saat origin masih
+  // kosong, `${API_BASE}/...` menghasilkan string RELATIF "/api/..." yang
+  // meski kemudian dijahit ke origin oleh blok di bawah, pada build lama
+  // sempat tertangkap proxy Vite (port 5173 -> port statis 8000 yang sudah
+  // dimatikan) dan menjawab 500 sebelum retry sempat menolong.
+  await ensureBackendReady();
   if (!_backendOrigin) {
     appLog(
       "error",
@@ -170,7 +175,10 @@ async function apiFetch(url, options = {}) {
   // (http://localhost:5173) — BUKAN backend child_process di port dinamis —
   // sehingga muncul "FETCH <- 500 GET /api/identitas-periode" dari log renderer.
   // Karena itu setiap URL yang belum absolut selalu digabung dulu ke origin
-  // backend yang sebenarnya.
+  // backend yang sebenarnya. Penjahitan ini kini berjalan SETELAH
+  // ensureBackendReady() di atas, sehingga _backendOrigin dijamin terisi dan
+  // URL relatif hasil pembentukan dini tetap diarahkan ke child_process,
+  // bukan ke proxy Vite.
   let finalUrl = url;
   try {
     if (typeof url === "string" && !/^https?:\/\//i.test(url)) {
@@ -3526,6 +3534,14 @@ async function loadIdentitasPeriode(maxRetry = 3) {
     attempt++;
     lastError = null;
     try {
+      // ROOT CAUSE "FETCH <- 500 GET /api/identitas-periode" (baris URL di
+      // bawah membentuk string dari Proxy API_BASE): bila fungsi ini sempat
+      // berjalan sebelum _backendOrigin terisi, `${API_BASE}/...` menjadi
+      // path RELATIF "/api/identitas-periode" yang tertangkap origin Vite
+      // (5173) dan menjawab 500. Karena itu tunggu backend siap SEBELUM URL
+      // dibentuk — apiFetch kini juga menunggu, tetapi pembentukan URL di
+      // sini harus memakai origin yang sudah pasti ada.
+      await ensureBackendReady();
       const tglEl = document.getElementById("idn-tgl-uji");
       const tgl = tglEl ? tglEl.value || "" : "";
       // API_BASE selalu prefix http://127.0.0.1:<port-dinamis>/api — JANGAN

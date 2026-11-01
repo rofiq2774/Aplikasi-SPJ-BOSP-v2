@@ -2599,10 +2599,11 @@ async def save_identitas_periode(
 
         await db.flush()
 
-        # Sinkron ke Pengaturan legacy bila entri ini aktif — supaya kop/diagnostik
-        # lama yang membaca tabel pengaturan tidak rusak.
-        if ip.is_active:
-            await sync_pengaturan_from_identitas(db, _periode_to_dict(ip))
+        # Segarkan baris Pengaturan legacy (kop + pejabat) dari identitas
+        # terbaru/tercocok agar fitur lama yang membaca tabel pengaturan tetap
+        # konsisten — berlaku juga saat entri dinonaktifkan atau diedit periodanya.
+        ident_now = await get_identitas_base(db)
+        await sync_pengaturan_from_identitas(db, ident_now)
 
         await db.commit()
         await db.refresh(ip)
@@ -2686,39 +2687,41 @@ async def save_pengaturan(
     request: PengaturanRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """Save or update application settings"""
+    """Save or update application settings
+
+    Data dari menu lama ditulis ke entri IdentitasPeriode "umum" (tanpa batas
+    tanggal) sekaligus ke baris Pengaturan legacy, sehingga kedua sumber tetap
+    sinkron dengan model identitas per periode.
+    """
     try:
-        stmt = select(Pengaturan).limit(1)
-        result = await db.execute(stmt)
-        pengaturan = result.scalar_one_or_none()
-        
-        if pengaturan:
-            # Update existing
-            pengaturan.nama_sekolah = request.nama_sekolah
-            pengaturan.nama_kepala_sekolah = request.nama_kepala_sekolah
-            pengaturan.nip_kepala_sekolah = request.nip_kepala_sekolah
-            pengaturan.nama_bendahara = request.nama_bendahara
-            pengaturan.nip_bendahara = request.nip_bendahara
-            pengaturan.nama_pengurus_barang = request.nama_pengurus_barang
-            pengaturan.nip_pengurus_barang = request.nip_pengurus_barang
-            pengaturan.alamat_sekolah = request.alamat_sekolah
-            pengaturan.tempat_surat = request.tempat_surat
-        else:
-            # Create new
-            pengaturan = Pengaturan(
-                nama_sekolah=request.nama_sekolah,
-                nama_kepala_sekolah=request.nama_kepala_sekolah,
-                nip_kepala_sekolah=request.nip_kepala_sekolah,
-                nama_bendahara=request.nama_bendahara,
-                nip_bendahara=request.nip_bendahara,
-                nama_pengurus_barang=request.nama_pengurus_barang,
-                nip_pengurus_barang=request.nip_pengurus_barang,
-                alamat_sekolah=request.alamat_sekolah,
-                tempat_surat=request.tempat_surat
+        ip = (
+            await db.execute(
+                select(IdentitasPeriode)
+                .where(IdentitasPeriode.tanggal_awal == "")
+                .order_by(IdentitasPeriode.id.asc())
+                .limit(1)
             )
-            db.add(pengaturan)
-        
+        ).scalar_one_or_none()
+        if ip is None:
+            ip = IdentitasPeriode(tanggal_awal="", is_active=True)
+            db.add(ip)
+
+        for col in (
+            "nama_sekolah", "nama_kepala_sekolah", "nip_kepala_sekolah",
+            "nama_bendahara", "nip_bendahara",
+            "nama_pengurus_barang", "nip_pengurus_barang",
+            "alamat_sekolah", "tempat_surat",
+        ):
+            setattr(ip, col, getattr(request, col, "") or "")
+
+        await db.flush()
+
+        # Salin hasil ke baris Pengaturan legacy (kompatibilitas fitur lama)
+        p_legacy = await ensure_pengaturan_row(db)
+        _terapkan_identitas_ke_pengaturan(p_legacy, await get_identitas_base(db))
+
         await db.commit()
+        return {"status": "success", "message": "Pengaturan berhasil disimpan"}
         return {"status": "success", "message": "Pengaturan berhasil disimpan"}
     except Exception as e:
         await db.rollback()

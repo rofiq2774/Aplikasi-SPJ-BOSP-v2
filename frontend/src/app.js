@@ -165,7 +165,13 @@ let pengaturan = {
 };
 let masterKegiatan = [];
 let masterRekeningBelanja = [];
-let activeTab = "pengaturan";
+let activeTab = "identitas";
+
+// ---- Identitas Satuan Pendidikan per periode (menu terpadu: kop + surat + pejabat) ----
+let identitasPeriodeList = []; // daftar entri dari GET /identitas-periode
+let identitasAktifId = null;   // entri yang tercetak untuk tanggal uji saat ini
+let identitasFormMode = "new"; // "new" | "edit"
+let identitasEditingId = null; // id entri yang sedang diedit
 
 // Helper
 function formatRupiah(num) {
@@ -1221,8 +1227,7 @@ async function deleteMasterKegiatan(kode) {
 
 // Tab switching
 const TAB_TITLES = {
-  pengaturan: "Identitas Satuan Pendidikan",
-  pemda: "Logo dan Kop Surat",
+  identitas: "Identitas Satuan Pendidikan",
   master: "Referensi Kegiatan",
   rekening: "Rekening Belanja",
   bku: "Upload BKU",
@@ -1253,7 +1258,7 @@ window.switchTab = function (tab) {
   const searchInputPre = document.getElementById("globalSearchInput");
   if (
     searchInputPre &&
-    ["pengaturan", "pemda", "rekap", "bku", "update"].includes(tab)
+    ["identitas", "rekap", "bku", "update"].includes(tab)
   ) {
     searchInputPre.value = "";
   }
@@ -1303,13 +1308,8 @@ window.switchTab = function (tab) {
         }
         break;
 
-      case "pengaturan":
-        // Sembunyikan search bar di menu pengaturan karena tidak relevan
-        if (searchContainer) searchContainer.classList.add("hidden");
-        break;
-
-      case "pemda":
-        // Sembunyikan search bar di menu pengaturan karena tidak relevan
+      case "identitas":
+        // Sembunyikan search bar di menu identitas karena tidak relevan
         if (searchContainer) searchContainer.classList.add("hidden");
         break;
 
@@ -3725,8 +3725,7 @@ function initApp() {
     });
   });
   const NAV = [
-    { tab: "pengaturan", label: "Identitas Sekolah", icon: "school" },
-    { tab: "pemda", label: "Logo dan Kop Surat", icon: "landmark" },
+    { tab: "identitas", label: "Identitas Satuan Pendidikan", icon: "school" },
     { section: "Transaksi" },
     { tab: "master", label: "Referensi Kegiatan", icon: "book" },
     { tab: "rekening", label: "Rekening Belanja", icon: "briefcase" },
@@ -3815,62 +3814,6 @@ function initApp() {
             
             <div id="changelog-container"></div>
         </div><!-- /#tab-update -->
-
-<div id="tab-pemda" class="tab-content">
-    <div class="card">
-        <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;">
-            <div style="flex:1; min-width:320px;">
-                <h3>${iconSvg("landmark", 17)} Logo dan Kop Surat</h3>
-<p>Atur identitas visual dan informasi kop surat untuk dokumen SPJ Anda. Logo dan nama instansi akan tercetak pada setiap halaman SPJ yang dihasilkan.</p>
-                <form id="form-pemda" onsubmit="event.preventDefault(); saveDataPemda();" style="margin-top:12px;">
-                    <div class="form-group">
-                        <label>Nama Pemerintah Daerah / Yayasan (Baris ke-1)</label>
-                        <input type="text" id="kop-1" required oninput="updatePemdaPreview()" placeholder="Contoh: PEMERINTAH KABUPATEN XYZ">
-                    </div>
-
-                    <div class="form-group">
-                        <label>Nama Satuan Pendidikan (Baris ke-2)</label>
-                        <input type="text" id="kop-2" required oninput="updatePemdaPreview()" readonly>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Alamat Lengkap dan Kontak (Baris ke-3)</label>
-                        <textarea id="kop-alamat" rows="2" required oninput="updatePemdaPreview()" readonly></textarea>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Tempat Terbit Surat</label>
-                        <input type="text" id="tempat_surat" oninput="updatePemdaPreview()" placeholder="Contoh: Jember">
-                    </div>
-
-                    <div class="grid-2" style="margin-top:12px;">
-                        <div class="form-group">
-                            <label>Logo Pemerintah Daerah / Yayasan (Logo Samping Kiri)</label>
-                            <input type="file" id="logo-pemda" accept="image/*" onchange="previewImage(this, 'preview-logo-pemda'); updatePemdaPreview();">
-                            <div class="logo-preview-box" onclick="openLogoFull('preview-logo-pemda')" title="Klik untuk melihat gambar penuh">
-                                <img id="preview-logo-pemda" src="#" alt="Preview Logo Pemda" class="logo-preview-img" style="display:none;">
-                                <span class="logo-preview-placeholder">${iconSvg("image", 22)}<br>Belum ada logo</span>
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label>Logo Satuan Pendidikan (Logo Samping Kanan)</label>
-                            <input type="file" id="logo-sekolah" accept="image/*" onchange="previewImage(this, 'preview-logo-sekolah'); updatePemdaPreview();">
-                            <div class="logo-preview-box" onclick="openLogoFull('preview-logo-sekolah')" title="Klik untuk melihat gambar penuh">
-                                <img id="preview-logo-sekolah" src="#" alt="Preview Logo Sekolah" class="logo-preview-img" style="display:none;">
-                                <span class="logo-preview-placeholder">${iconSvg("image", 22)}<br>Belum ada logo</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div style="display:flex; gap:10px; margin-top:14px;">
-                        <button type="submit" class="btn btn-primary" style="flex:1; padding:12px 18px; font-weight:700;">${iconSvg("save", 15)} Simpan Pengaturan</button>
-                        <button class="btn btn-secondary" type="button" style="padding:12px 18px;" onclick="loadDataPemda(); showToast('Info!','Data berhasil dimuat ulang')">${iconSvg("refreshCw", 15)} Muat Ulang</button>
-                    </div>
-                </form>
-            </div>
-
-        </div>
-    </div>
-</div>
 
 <div id="tab-data-bku" class="tab-content">
     <div class="card">
@@ -4040,48 +3983,149 @@ function initApp() {
             </div>
         </div>
 
-        <div id="tab-pengaturan" class="tab-content active">
-            <div class="card" style="max-width: 650px; margin: 0 auto;">
+        <div id="tab-identitas" class="tab-content active">
+            <div class="card" style="margin-bottom:20px;">
                 <h3 style="margin-top:0">${iconSvg("school", 17)} Identitas Satuan Pendidikan</h3>
-                <div class="form-group">
-                    <label>Nama Satuan Pendidikan</label>
-                    <input type="text" id="nama_sekolah" placeholder="Masukkan nama satuan pendidikan...">
+                <p style="color:#64748b; margin-top:-6px;">
+                    Satu menu untuk <strong>kop/letterhead, logo, dan pejabat penanda tangan</strong>.
+                    Buat beberapa entri berdasarkan <strong>periode tanggal awal&ndash;akhir</strong> agar nama satuan
+                    pendidikan, pejabat, dan logo otomatis menyesuaikan ketika ada perubahan. Dokumen (Kwitansi/BAST/RAB)
+                    memakai entri yang periodanya mencakup tanggal dokumen.
+                </p>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <label style="font-weight:600; font-size:13px;">Pratinjau tercetak untuk tanggal:</label>
+                    <input type="date" id="idn-tgl-uji" class="form-control" style="max-width:180px;" onchange="loadIdentitasPeriode()">
+                    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('idn-tgl-uji').value=new Date().toISOString().slice(0,10); loadIdentitasPeriode();">${iconSvg("refreshCw", 14)} Hari ini</button>
+                    <span id="idn-aktif-info" style="font-size:13px; color:#334155;"></span>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div class="form-group">
-                        <label>Nama Kepala Satuan Pendidikan</label>
-                        <input type="text" id="nama_kepala">
-                    </div>
-                    <div class="form-group">
-                        <label>NIP Kepala Satuan Pendidikan</label>
-                        <input type="text" id="nip_kepala">
-                    </div>
+            </div>
+
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <h3 style="margin:0">${iconSvg("calendar", 17)} Daftar Periode Identitas (<span id="idn-count">0</span>)</h3>
+                    <button class="btn btn-primary btn-sm" onclick="resetIdentitasForm()">${iconSvg("plus", 14)} Tambah Identitas</button>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div id="idn-list" class="table-container"></div>
+            </div>
+
+            <div class="card" id="idn-form-card">
+                <h3 style="margin-top:0" id="idn-form-title">${iconSvg("edit", 17)} Tambah Identitas Periode</h3>
+                <form id="form-identitas" onsubmit="event.preventDefault(); saveIdentitasPeriode();">
+                    <div class="grid-2" style="margin-bottom:8px;">
+                        <div class="form-group">
+                            <label>Nama Periode / Label <span style="color:#94a3b8;font-weight:400">(opsional, mis. "TA 2025", "Setelah renaming")</span></label>
+                            <input type="text" id="idn-label" placeholder="Contoh: Periode Kepala Sekolah Baru">
+                        </div>
+                        <div class="form-group">
+                            <label>Status</label>
+                            <select id="idn-active" class="form-control">
+                                <option value="1">Aktif (dipakai untuk dokumen)</option>
+                                <option value="0">Nonaktif (disimpan sebagai arsip)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid-2" style="margin-bottom:8px;">
+                        <div class="form-group">
+                            <label>Tanggal Awal Berlaku <span style="color:#dc2626">*</span></label>
+                            <input type="date" id="idn-tanggal-awal" required oninput="updateIdentitasPreview()">
+                        </div>
+                        <div class="form-group">
+                            <label>Tanggal Akhir Berlaku <span style="color:#94a3b8;font-weight:400">(kosong = masih berlaku)</span></label>
+                            <input type="date" id="idn-tanggal-akhir" oninput="updateIdentitasPreview()">
+                        </div>
+                    </div>
+
+                    <h4 style="margin:16px 0 8px 0; font-size:14px; color:#1e293b; border-bottom:1px solid #e2e8f0; padding-bottom:4px;">${iconSvg("landmark", 15)} Kop &amp; Surat</h4>
                     <div class="form-group">
-                        <label>Nama Bendahara</label>
-                        <input type="text" id="nama_bendahara">
+                        <label>Nama Pemerintah Daerah / Yayasan (Baris ke-1)</label>
+                        <input type="text" id="idn-pemda" oninput="updateIdentitasPreview()" placeholder="Contoh: PEMERINTAH KABUPATEN XYZ">
                     </div>
                     <div class="form-group">
-                        <label>NIP Bendahara</label>
-                        <input type="text" id="nip_bendahara">
-                    </div>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div class="form-group">
-                        <label>Nama Pengurus Barang</label>
-                        <input type="text" id="nama_pengurus_barang">
+                        <label>Nama Satuan Pendidikan (Baris ke-2)</label>
+                        <input type="text" id="idn-sekolah" oninput="updateIdentitasPreview()" placeholder="Contoh: SDN 1 SUKAMAJU">
                     </div>
                     <div class="form-group">
-                        <label>NIP Pengurus Barang</label>
-                        <input type="text" id="nip_pengurus_barang">
+                        <label>Alamat Lengkap dan Kontak (Baris ke-3)</label>
+                        <textarea id="idn-alamat" rows="2" oninput="updateIdentitasPreview()" placeholder="Alamat lengkap sekolah..."></textarea>
                     </div>
-                </div>
-                <div class="form-group">
-                    <label>Alamat Lengkap dan Kontak Satuan Pendidikan</label>
-                    <textarea id="alamat_sekolah" rows="3" placeholder="Alamat lengkap sekolah..."></textarea>
-                </div>
-                <button class="btn btn-primary" style="width: 100%;" onclick="savePengaturan()">Simpan Pengaturan</button>
+                    <div class="form-group">
+                        <label>Tempat Terbit Surat</label>
+                        <input type="text" id="idn-tempat" oninput="updateIdentitasPreview()" placeholder="Contoh: Jember">
+                    </div>
+                    <div class="grid-2" style="margin-top:12px;">
+                        <div class="form-group">
+                            <label>Logo Pemerintah Daerah / Yayasan (Logo Kiri)</label>
+                            <input type="file" id="idn-logo-pemda" accept="image/*" onchange="previewImage(this, 'idn-preview-logo-pemda'); updateIdentitasPreview();">
+                            <div class="logo-preview-box" onclick="openLogoFull('idn-preview-logo-pemda')" title="Klik untuk melihat gambar penuh">
+                                <img id="idn-preview-logo-pemda" src="#" alt="Preview Logo Pemda" class="logo-preview-img" style="display:none;">
+                                <span class="logo-preview-placeholder">${iconSvg("image", 22)}<br>Belum ada logo</span>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Logo Satuan Pendidikan (Logo Kanan)</label>
+                            <input type="file" id="idn-logo-sekolah" accept="image/*" onchange="previewImage(this, 'idn-preview-logo-sekolah'); updateIdentitasPreview();">
+                            <div class="logo-preview-box" onclick="openLogoFull('idn-preview-logo-sekolah')" title="Klik untuk melihat gambar penuh">
+                                <img id="idn-preview-logo-sekolah" src="#" alt="Preview Logo Sekolah" class="logo-preview-img" style="display:none;">
+                                <span class="logo-preview-placeholder">${iconSvg("image", 22)}<br>Belum ada logo</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h4 style="margin:16px 0 8px 0; font-size:14px; color:#1e293b; border-bottom:1px solid #e2e8f0; padding-bottom:4px;">${iconSvg("user", 15)} Pejabat Penanda Tangan</h4>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div class="form-group">
+                            <label>Nama Kepala Satuan Pendidikan</label>
+                            <input type="text" id="idn-kepala" oninput="updateIdentitasPreview()">
+                        </div>
+                        <div class="form-group">
+                            <label>NIP Kepala Satuan Pendidikan</label>
+                            <input type="text" id="idn-nip-kepala" oninput="updateIdentitasPreview()">
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div class="form-group">
+                            <label>Nama Bendahara</label>
+                            <input type="text" id="idn-bendahara" oninput="updateIdentitasPreview()">
+                        </div>
+                        <div class="form-group">
+                            <label>NIP Bendahara</label>
+                            <input type="text" id="idn-nip-bendahara" oninput="updateIdentitasPreview()">
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div class="form-group">
+                            <label>Nama Pengurus Barang</label>
+                            <input type="text" id="idn-pengurus" oninput="updateIdentitasPreview()">
+                        </div>
+                        <div class="form-group">
+                            <label>NIP Pengurus Barang</label>
+                            <input type="text" id="idn-nip-pengurus" oninput="updateIdentitasPreview()">
+                        </div>
+                    </div>
+
+                    <h4 style="margin:16px 0 8px 0; font-size:14px; color:#1e293b; border-bottom:1px solid #e2e8f0; padding-bottom:4px;">${iconSvg("eye", 15)} Pratinjau Kop Surat</h4>
+                    <div id="idn-kop-preview" style="border:1px solid #cbd5e1; border-radius:8px; padding:14px 16px; background:#fff; text-align:center; font-family:Georgia,'Times New Roman',serif;">
+                        <div style="display:flex; align-items:center; gap:14px;">
+                            <img id="idn-kop-logo-pemda" src="#" style="display:none; max-height:56px; max-width:64px; object-fit:contain;">
+                            <div style="flex:1;">
+                                <div id="idn-kop-1" style="font-size:13px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;">NAMA PEMERINTAH DAERAH</div>
+                                <div id="idn-kop-2" style="font-size:17px; font-weight:800; text-transform:uppercase;">NAMA SATUAN PENDIDIKAN</div>
+                                <div id="idn-kop-alamat" style="font-size:11px; color:#334155; white-space:pre-wrap;">Alamat akan tampil di sini</div>
+                            </div>
+                            <img id="idn-kop-logo-sekolah" src="#" style="display:none; max-height:56px; max-width:64px; object-fit:contain;">
+                        </div>
+                        <div style="border-bottom:3px double #0f172a; margin-top:10px;"></div>
+                        <div style="text-align:right; font-size:11px; color:#475569; margin-top:6px;">
+                            <span id="idn-kop-periode">Periode: -</span> &nbsp;|&nbsp; Tempat surat: <span id="idn-kop-tempat">-</span><br>
+                            Mengetahui, Kepala Satuan Pendidikan: <strong id="idn-kop-kepala">-</strong>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; gap:10px; margin-top:16px;">
+                        <button type="submit" class="btn btn-primary" style="flex:1; padding:12px 18px; font-weight:700;">${iconSvg("save", 15)} Simpan Identitas</button>
+                        <button type="button" class="btn btn-secondary" style="padding:12px 18px;" onclick="resetIdentitasForm()">Batal / Baru</button>
+                    </div>
+                </form>
             </div>
         </div>
 

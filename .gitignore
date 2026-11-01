@@ -1,1 +1,18 @@
-(empty output)
+# Dependencies
+node_modules/
+
+# Environment Variables (Security)
+.db
+.env
+
+# Build Outputs
+hasil_build/
+
+# AI Coding Assistant (Aider) Caches & History
+.aider.tags.cache.v4/
+.aider.chat.history.md
+.aider.input.history
+
+# Temporary Patch and Diff Files
+*.diff
+*.patch

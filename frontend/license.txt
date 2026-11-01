@@ -1,0 +1,54 @@
+LICENSE — APLIKASI SPJ BOSP
+
+Bahasa Indonesia (BAHASA INDONESIA):
+
+Hak Cipta © 2026 Muh. Rofiq
+
+Izin Penggunaan:
+Pemilik (Muh. Rofiq) memberikan izin non-eksklusif dan tanpa biaya untuk menggunakan 
+(hanya biaya donasi pengembangan aplikasi), menyalin, memodifikasi, 
+dan mendistribusikan perangkat lunak ini untuk keperluan internal sekolah atau 
+instansi pemerintahan. Perjanjian lisensi terpisah diperlukan untuk penggunaan komersial, 
+redistribusi tertutup, atau integrasi pihak ketiga yang menghasilkan pendapatan — 
+silakan hubungi pemilik proyek.
+
+Ketentuan Umum:
+- Atribusi: Sertakan file `license.txt` ini atau catatan atribusi setara pada distribusi sumber atau dokumentasi.
+- Larangan: Dilarang menghapus atau mengaburkan pemberitahuan hak cipta.
+- Penafian: Perangkat lunak disediakan "SEBAGAIMANA ADANYA" tanpa jaminan tersurat atau tersirat. Pemilik tidak bertanggung jawab atas kerusakan atau kehilangan data yang timbul dari penggunaan perangkat lunak ini.
+
+Ringkasan Proyek — Fitur Utama:
+- Impor data referensi kegiatan dan rekening belanja.
+- Input manual data pembelanjaan dari dana BOSP.
+- Ekstrak BKU menjadi dokumen SPJ BOSP.
+- Rekapitulasi Belanja Pertahap dan Per Tahun
+
+Lisensi Alternatif:
+Jika Anda memerlukan lisensi standar (mis. MIT, Apache 2.0) atau perjanjian tertulis, silakan hubungi pemilik proyek untuk pembahasan dan penyesuaian lisensi.
+
+LICENSE — SPJ BOSP APPLICATION
+
+English (ENGLISH):
+
+Copyright © 2026 Muh. Rofiq
+
+Permission of Use:
+The owner (Muh. Rofiq) grants a non-exclusive and royalty-free license to use
+(development support may be provided via voluntary donations), copy, modify,
+and distribute this software for internal use by schools or government institutions.
+A separate license agreement is required for commercial use, closed redistribution,
+or third-party integration that generates revenue — please contact the project owner.
+
+General Terms:
+- Attribution: Include this `license.txt` file or an equivalent attribution notice in any source distribution or documentation.
+- Restriction: Removal or obscuring of copyright notices is strictly prohibited.
+- Disclaimer: This software is provided "AS IS", without any express or implied warranties. The owner shall not be liable for any damages or data loss arising from the use of this software.
+
+Project Summary — Main Features:
+- Import reference data for activities and expenditure accounts.
+- Manual input of expenditure data from BOSP funds.
+- Extract BKU data into SPJ BOSP documents.
+- Expenditure recap by phase and by fiscal year.
+
+Alternative Licensing:
+If you require a standard open-source license (e.g., MIT, Apache 2.0) or a formal written agreement, please contact the project owner to discuss licensing options and customization.

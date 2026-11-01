@@ -1124,8 +1124,9 @@ def _lampiran_foto_payload(kwitansi) -> dict:
         if not path:
             continue
         p = resolve_foto_path(path)
+        relative_path = Path(path).as_posix().lstrip("/\\")
         grouped.setdefault(jenis, []).append({
-            "path": f"/uploads/{Path(path).as_posix().lstrip('/\\')}",
+            "path": f"/uploads/{relative_path}",
             "available": bool(p),
         })
     return grouped

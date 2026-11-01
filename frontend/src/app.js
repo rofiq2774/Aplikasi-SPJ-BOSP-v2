@@ -4356,12 +4356,6 @@ function initApp() {
         <div id="tab-identitas" class="tab-content active">
             <div class="card" style="margin-bottom:20px;">
                 <h3 style="margin-top:0">${iconSvg("school", 17)} Identitas Satuan Pendidikan</h3>
-                <p style="color:#64748b; margin-top:-6px;">
-                    Satu menu untuk <strong>kop/letterhead, logo, dan pejabat penanda tangan</strong>.
-                    Buat beberapa entri berdasarkan <strong>periode tanggal awal&ndash;akhir</strong> agar nama satuan
-                    pendidikan, pejabat, dan logo otomatis menyesuaikan ketika ada perubahan. Dokumen (Kwitansi/BAST/RAB)
-                    memakai entri yang periodanya mencakup tanggal dokumen.
-                </p>
                 <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                     <label style="font-weight:600; font-size:13px;">Pratinjau tercetak untuk tanggal:</label>
                     <input type="date" id="idn-tgl-uji" class="form-control" style="max-width:180px;" onchange="loadIdentitasPeriode()">

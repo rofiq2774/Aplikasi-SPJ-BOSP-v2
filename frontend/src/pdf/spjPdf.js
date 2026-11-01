@@ -75,7 +75,67 @@ export async function ensureArialFonts() {
       // SENGAJA tidak menggabungkan VFS Roboto bawaan pdfmake: satu-satunya
       // font yang boleh ada di VFS adalah keempat varian Arial, sehingga
       // mustahil ada teks yang diam-diam dirender dengan font lain.
-      pdfMake.vfs = fontFiles;
+      //
+      // BUGFIX "Cannot read 'Arial.ttf': file paths are not supported outside
+      // of Node": pada pdfmake 0.3.x build browser, `pdfMake.vfs = {...}` TIDAK
+      // memindahkan isi ke virtual file system (hanya objek biasa; metode
+      // addVirtualFileSystem() milik kelas turunan browser hanya dipanggil lewat
+      // addFontContainer(), dan createPdf() membaca font dari this.virtualfs).
+      // Akibatnya provideFont() tidak menemukan nama font di VFS lalu jatuh ke
+      // fs.readFileSync('Arial.ttf') -> error path lokal. Solusi: panggil
+      // addFontContainer() resmi bila tersedia; jika tidak, tulis langsung ke
+      // pdfMake.virtualfs dengan Uint8Array hasil decode base64 (format yang
+      // didukung VirtualFileSystem.writeFileSync), plus penjaga pasca-render.
+      const decoded = {};
+      for (const [name, b64] of Object.entries(fontFiles)) {
+        const bin = atob(String(b64));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        // PDFKit menolak font yang bukan TTF/OTF — validasi dini agar kegagalan
+        // berkas font dilaporkan jelas, bukan error kabur saat layout.
+        const sig = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+        if (sig !== 0x00010000 && sig !== 0x4f54544f && sig !== 0x74727565) {
+          throw new Error(
+            `Berkas font ${name} bukan TrueType/OpenType valid (kemungkinan rusak atau salah berkas).`,
+          );
+        }
+        decoded[name] = bytes;
+      }
+      if (typeof pdfMake.addFontContainer === "function") {
+        // Jalur resmi pdfmake 0.3.x (browser build): menyalin data base64 ke
+        // VFS internal + mendaftarkan font descriptors Arial saja.
+        pdfMake.addFontContainer({ fonts: { Arial: { ...ARIAL_VFS_NAMES } }, vfs: fontFiles });
+      } else {
+        pdfMake.vfs = fontFiles;
+        const vfs = pdfMake.virtualfs;
+        if (!vfs || typeof vfs.writeFileSync !== "function") {
+          throw new Error(
+            "Integrasi font pdfmake tidak dikenali: API VFS tidak tersedia.",
+          );
+        }
+        for (const [name, bytes] of Object.entries(decoded)) {
+          vfs.writeFileSync(name, bytes);
+        }
+      }
+
+      // Penjaga: pastikan KEDUA mekanisme lookup font pdfmake benar-benar
+      // berisi keempat varian Arial sebelum render apa pun dimulai.
+      const checkVfs = (filename) => {
+        try {
+          if (pdfMake.virtualfs?.existsSync?.(filename)) return true;
+        } catch (e) {}
+        try {
+          if (typeof pdfMake.vfs === "object" && pdfMake.vfs?.[filename]) return true;
+        } catch (e) {}
+        return false;
+      };
+      const notReady = Object.values(ARIAL_VFS_NAMES).filter((f) => !checkVfs(f));
+      if (notReady.length) {
+        throw new Error(
+          `Font Arial gagal dipasang ke VFS pdfmake: ${notReady.join(", ")}. ` +
+            "PDF ditolak dibuat agar tidak ada teks yang dirender dengan font lain.",
+        );
+      }
     })().catch((error) => {
       _arialFontsPromise = null;
       throw error;

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // BUGFIX: backend sekarang child_process dengan port dinamis — renderer
   // tidak boleh hardcode http://127.0.0.1:8000 lagi. Ambil base URL dari main process.
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
+  getArialPdfFonts: () => ipcRenderer.invoke("get-arial-pdf-fonts"),
 
   // WAJIB: semua kejadian frontend dicatat ke app.log (ditulis main process,
   // satu file yang sama dengan log backend child_process).

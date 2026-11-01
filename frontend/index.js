@@ -509,6 +509,32 @@ ipcMain.handle("is-dev", () => !app.isPackaged);
 // memiliki informasi child_process, jadi expose base URL backend via IPC.
 ipcMain.handle("get-backend-url", () => getBackendBaseUrl());
 
+ipcMain.handle("get-arial-pdf-fonts", () => {
+  if (process.platform !== "win32") {
+    throw new Error("Font Arial PDF saat ini hanya didukung pada Windows.");
+  }
+
+  const fontsDir = path.join(
+    process.env.WINDIR || process.env.SystemRoot || "C:\\Windows",
+    "Fonts",
+  );
+  const fontFiles = {
+    regular: "arial.ttf",
+    bold: "arialbd.ttf",
+    italics: "ariali.ttf",
+    bolditalics: "arialbi.ttf",
+  };
+  const fonts = {};
+  for (const [style, filename] of Object.entries(fontFiles)) {
+    const fontPath = path.join(fontsDir, filename);
+    if (!fs.existsSync(fontPath)) {
+      throw new Error(`Font Arial ${style} tidak ditemukan: ${fontPath}`);
+    }
+    fonts[style] = fs.readFileSync(fontPath).toString("base64");
+  }
+  return fonts;
+});
+
 // Lokasi app.log agar bisa ditampilkan/diakses dari UI bila perlu
 ipcMain.handle("get-log-path", () => APP_LOG_PATH);
 

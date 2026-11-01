@@ -19,13 +19,36 @@ pdfMake.fonts = {
     italics: "Arial-Italic.ttf",
     bolditalics: "Arial-BoldItalic.ttf",
   },
-  Roboto: {
-    normal: "Roboto-Regular.ttf",
-    bold: "Roboto-Medium.ttf",
-    italics: "Roboto-Italic.ttf",
-    bolditalics: "Roboto-MediumItalic.ttf",
-  },
 };
+
+let _arialFontsPromise = null;
+async function ensureArialFonts() {
+  if (!_arialFontsPromise) {
+    _arialFontsPromise = (async () => {
+      const getFonts = window.electronAPI?.getArialPdfFonts;
+      if (typeof getFonts !== "function") {
+        throw new Error("Font Arial untuk PDF tidak tersedia dari proses Electron.");
+      }
+
+      const fonts = await getFonts();
+      const fontFiles = {
+        "Arial.ttf": fonts?.regular,
+        "Arial-Bold.ttf": fonts?.bold,
+        "Arial-Italic.ttf": fonts?.italics,
+        "Arial-BoldItalic.ttf": fonts?.bolditalics,
+      };
+      if (Object.values(fontFiles).some((font) => !font)) {
+        throw new Error("Berkas font Arial lengkap tidak ditemukan di Windows.");
+      }
+
+      pdfMake.vfs = { ...(pdfMake.vfs || {}), ...fontFiles };
+    })().catch((error) => {
+      _arialFontsPromise = null;
+      throw error;
+    });
+  }
+  await _arialFontsPromise;
+}
 
 let _originGetter = () => "";
 export function setBackendOriginGetter(fn) {
@@ -1056,6 +1079,8 @@ export function buildSpjDocumentDefinition(data) {
 }
 
 export async function buildSpjPdf(data) {
+  await ensureArialFonts();
+
   // PROSES PRE-RENDER: Hapus background putih pada logo sebelum merakit dokumen
   try {
     const kops = [data.bast?.kop, data.rab?.kop, data.document?.kop];

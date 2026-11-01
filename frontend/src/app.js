@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx";
 import UI from "./ui.js";
 import { iconSvg } from "./icons.js";
+import { buildSpjPdf } from "./pdf/spjPdf.js";
 
 // ===================== BACKEND BASE URL (child_process) =====================
 // Backend TIDAK lagi dilayani oleh "servis localhost" statis (port 8000).
@@ -841,26 +842,34 @@ async function downloadKwitansi(id, noBukti = "") {
   showToast("Info", "Mengunduh SPJ...");
 
   try {
-    const res = await apiFetch(`${API_BASE}/kwitansi/${id}/pdf`);
+    const res = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
 
     if (!res.ok) {
-      const err = await res.json();
-      showToast("Error!", err.detail || "Gagal mengunduh SPJ");
-      return;
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Gagal memuat data SPJ (HTTP ${res.status})`);
     }
 
-    const blob = await res.blob();
+    const payload = await res.json();
+    if (payload.status !== "success" || !payload.data) {
+      throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
+    }
+
+    const blob = await buildSpjPdf(payload.data);
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const safeFileName = noBukti ? noBukti.replace(/\//g, "-") : id;
+    const requestedName =
+      noBukti || payload.data.document?.filename || String(id);
+    const safeFileName = requestedName
+      .replace(/\.pdf$/i, "")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-");
     a.download = `SPJ-${safeFileName}.pdf`;
 
     document.body.appendChild(a);
     a.click();
 
     document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
     showToast("Berhasil!", "SPJ berhasil diunduh");
   } catch (err) {
     showToast("Error!", "Error: " + err.message);
@@ -4696,7 +4705,7 @@ function initApp() {
                     </div>
 
                     <h4 style="margin:16px 0 8px 0; font-size:14px; color:#1e293b; border-bottom:1px solid #e2e8f0; padding-bottom:4px;">${iconSvg("eye", 15)} Pratinjau Kop Surat</h4>
-                    <div id="idn-kop-preview" style="border:1px solid #cbd5e1; border-radius:8px; padding:14px 16px; background:#fff; text-align:center; font-family:Georgia,'Times New Roman',serif;">
+                    <div id="idn-kop-preview" style="border:1px solid #cbd5e1; border-radius:8px; padding:14px 16px; background:#fff; text-align:center; font-family:Arial,Helvetica,sans-serif;">
                         <div style="display:flex; align-items:center; gap:14px;">
                             <img id="idn-kop-logo-pemda" src="#" style="display:none; max-height:56px; max-width:64px; object-fit:contain;">
                             <div style="flex:1;">

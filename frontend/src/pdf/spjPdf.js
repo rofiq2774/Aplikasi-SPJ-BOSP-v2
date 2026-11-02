@@ -33,9 +33,9 @@ export async function ensureArialFonts() {
       if (typeof getFonts !== "function") {
         throw new Error(
           "Font Arial untuk PDF tidak tersedia: jalankan aplikasi lewat " +
-            "Electron (npm start di root) agar berkas Arial dari Windows " +
-            "Fonts dapat dibaca melalui IPC, atau sediakan jembatan dev " +
-            "window.__spjGetArialFonts.",
+          "Electron (npm start di root) agar berkas Arial dari Windows " +
+          "Fonts dapat dibaca melalui IPC, atau sediakan jembatan dev " +
+          "window.__spjGetArialFonts.",
         );
       }
 
@@ -110,11 +110,11 @@ export async function ensureArialFonts() {
       const checkVfs = (filename) => {
         try {
           if (pdfMake.virtualfs?.existsSync?.(filename)) return true;
-        } catch (e) {}
+        } catch (e) { }
         try {
           if (typeof pdfMake.vfs === "object" && pdfMake.vfs?.[filename])
             return true;
-        } catch (e) {}
+        } catch (e) { }
         return false;
       };
       const notReady = Object.values(ARIAL_VFS_NAMES).filter(
@@ -123,7 +123,7 @@ export async function ensureArialFonts() {
       if (notReady.length) {
         throw new Error(
           `Font Arial gagal dipasang ke VFS pdfmake: ${notReady.join(", ")}. ` +
-            "PDF ditolak dibuat agar tidak ada teks yang dirender dengan font lain.",
+          "PDF ditolak dibuat agar tidak ada teks yang dirender dengan font lain.",
         );
       }
     })().catch((error) => {
@@ -141,7 +141,13 @@ export function setBackendOriginGetter(fn) {
 function absoluteize(url) {
   if (!url) return url;
   if (/^(https?:|data:|blob:|file:)/i.test(url)) return url;
-  const origin = _originGetter();
+  let origin = _originGetter();
+  if (!origin && typeof window !== "undefined") {
+    if (window.__backendOrigin) origin = window.__backendOrigin;
+    else if (window.location && window.location.origin && !window.location.origin.startsWith("file:")) {
+      origin = window.location.origin;
+    }
+  }
   if (!origin) return url;
   return `${origin}${String(url).startsWith("/") ? "" : "/"}${url}`;
 }
@@ -200,8 +206,40 @@ function processPdfImage(src, { monochrome = true, removeWhite = false } = {}) {
       }
     };
 
-    img.onerror = () =>
-      reject(new Error(`Gambar untuk PDF tidak dapat dibaca: ${fullUrl}`));
+    img.onerror = () => {
+      // Fallback: fetch blob lalu baca sebagai Data URL via FileReader
+      fetch(fullUrl)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.blob();
+        })
+        .then((blob) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const dataUrl = reader.result;
+            const fallbackImg = new Image();
+            fallbackImg.onload = () => {
+              try {
+                const canvas = document.createElement("canvas");
+                canvas.width = fallbackImg.width;
+                canvas.height = fallbackImg.height;
+                const ctx = canvas.getContext("2d");
+                ctx.drawImage(fallbackImg, 0, 0);
+                resolve(canvas.toDataURL("image/png"));
+              } catch (_) {
+                resolve(dataUrl);
+              }
+            };
+            fallbackImg.onerror = () => resolve(dataUrl);
+            fallbackImg.src = dataUrl;
+          };
+          reader.onerror = () => reject(new Error(`Gagal membaca blob gambar: ${fullUrl}`));
+          reader.readAsDataURL(blob);
+        })
+        .catch((fetchErr) => {
+          reject(new Error(`Gambar untuk PDF tidak dapat dibaca: ${fullUrl} (${fetchErr.message})`));
+        });
+    };
     img.src = fullUrl;
   });
 }
@@ -271,6 +309,59 @@ export function hariIndo(tanggalStr) {
   if (!dt || Number.isNaN(dt.getTime())) return "";
   return HARI_ID[dt.toLocaleDateString("en-US", { weekday: "long" })] || "";
 }
+
+export function formatNamaPenandatangan(rawNama) {
+  if (!rawNama || typeof rawNama !== "string") {
+    return ".................................";
+  }
+  const trimmed = rawNama.trim();
+  if (trimmed === "" || trimmed === "-" || /^[\.\s]+$/.test(trimmed)) {
+    return trimmed || ".................................";
+  }
+
+  // Regex gelar depan umum di Indonesia (case-insensitive saat mendeteksi,
+  // tetapi teks gelar asli dari database tetap dipertahankan persis)
+  const frontTitleRegex = /^(Prof\.|Dr\.|Drs\.|Dra\.|Ir\.|dr\.|drg\.|H\.|Hj\.|K\.H\.|KH\.|Ns\.)\s+/i;
+
+  let namaPart = trimmed;
+  let gelarBelakang = "";
+
+  // 1. Jika terdapat koma, bagian setelah koma adalah gelar belakang
+  const commaIdx = trimmed.indexOf(",");
+  if (commaIdx !== -1) {
+    namaPart = trimmed.slice(0, commaIdx).trim();
+    gelarBelakang = trimmed.slice(commaIdx + 1).trim();
+  }
+
+  // 2. Ekstrak gelar depan jika ada (bisa lebih dari satu, misal: "Prof. Dr. Ir. H.")
+  const frontTitles = [];
+  let sisaNama = namaPart;
+
+  while (frontTitleRegex.test(sisaNama)) {
+    const match = sisaNama.match(frontTitleRegex);
+    if (match) {
+      frontTitles.push(match[1]); // ambil string asli gelar dari database
+      sisaNama = sisaNama.slice(match[0].length).trim();
+    } else {
+      break;
+    }
+  }
+
+  // 3. Nama pokok penanda tangan WAJIB kapital
+  const namaKapital = sisaNama.toUpperCase();
+
+  // 4. Gabungkan: Gelar Depan (asli db) + NAMA (kapital) + Gelar Belakang (asli db)
+  const namaDenganGelarDepan =
+    frontTitles.length > 0
+      ? `${frontTitles.join(" ")} ${namaKapital}`
+      : namaKapital;
+
+  if (gelarBelakang) {
+    return `${namaDenganGelarDepan}, ${gelarBelakang}`;
+  }
+  return namaDenganGelarDepan;
+}
+
 
 function num(v) {
   const n = Number(v);
@@ -360,7 +451,9 @@ export function stripKopNodes(nodes) {
 }
 
 function kopStack(kop, orientation = "portrait") {
-  const logoStyle = { width: mmToPt(24), height: mmToPt(20) };
+  // Logo proporsional: tinggi tetap, lebar menyesuaikan rasio
+  const logoH = mmToPt(18);
+  const logoFit = [mmToPt(22), logoH];
   const pageWidth = orientation === "landscape" ? PAGE.size[1] : PAGE.size[0];
   const kopTextWidth =
     pageWidth - PAGE.margins[0] - PAGE.margins[2];
@@ -374,7 +467,7 @@ function kopStack(kop, orientation = "portrait") {
       text: String(kop.baris1).toUpperCase(),
       font: "Arial",
       bold: true,
-      fontSize: 13,
+      fontSize: 12,
       alignment: "center",
       margin: [0, 0, 0, 2],
     });
@@ -384,7 +477,7 @@ function kopStack(kop, orientation = "portrait") {
       text: String(kop.baris2).toUpperCase(),
       font: "Arial",
       bold: true,
-      fontSize: 16,
+      fontSize: 14,
       alignment: "center",
       margin: [0, 0, 0, 2],
     });
@@ -393,7 +486,7 @@ function kopStack(kop, orientation = "portrait") {
     stack.push({
       text: kop.alamat,
       font: "Arial",
-      fontSize: 9,
+      fontSize: 10,
       alignment: "center",
     });
   }
@@ -401,13 +494,14 @@ function kopStack(kop, orientation = "portrait") {
   return [
     {
       columns: [
-        hasL ? { image: kop.logo_pemda, ...logoStyle } : { text: "", width: 0 },
-        { stack, width: "*", margin: [2, 0, 2, 4] },
+        hasL
+          ? { image: kop.logo_pemda, fit: logoFit, alignment: "center", width: mmToPt(24) }
+          : { text: "", width: 0 },
+        { stack, width: "*", margin: [4, 0, 4, 4] },
         hasR
-          ? { image: kop.logo_sekolah, ...logoStyle }
+          ? { image: kop.logo_sekolah, fit: logoFit, alignment: "center", width: mmToPt(24) }
           : { text: "", width: 0 },
       ],
-      columnWidths: [hasL ? 24 : 0, "*", hasR ? 24 : 0],
     },
     {
       canvas: [
@@ -431,7 +525,7 @@ function sectionTitle(title, subtitle) {
     {
       text: title,
       bold: true,
-      fontSize: 15,
+      fontSize: 14,
       color: PDF_COLORS.navy,
       alignment: "center",
       margin: [0, 0, 0, 2],
@@ -440,7 +534,7 @@ function sectionTitle(title, subtitle) {
   if (subtitle) {
     out.push({
       text: subtitle,
-      fontSize: 11,
+      fontSize: 12,
       color: PDF_COLORS.muted,
       alignment: "center",
       margin: [0, 2, 0, 0],
@@ -471,12 +565,12 @@ function reportTableLayout(headerRows = 1) {
 function labelRow(label, value, labelW = 40) {
   return {
     columns: [
-      { text: label, width: labelW, fontSize: 10, color: PDF_COLORS.muted },
+      { text: label, width: labelW, fontSize: 12, color: PDF_COLORS.muted },
       {
         text: `:  ${value ?? "-"}`,
         flex: {},
         colSpan: 1,
-        fontSize: 10,
+        fontSize: 12,
         color: PDF_COLORS.ink,
       },
     ],
@@ -497,7 +591,7 @@ export function buildKwitansiSection(data) {
   if (kw?.kop || data.document?.kop || data.document?.kop_wajib) {
     console.warn(
       "[spjPdf] Payload membawa metadata kop untuk kwitansi; diabaikan " +
-        "sesuai aturan 'kwitansi tanpa kop'.",
+      "sesuai aturan 'kwitansi tanpa kop'.",
     );
   }
 
@@ -525,7 +619,7 @@ export function buildKwitansiSection(data) {
           {
             text: "KWITANSI",
             bold: true,
-            fontSize: 16,
+            fontSize: 14,
             color: PDF_COLORS.ink,
             alignment: "center",
             fillColor: "#f2f2f2",
@@ -542,9 +636,12 @@ export function buildKwitansiSection(data) {
     },
   };
 
+  // Font size kwitansi body — sedikit lebih kecil dari judul agar proporsional
+  const KW_FS = 11;
+
   const valueCell = (text, options = {}) => ({
     text,
-    fontSize: 11,
+    fontSize: KW_FS,
     color: PDF_COLORS.ink,
     margin: [0, 4, 0, 4],
     border: [false, false, false, true],
@@ -554,7 +651,7 @@ export function buildKwitansiSection(data) {
 
   const fieldLabel = (text) => ({
     text,
-    fontSize: 11,
+    fontSize: KW_FS,
     color: PDF_COLORS.muted,
     margin: [0, 4, 0, 4],
     border: [false, false, false, false],
@@ -568,7 +665,7 @@ export function buildKwitansiSection(data) {
           fieldLabel("Nomor"),
           {
             text: ":",
-            fontSize: 11,
+            fontSize: KW_FS,
             color: PDF_COLORS.ink,
             border: [false, false, false, false],
           },
@@ -578,7 +675,7 @@ export function buildKwitansiSection(data) {
           fieldLabel("Telah terima dari"),
           {
             text: ":",
-            fontSize: 11,
+            fontSize: KW_FS,
             color: PDF_COLORS.ink,
             border: [false, false, false, false],
           },
@@ -588,13 +685,12 @@ export function buildKwitansiSection(data) {
           fieldLabel("Uang sejumlah"),
           {
             text: ":",
-            fontSize: 11,
+            fontSize: KW_FS,
             color: PDF_COLORS.ink,
             border: [false, false, false, false],
           },
           {
             ...valueCell(terbilangStr, {
-              bold: true,
               fillColor: "#f2f2f2",
               border: [false, false, false, false],
               margin: [4, 5, 4, 5],
@@ -605,7 +701,7 @@ export function buildKwitansiSection(data) {
           fieldLabel("Untuk pembayaran"),
           {
             text: ":",
-            fontSize: 11,
+            fontSize: KW_FS,
             color: PDF_COLORS.ink,
             border: [false, false, false, false],
           },
@@ -624,13 +720,14 @@ export function buildKwitansiSection(data) {
     columns: [
       {
         text: "Rp.",
-        width: 38,
-        fontSize: 12,
-        margin: [0, 8, 0, 0],
+        width: "auto",
+        fontSize: KW_FS,
+        bold: true,
+        margin: [0, 5, 6, 0],
       },
       {
         table: {
-          widths: [220],
+          widths: [200],
           body: [
             [
               {
@@ -638,7 +735,7 @@ export function buildKwitansiSection(data) {
                 bold: true,
                 italics: true,
                 alignment: "center",
-                fontSize: 12,
+                fontSize: KW_FS,
                 fillColor: "#f2f2f2",
                 margin: [0, 5, 0, 5],
               },
@@ -652,107 +749,100 @@ export function buildKwitansiSection(data) {
         },
         width: "auto",
       },
-      { text: "", width: "*" },
-      {
-        canvas: [
-          {
-            type: "line",
-            x1: 0,
-            y1: 0,
-            x2: 145,
-            y2: 0,
-            lineWidth: 0.6,
-            lineColor: PDF_COLORS.ink,
-          },
-        ],
-        width: 145,
-        margin: [0, 24, 0, 0],
-      },
     ],
-    margin: [55, 14, 0, 0],
+    margin: [0, 10, 0, 0],
   };
 
-  const signatureLine = () => ({
+  // -----------------------------------------------------------------------
+  // Blok tanda tangan kwitansi — menggunakan TABLE agar setiap baris
+  // (label baris 1, label baris 2, ruang tanda tangan, garis, nama, NIP)
+  // selalu SEJAJAR secara horizontal, tidak peduli panjang teks berbeda.
+  // -----------------------------------------------------------------------
+  const sigCell = (text, opts = {}) => ({
+    text,
+    fontSize: KW_FS,
+    alignment: "center",
+    border: [false, false, false, false],
+    margin: [0, 1, 0, 1],
+    ...opts,
+  });
+
+  const sigLineCanvas = {
     canvas: [
       {
         type: "line",
-        x1: 0,
+        x1: 5,
         y1: 0,
-        x2: 145,
+        x2: 140,
         y2: 0,
         lineWidth: 0.6,
         lineColor: PDF_COLORS.ink,
       },
     ],
-    margin: [0, 0, 0, 4],
-  });
-
-  const signatures = {
-    columns: [
-      {
-        stack: [
-          {
-            text: "Setuju Dibayar\nKepala Sekolah",
-            fontSize: 11,
-            lineHeight: 1.2,
-          },
-          { text: "", margin: [0, 0, 0, 48] },
-          {
-            text: (
-              ident.nama_kepala_sekolah || "................................."
-            ).toUpperCase(),
-            fontSize: 8.5,
-          },
-          {
-            text: ident.nip_kepala_sekolah
-              ? `NIP. ${ident.nip_kepala_sekolah}`
-              : "NIP. .............................",
-            fontSize: 8.5,
-          },
-        ],
-        width: "*",
-      },
-      {
-        stack: [
-          {
-            text: `Lunas Dibayar, ${tgl}`,
-            fontSize: 8.5,
-          },
-          {
-            text: "Bendahara BOSP",
-            fontSize: 10,
-          },
-          { text: "", margin: [0, 0, 0, 48] },
-          {
-            text: (
-              ident.nama_bendahara || "................................."
-            ).toUpperCase(),
-            fontSize: 8.5,
-          },
-          {
-            text: ident.nip_bendahara
-              ? `NIP. ${ident.nip_bendahara}`
-              : "NIP. .............................",
-            fontSize: 8.5,
-          },
-        ],
-        width: "*",
-      },
-      {
-        stack: [
-          { text: `${kota}, ${tgl}`, fontSize: 9.5 },
-          signatureLine(),
-          { text: "Penerima", fontSize: 11, margin: [0, 14, 0, 0] },
-          { text: "", margin: [0, 0, 0, 48] },
-          signatureLine(),
-        ],
-        width: "*",
-      },
-    ],
-    columnGap: 18,
-    margin: [0, 4, 0, 0],
+    alignment: "center",
+    border: [false, false, false, false],
+    margin: [0, 0, 0, 2],
   };
 
+  const namaKepsek = formatNamaPenandatangan(ident.nama_kepala_sekolah);
+  const namaBendahara = formatNamaPenandatangan(ident.nama_bendahara);
+  const nipKepsek = ident.nip_kepala_sekolah
+    ? `NIP. ${ident.nip_kepala_sekolah}`
+    : "NIP. .............................";
+  const nipBendahara = ident.nip_bendahara
+    ? `NIP. ${ident.nip_bendahara}`
+    : "NIP. .............................";
+
+  const signatures = {
+    table: {
+      widths: ["*", "*", "*"],
+      body: [
+        // Baris 1: judul / tanggal
+        [
+          sigCell("Setuju Dibayar"),
+          sigCell(`Lunas Dibayar, ${tgl}`),
+          sigCell(`${kota}, ${tgl}`),
+        ],
+        // Baris 2: jabatan
+        [
+          sigCell("Kepala Sekolah"),
+          sigCell("Bendahara BOSP"),
+          sigCell("Penerima"),
+        ],
+        // Baris 3: ruang tanda tangan (tinggi tetap, konten kosong)
+        [
+          sigCell("", { margin: [0, 48, 0, 0] }),
+          sigCell("", { margin: [0, 48, 0, 0] }),
+          sigCell("", { margin: [0, 48, 0, 0] }),
+        ],
+        // Baris 4: garis tanda tangan
+        [sigLineCanvas, sigLineCanvas, sigLineCanvas],
+        // Baris 5: nama penanda tangan
+        [
+          sigCell(namaKepsek, { bold: true }),
+          sigCell(namaBendahara, { bold: true }),
+          sigCell("(...............................)"),
+        ],
+        // Baris 6: NIP
+        [
+          sigCell(nipKepsek, { fontSize: KW_FS - 1 }),
+          sigCell(nipBendahara, { fontSize: KW_FS - 1 }),
+          sigCell("", { fontSize: KW_FS - 1 }),
+        ],
+      ],
+    },
+    layout: {
+      hLineWidth: () => 0,
+      vLineWidth: () => 0,
+      paddingLeft: () => 4,
+      paddingRight: () => 4,
+      paddingTop: () => 0,
+      paddingBottom: () => 0,
+    },
+    margin: [0, 8, 0, 0],
+  };
+
+  // Posisi top center — kwitansi ditampilkan di tengah atas halaman
   content.push({
     table: {
       widths: ["*"],
@@ -763,6 +853,7 @@ export function buildKwitansiSection(data) {
               headerBox,
               { text: "", margin: [0, 8, 0, 0] },
               contentTable,
+              { text: "", margin: [0, 8, 0, 0] },
               signatures,
               amountBlock,
             ],
@@ -780,7 +871,7 @@ export function buildKwitansiSection(data) {
       paddingTop: () => 12,
       paddingBottom: () => 12,
     },
-    margin: [0, 0, 0, 0],
+    margin: [mmToPt(10), 0, mmToPt(10), 0],
   });
 
   return content;
@@ -798,7 +889,7 @@ export function buildBastSection(data) {
   content.push({
     text: "FORMAT 2",
     bold: true,
-    fontSize: 10,
+    fontSize: 12,
     alignment: "right",
     margin: [0, 0, 0, 5],
   });
@@ -811,7 +902,7 @@ export function buildBastSection(data) {
   );
   content.push({
     text: `Nomor: ${b.nomor_surat || "-"}`,
-    fontSize: 11,
+    fontSize: 12,
     alignment: "center",
     margin: [0, 5, 0, 15],
   });
@@ -826,12 +917,12 @@ export function buildBastSection(data) {
 
   content.push({
     text: pembuka,
-    fontSize: 11,
+    fontSize: 12,
     alignment: "justify",
     margin: [0, 0, 0, 10],
   });
   content.push(
-    labelRow("Nama", b.nama_penerima || ident.nama_pengurus_barang || "-", 60),
+    labelRow("Nama", formatNamaPenandatangan(b.nama_penerima || ident.nama_pengurus_barang || "-"), 60),
   );
   content.push(
     labelRow("Jabatan", b.jabatan_penerima || "Pengurus Barang", 60),
@@ -842,64 +933,68 @@ export function buildBastSection(data) {
       `Telah menerima barang persediaan yang diserahkan oleh ${b.nama_penyedia || "-"} ` +
       `sesuai dengan Faktur Pembelian / Nota Pembelian tanggal ${b.tgl_full || "-"} ` +
       "sebagaimana daftar terlampir.",
-    fontSize: 11,
+    fontSize: 12,
     alignment: "justify",
     margin: [0, 10, 0, 10],
   });
   content.push({
     text: "Daftar barang yang diterima sebagai berikut :",
-    fontSize: 11,
+    fontSize: 12,
     margin: [0, 0, 0, 5],
   });
 
   const body = [
     [
-      { text: "No", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "No", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
       {
         text: "Uraian Nama Barang",
         bold: true,
+        fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
       {
         text: "Harga Satuan",
         bold: true,
+        fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
-      { text: "Satuan", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
-      { text: "Volume", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
-      { text: "Jumlah", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
-      { text: "Ket", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "Satuan", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "Volume", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "Jumlah", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "Ket", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
     ],
     [
-      { text: "(a)", italics: true, fontSize: 9, alignment: "center" },
-      { text: "(b)", italics: true, fontSize: 9, alignment: "center" },
-      { text: "(c)", italics: true, fontSize: 9, alignment: "center" },
-      { text: "(d)", italics: true, fontSize: 9, alignment: "center" },
-      { text: "(e)", italics: true, fontSize: 9, alignment: "center" },
-      { text: "(f = c*e)", italics: true, fontSize: 9, alignment: "center" },
-      { text: "(g)", italics: true, fontSize: 9, alignment: "center" },
+      { text: "(a)", italics: true, fontSize: 10, alignment: "center" },
+      { text: "(b)", italics: true, fontSize: 10, alignment: "center" },
+      { text: "(c)", italics: true, fontSize: 10, alignment: "center" },
+      { text: "(d)", italics: true, fontSize: 10, alignment: "center" },
+      { text: "(e)", italics: true, fontSize: 10, alignment: "center" },
+      { text: "(f = c*e)", italics: true, fontSize: 10, alignment: "center" },
+      { text: "(g)", italics: true, fontSize: 10, alignment: "center" },
     ],
   ];
 
   for (const it of b.items || []) {
     body.push([
-      { text: String(it.no ?? ""), alignment: "center", margin: [0, 4, 0, 4] },
-      { text: it.uraian || "-", alignment: "left", margin: [4, 4, 0, 4] },
+      { text: String(it.no ?? ""), fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: it.uraian || "-", fontSize: 12, alignment: "left", margin: [4, 4, 0, 4] },
       {
         text: it.harga_satuan_fmt || formatRupiah(it.harga_satuan),
+        fontSize: 12,
         alignment: "right",
         margin: [0, 4, 4, 4],
       },
-      { text: it.satuan || "-", alignment: "center", margin: [0, 4, 0, 4] },
-      { text: fmtVolume(it.volume), alignment: "center", margin: [0, 4, 0, 4] },
+      { text: it.satuan || "-", fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: fmtVolume(it.volume), fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
       {
         text: it.jumlah_fmt || formatRupiah(it.jumlah),
+        fontSize: 12,
         alignment: "right",
         margin: [0, 4, 4, 4],
       },
-      { text: "", alignment: "center" },
+      { text: "", fontSize: 12, alignment: "center" },
     ]);
   }
 
@@ -910,6 +1005,7 @@ export function buildBastSection(data) {
     {
       text: "Jumlah",
       bold: true,
+      fontSize: 12,
       alignment: "right",
       colSpan: 4,
       margin: [0, 5, 5, 5],
@@ -917,8 +1013,8 @@ export function buildBastSection(data) {
     {},
     {},
     {},
-    { text: totalVol, alignment: "center", margin: [0, 5, 0, 5] },
-    { text: grandFmt, bold: true, alignment: "right", margin: [0, 5, 4, 5] },
+    { text: totalVol, fontSize: 12, alignment: "center", margin: [0, 5, 0, 5] },
+    { text: grandFmt, fontSize: 12, bold: true, alignment: "right", margin: [0, 5, 4, 5] },
     { text: "" },
   ]);
 
@@ -926,6 +1022,7 @@ export function buildBastSection(data) {
     {
       text: "Jumlah Total",
       bold: true,
+      fontSize: 12,
       alignment: "right",
       colSpan: 4,
       margin: [0, 5, 5, 5],
@@ -934,186 +1031,118 @@ export function buildBastSection(data) {
     {},
     {},
     { text: "" },
-    { text: grandFmt, bold: true, alignment: "right", margin: [0, 5, 4, 5] },
+    { text: grandFmt, fontSize: 12, bold: true, alignment: "right", margin: [0, 5, 4, 5] },
     { text: "" },
   ]);
 
   content.push({
-    table: { headerRows: 2, widths: [15, "*", 45, 30, 30, 50, 25], body },
+    table: { headerRows: 2, widths: [20, "*", 55, 35, 35, 60, 30], body },
     layout: {
       ...reportTableLayout(2),
     },
-    fontSize: 8.5,
+    fontSize: 12,
     margin: [0, 5, 0, 12],
   });
 
   content.push({
     text: "Demikian Berita Acara Serah Terima Barang ini dibuat dalam rangkap 2 (dua) untuk digunakan sebagaimana mestinya.",
-    fontSize: 10,
+    fontSize: 12,
     margin: [0, 10, 0, 20],
     alignment: "justify",
   });
 
   const kota = b.kota || ident.tempat_surat || "Jember";
-  content.push({
-    columns: [
-      { text: "", width: "*" },
-      {
-        text: `${kota}, ${b.tgl_full || ""}`,
-        width: "*",
-        alignment: "center",
-        fontSize: 9,
-        color: PDF_COLORS.muted,
-      },
-    ],
-    margin: [0, 2, 0, 3],
+
+  // -----------------------------------------------------------------------
+  // Blok tanda tangan BAST — format TABLE konsisten dengan Kwitansi
+  // -----------------------------------------------------------------------
+  const BAST_FS = 12;
+  const sigCell = (text, opts = {}) => ({
+    text,
+    fontSize: BAST_FS,
+    alignment: "center",
+    border: [false, false, false, false],
+    margin: [0, 1, 0, 1],
+    ...opts,
   });
 
-  content.push({
-    columns: [
+  const sigLineCanvas = {
+    canvas: [
       {
-        stack: [
-          {
-            text: "Yang Menyerahkan",
-            alignment: "center",
-            fontSize: 9,
-            bold: true,
-            color: PDF_COLORS.navy,
-          },
-          {
-            text: "Penyedia Barang",
-            alignment: "center",
-            fontSize: 9,
-            color: PDF_COLORS.muted,
-            margin: [0, 2, 0, 0],
-          },
-          {
-            canvas: [
-              {
-                type: "line",
-                x1: 15,
-                y1: 0,
-                x2: 145,
-                y2: 0,
-                lineWidth: 0.6,
-                lineColor: PDF_COLORS.border,
-              },
-            ],
-            alignment: "center",
-            margin: [0, 42, 0, 5],
-          },
-          {
-            text: b.nama_penyedia || "-",
-            bold: true,
-            alignment: "center",
-            fontSize: 9,
-          },
-        ],
-        width: "*",
-      },
-      {
-        stack: [
-          {
-            text: "Yang Menerima",
-            alignment: "center",
-            fontSize: 9,
-            bold: true,
-            color: PDF_COLORS.navy,
-          },
-          {
-            text: b.jabatan_penerima || "Pengurus Barang",
-            alignment: "center",
-            fontSize: 9,
-            color: PDF_COLORS.muted,
-            margin: [0, 2, 0, 0],
-          },
-          {
-            canvas: [
-              {
-                type: "line",
-                x1: 15,
-                y1: 0,
-                x2: 145,
-                y2: 0,
-                lineWidth: 0.6,
-                lineColor: PDF_COLORS.border,
-              },
-            ],
-            alignment: "center",
-            margin: [0, 42, 0, 5],
-          },
-          {
-            text: b.nama_penerima || ident.nama_pengurus_barang || "-",
-            bold: true,
-            alignment: "center",
-            fontSize: 9,
-          },
-          {
-            text: b.nip_penerima
-              ? `NIP. ${b.nip_penerima}`
-              : ident.nip_pengurus_barang
-                ? `NIP. ${ident.nip_pengurus_barang}`
-                : "",
-            alignment: "center",
-            fontSize: 8,
-            color: PDF_COLORS.muted,
-          },
-        ],
-        width: "*",
-      },
-      {
-        stack: [
-          {
-            text: "Mengetahui,",
-            alignment: "center",
-            fontSize: 9,
-            bold: true,
-            color: PDF_COLORS.navy,
-          },
-          {
-            text: "Kepala Sekolah",
-            alignment: "center",
-            fontSize: 9,
-            color: PDF_COLORS.muted,
-            margin: [0, 2, 0, 0],
-          },
-          {
-            canvas: [
-              {
-                type: "line",
-                x1: 15,
-                y1: 0,
-                x2: 145,
-                y2: 0,
-                lineWidth: 0.6,
-                lineColor: PDF_COLORS.border,
-              },
-            ],
-            alignment: "center",
-            margin: [0, 42, 0, 5],
-          },
-          {
-            text:
-              ident.nama_kepala_sekolah ||
-              ".................................",
-            bold: true,
-            alignment: "center",
-            fontSize: 9,
-          },
-          {
-            text: ident.nip_kepala_sekolah
-              ? `NIP. ${ident.nip_kepala_sekolah}`
-              : "NIP. .............................",
-            alignment: "center",
-            fontSize: 8,
-            color: PDF_COLORS.muted,
-          },
-        ],
-        width: "*",
+        type: "line",
+        x1: 5,
+        y1: 0,
+        x2: 170,
+        y2: 0,
+        lineWidth: 0.6,
+        lineColor: PDF_COLORS.ink,
       },
     ],
-    columnGap: 10,
-    margin: [0, 0, 0, 20],
+    alignment: "center",
+    border: [false, false, false, false],
+    margin: [0, 0, 0, 2],
+  };
+
+  const namaPenyedia = formatNamaPenandatangan(b.nama_penyedia || "-");
+  const namaPenerima = formatNamaPenandatangan(
+    b.nama_penerima || ident.nama_pengurus_barang || "-",
+  );
+  const nipPenerima = b.nip_penerima
+    ? `NIP. ${b.nip_penerima}`
+    : ident.nip_pengurus_barang
+      ? `NIP. ${ident.nip_pengurus_barang}`
+      : "";
+
+  // Tanda tangan BAST: hanya "Yang Menyerahkan" dan "Yang Menerima"
+  // (tanpa tanda tangan Kepala Sekolah sesuai ketentuan)
+  content.push({
+    table: {
+      widths: ["*", "*"],
+      body: [
+        // Baris 1: tanggal surat (pada kolom kanan)
+        [
+          sigCell(""),
+          sigCell(`${kota}, ${b.tgl_full || ""}`),
+        ],
+        // Baris 2: pihak penanda tangan
+        [
+          sigCell("Yang Menyerahkan"),
+          sigCell("Yang Menerima"),
+        ],
+        // Baris 3: jabatan
+        [
+          sigCell("Penyedia Barang"),
+          sigCell(b.jabatan_penerima || "Pengurus Barang"),
+        ],
+        // Baris 4: ruang tanda tangan
+        [
+          sigCell("", { margin: [0, 48, 0, 0] }),
+          sigCell("", { margin: [0, 48, 0, 0] }),
+        ],
+        // Baris 5: garis tanda tangan
+        [sigLineCanvas, sigLineCanvas],
+        // Baris 6: nama penanda tangan
+        [
+          sigCell(namaPenyedia, { bold: true }),
+          sigCell(namaPenerima, { bold: true }),
+        ],
+        // Baris 7: NIP
+        [
+          sigCell("", { fontSize: BAST_FS - 2 }),
+          sigCell(nipPenerima, { fontSize: BAST_FS - 2 }),
+        ],
+      ],
+    },
+    layout: {
+      hLineWidth: () => 0,
+      vLineWidth: () => 0,
+      paddingLeft: () => 4,
+      paddingRight: () => 4,
+      paddingTop: () => 0,
+      paddingBottom: () => 0,
+    },
+    margin: [0, 8, 0, 20],
+    unbreakable: true,
   });
 
   const lamp = data.lampiran_foto || {};
@@ -1132,13 +1161,13 @@ export function buildBastSection(data) {
       text: `LAMPIRAN ${judul}`,
       bold: true,
       color: PDF_COLORS.navy,
-      fontSize: 13,
+      fontSize: 12,
       alignment: "center",
       margin: [0, 8, 0, 4],
     });
     content.push({
       text: `Nomor Kwitansi : ${data.kwitansi.nomor_kwitansi || "-"}`,
-      fontSize: 9,
+      fontSize: 12,
       color: PDF_COLORS.muted,
       alignment: "center",
       margin: [0, 0, 0, 12],
@@ -1156,13 +1185,6 @@ export function buildBastSection(data) {
               image: url,
               fit: [235, 175],
               alignment: "center",
-            },
-            {
-              text: judul.replace("FOTO ", ""),
-              fontSize: 8,
-              color: PDF_COLORS.muted,
-              alignment: "center",
-              margin: [0, 5, 0, 0],
             },
           ],
           width: "*",
@@ -1187,7 +1209,7 @@ export function buildBastSection(data) {
             {
               text: "Foto tidak ditemukan",
               italics: true,
-              fontSize: 8,
+              fontSize: 10,
               color: PDF_COLORS.muted,
               alignment: "center",
               margin: [0, 5, 0, 0],
@@ -1221,7 +1243,7 @@ export function buildRabSection(data) {
 
   content.push(...kopStack(r.kop || data.document?.kop, "landscape"));
   content.push(
-    ...sectionTitle("RINCIAN ANGGARAN BIAYA (RAB)", r.kegiatan || ""),
+    ...sectionTitle("RINCIAN ANGGARAN BIAYA (RAB)"),
   );
   content.push({ text: "", margin: [0, 10, 0, 0] });
 
@@ -1239,31 +1261,35 @@ export function buildRabSection(data) {
 
   const body = [
     [
-      { text: "No", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "No", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
       {
         text: "Uraian Kegiatan",
         bold: true,
+        fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
-      { text: "Volume", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
-      { text: "Satuan", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "Volume", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "Satuan", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
       {
         text: "Harga Satuan",
         bold: true,
+        fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
-      { text: "Jumlah", bold: true, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: "Jumlah", bold: true, fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
       {
         text: "Jenis Belanja",
         bold: true,
+        fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
       {
         text: "Keterangan",
         bold: true,
+        fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
@@ -1271,30 +1297,34 @@ export function buildRabSection(data) {
   ];
   for (const row of r.rows || []) {
     body.push([
-      { text: String(row.no ?? ""), alignment: "center", margin: [0, 4, 0, 4] },
-      { text: row.uraian || "-", alignment: "left", margin: [4, 4, 0, 4] },
+      { text: String(row.no ?? ""), fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
+      { text: row.uraian || "-", fontSize: 12, alignment: "left", margin: [4, 4, 0, 4] },
       {
         text: fmtVolume(row.volume),
+        fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
-      { text: row.satuan || "", alignment: "center", margin: [0, 4, 0, 4] },
+      { text: row.satuan || "", fontSize: 12, alignment: "center", margin: [0, 4, 0, 4] },
       {
         text: row.harga_satuan_fmt || formatRupiah(row.harga_satuan),
+        fontSize: 12,
         alignment: "right",
         margin: [0, 4, 4, 4],
       },
       {
         text: row.jumlah_fmt || formatRupiah(row.jumlah),
+        fontSize: 12,
         alignment: "right",
         margin: [0, 4, 4, 4],
       },
       {
         text: row.jenis_belanja || "-",
+        fontSize: 12,
         alignment: "left",
         margin: [4, 4, 0, 4],
       },
-      { text: row.keterangan || "", alignment: "left", margin: [4, 4, 0, 4] },
+      { text: row.keterangan || "", fontSize: 12, alignment: "left", margin: [4, 4, 0, 4] },
     ]);
   }
 
@@ -1303,6 +1333,7 @@ export function buildRabSection(data) {
     {
       text: "Jumlah Total",
       bold: true,
+      fontSize: 12,
       alignment: "right",
       colSpan: 5,
       margin: [0, 5, 5, 5],
@@ -1311,7 +1342,7 @@ export function buildRabSection(data) {
     {},
     {},
     {},
-    { text: grandFmt, bold: true, alignment: "right", margin: [0, 6, 4, 6] },
+    { text: grandFmt, fontSize: 12, bold: true, alignment: "right", margin: [0, 6, 4, 6] },
     { text: "" },
     { text: "" },
   ]);
@@ -1323,73 +1354,73 @@ export function buildRabSection(data) {
       body,
     },
     layout: reportTableLayout(1),
-    fontSize: 8.5,
+    fontSize: 12,
     margin: [0, 5, 0, 12],
   });
 
-  content.push({
-    columns: [
-      { text: "", width: "*" },
+  // -----------------------------------------------------------------------
+  // Blok tanda tangan RAB — format TABLE konsisten dengan Kwitansi
+  // -----------------------------------------------------------------------
+  const RAB_FS = 12;
+  const sigCell = (text, opts = {}) => ({
+    text,
+    fontSize: RAB_FS,
+    alignment: "center",
+    border: [false, false, false, false],
+    margin: [0, 1, 0, 1],
+    ...opts,
+  });
+
+  const sigLineCanvas = {
+    canvas: [
       {
-        stack: [
-          {
-            text: r.tanggal_surat || "",
-            alignment: "center",
-            fontSize: 9,
-            color: PDF_COLORS.muted,
-            margin: [0, 4, 0, 2],
-          },
-          {
-            text: "Mengetahui,",
-            alignment: "center",
-            fontSize: 9,
-            bold: true,
-            color: PDF_COLORS.navy,
-          },
-          {
-            text: "Kepala Sekolah",
-            alignment: "center",
-            fontSize: 9,
-            color: PDF_COLORS.muted,
-            margin: [0, 2, 0, 0],
-          },
-          {
-            canvas: [
-              {
-                type: "line",
-                x1: 15,
-                y1: 0,
-                x2: 145,
-                y2: 0,
-                lineWidth: 0.6,
-                lineColor: PDF_COLORS.border,
-              },
-            ],
-            alignment: "center",
-            margin: [0, 42, 0, 5],
-          },
-          {
-            text:
-              ident.nama_kepala_sekolah ||
-              ".................................",
-            bold: true,
-            alignment: "center",
-            fontSize: 9,
-          },
-          {
-            text: ident.nip_kepala_sekolah
-              ? `NIP. ${ident.nip_kepala_sekolah}`
-              : "NIP. .............................",
-            alignment: "center",
-            fontSize: 8,
-            color: PDF_COLORS.muted,
-          },
-        ],
-        width: 220,
+        type: "line",
+        x1: 5,
+        y1: 0,
+        x2: 190,
+        y2: 0,
+        lineWidth: 0.6,
+        lineColor: PDF_COLORS.ink,
       },
     ],
-    columnGap: 10,
-    margin: [0, 2, 0, 0],
+    alignment: "center",
+    border: [false, false, false, false],
+    margin: [0, 0, 0, 2],
+  };
+
+  const namaKepsek = formatNamaPenandatangan(ident.nama_kepala_sekolah);
+  const nipKepsek = ident.nip_kepala_sekolah
+    ? `NIP. ${ident.nip_kepala_sekolah}`
+    : "NIP. .............................";
+
+  content.push({
+    table: {
+      widths: ["*", 240],
+      body: [
+        // Baris 1: tanggal surat
+        [sigCell(""), sigCell(r.tanggal_surat || "")],
+        // Baris 2: judul
+        [sigCell(""), sigCell("Mengetahui,")],
+        // Baris 3: jabatan
+        [sigCell(""), sigCell("Kepala Sekolah")],
+        // Baris 4: ruang tanda tangan
+        [sigCell(""), sigCell("", { margin: [0, 48, 0, 0] })],
+        // Baris 6: nama penanda tangan
+        [sigCell(""), sigCell(namaKepsek, { bold: true })],
+        // Baris 7: NIP
+        [sigCell(""), sigCell(nipKepsek, { fontSize: RAB_FS - 2 })],
+      ],
+    },
+    layout: {
+      hLineWidth: () => 0,
+      vLineWidth: () => 0,
+      paddingLeft: () => 4,
+      paddingRight: () => 4,
+      paddingTop: () => 0,
+      paddingBottom: () => 0,
+    },
+    margin: [0, 8, 0, 0],
+    unbreakable: true,
   });
 
   return content;
@@ -1455,7 +1486,7 @@ export function buildSpjDocumentDefinition(data) {
       mmToPt(num(paper.margin_mm) || 15),
       mmToPt(num(paper.margin_bottom_mm) || 20),
     ],
-    defaultStyle: { font: "Arial", fontSize: 10, lineHeight: 1.2 },
+    defaultStyle: { font: "Arial", fontSize: 12, lineHeight: 1.2 },
     info: {
       title: doc.filename || "SPJ.pdf",
       creator: "Aplikasi SPJ (frontend pdfmake)",
@@ -1530,10 +1561,19 @@ export async function buildSpjPdf(data) {
     if (!Array.isArray(daftar)) continue;
     for (let i = 0; i < daftar.length; i++) {
       const foto = daftar[i];
-      if (typeof foto === "string") {
-        daftar[i] = await processPdfImage(foto, { monochrome: false });
-      } else if (foto?.available !== false && foto?.path) {
-        foto.path = await processPdfImage(foto.path, { monochrome: false });
+      try {
+        if (typeof foto === "string") {
+          daftar[i] = await processPdfImage(foto, { monochrome: false });
+        } else if (foto?.available !== false && foto?.path) {
+          foto.path = await processPdfImage(foto.path, { monochrome: false });
+        }
+      } catch (err) {
+        console.warn("[spjPdf] Gagal memproses gambar lampiran:", err);
+        if (typeof foto === "object" && foto !== null) {
+          foto.available = false;
+        } else {
+          daftar[i] = { available: false, path: "" };
+        }
       }
     }
   }

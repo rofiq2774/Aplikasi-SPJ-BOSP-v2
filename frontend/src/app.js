@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import UI from "./ui.js";
 import { iconSvg } from "./icons.js";
-import { buildSpjPdf } from "./pdf/spjPdf.js";
+import { buildSpjPdf, setBackendOriginGetter } from "./pdf/spjPdf.js";
 
 // ===================== BACKEND BASE URL (child_process) =====================
 // Backend TIDAK lagi dilayani oleh "servis localhost" statis (port 8000).
@@ -11,6 +11,7 @@ import { buildSpjPdf } from "./pdf/spjPdf.js";
 // origin belum tersedia, request ditolak dengan error yang jelas (dan dicatat
 // ke app.log), bukan menembak port mati.
 let _backendOrigin = ""; // contoh: "http://127.0.0.1:54321" (port dinamis child_process)
+setBackendOriginGetter(() => _backendOrigin);
 const API_BASE = new Proxy(
   {},
   {
@@ -869,6 +870,7 @@ async function downloadKwitansi(id, noBukti = "") {
       throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
     }
 
+    setBackendOriginGetter(() => _backendOrigin);
     const blob = await buildSpjPdf(payload.data);
     if (!(blob instanceof Blob) || blob.size === 0) {
       throw new Error("Renderer frontend menghasilkan PDF kosong");
@@ -1617,7 +1619,7 @@ function renderKwitansiList(list) {
             .main-table { width: 100%; border-collapse: collapse; min-width: 900px; background: white; }
             .main-table th { background: #f8f9fa; padding: 15px 10px; border-bottom: 2px solid #dee2e6; text-align: left; color: #495057; }
             .main-table td { padding: 12px 10px; border-bottom: 1px solid #eee; vertical-align: middle; }
-            .btn-sm { padding: 6px 12px; font-size: 12px; cursor: pointer; border-radius: 4px; border: none; transition: 0.2s; }
+            .btn-sm { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 12px; font-size: 12px; font-weight: 500; cursor: pointer; border-radius: 4px; border: 1px solid transparent; transition: 0.2s; vertical-align: middle; white-space: nowrap; line-height: 1.4; box-sizing: border-box; }
             .btn-sm:hover { opacity: 0.8; }
             
             /* Popup Styling */
@@ -1681,13 +1683,13 @@ function renderKwitansiList(list) {
             <td>${k.nomor_kwitansi || "<span style='color:orange'>DRAFT</span>"}</td>
             <td>${k.nama_kegiatan}</td>
             <td>Rp ${Number(k.jumlah).toLocaleString("id-ID")}</td>
-            <td style="text-align:center">
+            <td style="text-align:center; vertical-align:middle; white-space:nowrap;">
                 <button class="btn-sm ${needsUpdate ? "btn-danger" : "btn-success"}" 
                     onclick="openUpdateDetailPopup(${k.id})">
                     ${needsUpdate ? iconSvg("pencil", 13) + " Lengkapi" : iconSvg("check", 13) + " Edit"}
                 </button>
             </td>
-<td style="text-align:center; display: flex; gap: 5px; justify-content: center;">
+<td style="text-align:center; vertical-align:middle; white-space:nowrap;">
     ${
       k.nomor_kwitansi
         ? `
@@ -2036,7 +2038,7 @@ function openUpdateDetailPopup(kwitansiId) {
                                    value="${harga.toLocaleString("id-ID")}"
                                    oninput="formatCurrencyID(this); updateValidasiPengeluaran(this)">
                         </td>
-                        <td style="display:flex; gap:6px; align-items:center;">
+                        <td><div style="display:flex; gap:6px; align-items:center;">
                             <input type="text"
                                    class="edit-uraian-pengeluaran text-right"
                                    value="${pengeluaran.toLocaleString("id-ID")}"
@@ -2047,8 +2049,7 @@ function openUpdateDetailPopup(kwitansiId) {
                                     title="Generate Foto AI untuk barang ini"
                                     onclick="generateGambarAIItem(${kwitansiId}, ${index})">
                                 ${iconSvg("bot", 15)}
-                            </button>
-                        </td>
+                            </button></div></td>
                     </tr>
                 `;
       });

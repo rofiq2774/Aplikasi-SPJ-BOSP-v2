@@ -246,15 +246,7 @@ async def health_check():
 # ===============================
 # CORS
 # ===============================
-if IS_DEV:
-    cors_origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost",
-        "http://127.0.0.1",
-    ]
-else:
-    cors_origins = ["*"]
+cors_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -313,11 +305,19 @@ UPLOAD_KWITANSI_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ===============================
-# STATIC FILES
+# STATIC FILES (DENGAN CORS HEADER UNTUK RENDERER PDF)
 # ===============================
+class CORSStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
 app.mount(
     "/uploads",
-    StaticFiles(directory=str(UPLOAD_DIR)),
+    CORSStaticFiles(directory=str(UPLOAD_DIR)),
     name="uploads"
 )
 # ===============================
@@ -1111,7 +1111,7 @@ def _foto_bukti_list(kwitansi) -> list:
 
 
 def _lampiran_foto_payload(kwitansi) -> dict:
-    """Kelompokkan foto bukti per jenis untuk frontend (path relatif /uploads)."""
+    """Kelompokkan foto bukti per jenis untuk frontend (data URI base64 atau path relatif /uploads)."""
     grouped: dict = {}
     for item in _foto_bukti_list(kwitansi):
         if isinstance(item, str):
@@ -1124,9 +1124,24 @@ def _lampiran_foto_payload(kwitansi) -> dict:
         if not path:
             continue
         p = resolve_foto_path(path)
-        relative_path = Path(path).as_posix().lstrip("/\\")
+        img_src = None
+        if p and p.exists():
+            try:
+                mime = mimetypes.guess_type(str(p))[0] or "image/jpeg"
+                with open(p, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                img_src = f"data:{mime};base64,{b64}"
+            except Exception as e:
+                logger.warning("Gagal encode foto bukti ke base64 (%s): %s", p, e)
+
+        if not img_src:
+            relative_path = Path(path).as_posix().lstrip("/\\")
+            if relative_path.startswith("uploads/"):
+                relative_path = relative_path[len("uploads/"):]
+            img_src = f"/uploads/{relative_path}"
+
         grouped.setdefault(jenis, []).append({
-            "path": f"/uploads/{relative_path}",
+            "path": img_src,
             "available": bool(p),
         })
     return grouped

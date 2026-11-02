@@ -1,5 +1,0 @@
-{
-  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
-  "python.analysis.extraPaths": ["${workspaceFolder}/backend"],
-  "python-envs.defaultEnvManager": "ms-python.python:system"
-}

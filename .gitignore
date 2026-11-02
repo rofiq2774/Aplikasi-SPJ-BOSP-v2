@@ -4,6 +4,8 @@
 node_modules/
 frontend/node_modules/
 backend/venv/
+.vscode/
+.venv/
 
 # ========================
 # Environment Variables & Secrets

@@ -8,6 +8,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // tidak boleh hardcode http://127.0.0.1:8000 lagi. Ambil base URL dari main process.
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
   getArialPdfFonts: () => ipcRenderer.invoke("get-arial-pdf-fonts"),
+  getAiImageSettings: () => ipcRenderer.invoke("get-ai-image-settings"),
+  saveAiImageSettings: settings =>
+    ipcRenderer.invoke("save-ai-image-settings", settings),
+  clearAiImageSettings: () => ipcRenderer.invoke("clear-ai-image-settings"),
+  generateAiImage: (kwitansiId, input) =>
+    ipcRenderer.invoke("generate-ai-image", kwitansiId, input),
 
   // WAJIB: semua kejadian frontend dicatat ke app.log (ditulis main process,
   // satu file yang sama dengan log backend child_process).

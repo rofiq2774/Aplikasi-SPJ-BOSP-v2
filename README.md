@@ -15,6 +15,8 @@ Aplikasi ini dirancang untuk membantu bendahara sekolah dan instansi pendidikan 
 * **Pencatatan Transaksi**: Input manual data pembelanjaan dari dana BOSP.
 * **Otomatisasi Dokumen**: Ekstrak data BKU menjadi dokumen SPJ BOSP siap cetak.
 * **Laporan & Rekapitulasi**: Rekapitulasi Belanja Pertahap dan Per Tahun.
+* **Foto AI**: Tersedia Pollinations (memerlukan secret key), Hugging Face, Google Gemini, OpenAI Images, dan endpoint gambar OpenAI-compatible kustom.
+* **Dukung Kami**: Pindai QR Saweria dari menu aplikasi untuk mendukung pengembangan.
 
 ## 🛠️ Teknologi
 
@@ -45,6 +47,8 @@ Aplikasi ini dirancang untuk membantu bendahara sekolah dan instansi pendidikan 
     
 7. **Data SPJ**
     Lengkapi data SPJ dari menu Daftar SPJ. Kelengkapannya terdiri dari nama kegiatan, tanggal nota, nama toko dan lain-lain sampai foto bukti.
+
+   Untuk membuat foto AI, gunakan tombol bot pada baris barang. Pada penggunaan pertama, pilih provider melalui popup. Pollinations memerlukan secret key berawalan `sk_`; App Key `pk_` tidak dapat digunakan langsung. Izin model dan budget key mengikuti akun Pollinations. Gemini memerlukan API key Google AI Studio dan ketersediaan kuotanya mengikuti akun Google. OpenAI Images memerlukan API key serta billing API tersendiri; langganan ChatGPT tidak mencakup saldo API. Provider lain mungkin mengenakan biaya. Pengaturan provider/API key dapat diubah dari tombol roda gigi. API key disimpan terenkripsi oleh penyimpanan aman sistem operasi pada komputer ini.
    
 9. **Download SPJ**
     Setelah data SPJ lengkap, maka Anda dapat mendownload dokumen SPJ untuk digunakan sebagai lampiran laporan BOSP
@@ -113,4 +117,3 @@ If you require a standard open-source license (e.g., MIT, Apache 2.0) or a forma
 
 
 ![Total Downloads](https://img.shields.io/github/downloads/rofiq2774/Aplikasi-SPJ-BOSP-v2/total?style=for-the-badge&label=Pengguna%20&color=2ea44f)
-

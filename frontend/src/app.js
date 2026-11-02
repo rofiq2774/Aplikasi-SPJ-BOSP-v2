@@ -82,11 +82,11 @@ function ensureBackendReady() {
               appLog(
                 "info",
                 `Backend child_process aktif di ${_backendOrigin}` +
-                  (ready ? "" : " (health check belum lolos — akan dicoba ulang)"),
+                (ready ? "" : " (health check belum lolos — akan dicoba ulang)"),
               );
               if (!ready) {
-                    // Izinkan percobaan health ulang di kemudian hari.
-                    _backendReadyChecked = false;
+                // Izinkan percobaan health ulang di kemudian hari.
+                _backendReadyChecked = false;
               } else {
                 _backendReadyChecked = true;
               }
@@ -148,7 +148,7 @@ function appLog(level, message) {
     if (level === "error") console.error(msg);
     else if (level === "warn") console.warn(msg);
     else console.log(msg);
-  } catch (e) {}
+  } catch (e) { }
 }
 
 // Hook pembungkus fetch: catat SETIAP request API (mulai, status, error) ke app.log.
@@ -395,7 +395,7 @@ window.updateFileList = function () {
       showToast("Error!", "Maksimal 12 file!");
       try {
         input.value = "";
-      } catch (e) {}
+      } catch (e) { }
       return;
     }
 
@@ -611,7 +611,7 @@ function resetBhpSelection() {
   if (input)
     try {
       input.value = "";
-    } catch (e) {}
+    } catch (e) { }
   if (display) display.innerHTML = "";
   const res = document.getElementById("bhp-result");
   if (res) res.innerHTML = "";
@@ -623,7 +623,7 @@ function resetBkuSelection() {
   if (input)
     try {
       input.value = "";
-    } catch (e) {}
+    } catch (e) { }
   if (display) display.innerHTML = "";
   const res = document.getElementById("bku-result");
   if (res) res.innerHTML = "";
@@ -700,7 +700,7 @@ async function extractBHP() {
 
       showToast(
         "Berhasil!",
-        `Ekstrak selesai — ${deleted} baris diganti, ${inserted} baris dimasukkan`,
+        `Ekstrak selesai: ${deleted} baris diganti, ${inserted} baris dimasukkan`,
       );
       const resDiv = document.getElementById("bhp-result");
       if (resDiv)
@@ -759,10 +759,10 @@ function applyBhpToBKU(bhpItems) {
     const candidates = matches.length
       ? matches
       : bkuData.transaksi.filter(
-          (t) =>
-            normalizeNoBukti(t.no_bukti || "").includes(nb) ||
-            nb.includes(normalizeNoBukti(t.no_bukti || "")),
-        );
+        (t) =>
+          normalizeNoBukti(t.no_bukti || "").includes(nb) ||
+          nb.includes(normalizeNoBukti(t.no_bukti || "")),
+      );
 
     candidates.forEach((t) => {
       // Update tanggal (if present)
@@ -861,7 +861,7 @@ async function downloadKwitansi(id, noBukti = "") {
     if (!contentType.includes("json")) {
       throw new Error(
         `Respons backend bukan JSON (Content-Type: ${contentType || "kosong"}); ` +
-          "alur unduh SPJ hanya menerima data JSON untuk dirender di frontend",
+        "alur unduh SPJ hanya menerima data JSON untuk dirender di frontend",
       );
     }
 
@@ -986,15 +986,15 @@ async function importMasterRekeningBelanja() {
       .map((row) => ({
         kode_rekening_belanja: String(
           row.kode_rekening_belanja ||
-            row["kode_rekening_belanja"] ||
-            row["kode"] ||
-            "",
+          row["kode_rekening_belanja"] ||
+          row["kode"] ||
+          "",
         ).trim(),
         nama_rekening_belanja: String(
           row.nama_rekening_belanja ||
-            row["nama_rekening_belanja"] ||
-            row["nama"] ||
-            "",
+          row["nama_rekening_belanja"] ||
+          row["nama"] ||
+          "",
         ).trim(),
         rekap_rekening_belanja: String(
           row.rekap_rekening_belanja || row["rekap_rekening_belanja"] || "",
@@ -1002,8 +1002,8 @@ async function importMasterRekeningBelanja() {
         nilai_kapitalisasi_belanja:
           parseFloat(
             row.nilai_kapitalisasi_belanja ||
-              row["nilai_kapitalisasi_belanja"] ||
-              0,
+            row["nilai_kapitalisasi_belanja"] ||
+            0,
           ) || 0,
       }))
       .filter(
@@ -1344,6 +1344,7 @@ const TAB_TITLES = {
   kwitansi: "Daftar SPJ",
   rekap: "Rekap Belanja",
   update: "Pembaruan Aplikasi",
+  dukung: "Dukung Kami",
 };
 
 window.switchTab = function (tab) {
@@ -1367,7 +1368,7 @@ window.switchTab = function (tab) {
   const searchInputPre = document.getElementById("globalSearchInput");
   if (
     searchInputPre &&
-    ["identitas", "rekap", "bku", "update"].includes(tab)
+    ["identitas", "rekap", "bku", "update", "dukung"].includes(tab)
   ) {
     searchInputPre.value = "";
   }
@@ -1436,6 +1437,10 @@ window.switchTab = function (tab) {
 
       case "update":
         // Sembunyikan search bar di menu pengaturan karena tidak relevan
+        if (searchContainer) searchContainer.classList.add("hidden");
+        break;
+
+      case "dukung":
         if (searchContainer) searchContainer.classList.add("hidden");
         break;
 
@@ -1690,15 +1695,14 @@ function renderKwitansiList(list) {
                 </button>
             </td>
 <td style="text-align:center; vertical-align:middle; white-space:nowrap;">
-    ${
-      k.nomor_kwitansi
-        ? `
+    ${k.nomor_kwitansi
+          ? `
             <button class="btn-sm btn-outline-primary" onclick="downloadKwitansi(${k.id}, '${k.no_bukti}')">
                   ${iconSvg("package", 13)} SPJ
             </button>
           `
-        : `<span style="color:#aaa; font-size:11px; font-style: italic;">Menunggu Generate</span>`
-    }
+          : `<span style="color:#aaa; font-size:11px; font-style: italic;">Menunggu Generate</span>`
+        }
 </td>
         </tr>
     `;
@@ -1885,6 +1889,21 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
     promptText = `${namaBarang} sebanyak ${volume} ${satuan || "buah"}`;
   }
 
+  let settings;
+  try {
+    if (!window.electronAPI?.getAiImageSettings) {
+      throw new Error("Fitur penyimpanan AI aman memerlukan aplikasi desktop.");
+    }
+    settings = await window.electronAPI.getAiImageSettings();
+    if (!settings) {
+      settings = await configureAIImageProvider();
+      if (!settings) return;
+    }
+  } catch (err) {
+    showToast("Error!", err.message || "Gagal memuat pengaturan provider AI");
+    return;
+  }
+
   // Feedback visual: tombol berputar & info bahwa generate butuh waktu
   const btn = row.querySelector(".btn-generate-ai");
   const btnHtmlBackup = btn ? btn.innerHTML : null;
@@ -1896,31 +1915,16 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
   showToast("Info", "Generate gambar AI sedang diproses, bisa memakan waktu hingga 1 menit...");
 
   try {
-    const res = await apiFetch(
-      `${API_BASE}/kwitansi/${kwitansiId}/generate-ai-image`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt_items: promptText,
-          jenis_foto: "barang",
-          orientation: "landscape", // 4:3 agar proporsional saat dirender di kop/lampiran
-        }),
-      },
-    );
+    const response = await window.electronAPI.generateAiImage(kwitansiId, {
+      prompt_items: promptText,
+      jenis_foto: "barang",
+      orientation: "landscape",
+    });
 
-    let result = null;
-    try {
-      result = await res.json();
-    } catch {
+    if (response.status < 200 || response.status >= 300 ||
+        response.body?.status !== "success") {
       throw new Error(
-        `Respons server tidak valid (HTTP ${res.status}). Backend mungkin belum di-restart setelah perubahan kode.`,
-      );
-    }
-
-    if (!res.ok || result?.status !== "success") {
-      throw new Error(
-        result?.detail || `Gagal generate AI (HTTP ${res.status})`,
+        response.body?.detail || `Gagal generate AI (HTTP ${response.status})`,
       );
     }
 
@@ -1934,6 +1938,275 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
       btn.innerHTML = btnHtmlBackup;
     }
   }
+};
+
+const AI_IMAGE_PROVIDER_DEFAULTS = {
+  pollinations: {
+    model: "flux",
+    description:
+      "Pollinations memerlukan secret API key berawalan sk_ untuk generate gambar. App Key pk_ tidak dapat digunakan langsung. Pemakaian mengikuti izin model dan budget key.",
+  },
+  huggingface: {
+    model: "black-forest-labs/FLUX.1-schnell",
+    description:
+      "Menggunakan Hugging Face Inference Providers/Nscale. Perlu token dengan izin Inference Providers dan dapat memerlukan kredit/billing.",
+  },
+  gemini: {
+    model: "gemini-nano-banana-2.1",
+    description:
+      "Google Gemini Nano Banana 2.1. Perlu API key Google AI Studio; kuota gratis, ketersediaan model, dan biaya mengikuti akun Google Anda.",
+  },
+  openai: {
+    model: "gpt-image-2.5-flare",
+    description:
+      "OpenAI Images API untuk model GPT Image. Perlu API key dan billing API tersendiri; langganan ChatGPT tidak termasuk saldo API.",
+  },
+  custom: {
+    model: "black-forest-labs/FLUX.1-schnell",
+    description:
+      "Untuk endpoint HTTPS yang kompatibel dengan OpenAI Images API (request prompt/model/size dan respons data[0].b64_json). Biaya dan akses mengikuti provider Anda.",
+  },
+};
+
+function createAISettingsField(labelText, control, helpText = "") {
+  const field = document.createElement("div");
+  field.className = "ui-dialog-input ai-provider-field";
+  const label = document.createElement("label");
+  label.className = "ai-provider-label";
+  label.textContent = labelText;
+  field.append(label, control);
+  if (helpText) {
+    const help = document.createElement("small");
+    help.className = "ai-provider-help";
+    help.textContent = helpText;
+    field.appendChild(help);
+  }
+  return field;
+}
+
+function configureAIImageProvider() {
+  return new Promise((resolve) => {
+    const openDialog = (savedSettings) => {
+      const overlay = document.createElement("div");
+      overlay.className = "ui-dialog-overlay ui-dialog-kind-prompt";
+
+      const dialog = document.createElement("section");
+      dialog.className = "ui-dialog ai-provider-dialog";
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+
+      const heading = document.createElement("div");
+      heading.className = "ui-dialog-head";
+      const title = document.createElement("h2");
+      title.className = "ui-dialog-title";
+      title.textContent = "Pengaturan AI Gambar";
+      heading.appendChild(title);
+
+      const body = document.createElement("div");
+      body.className = "ui-dialog-body";
+      const intro = document.createElement("p");
+      intro.className = "ui-dialog-message";
+      intro.textContent =
+        "Pilih provider untuk membuat gambar. API key disimpan terenkripsi oleh sistem operasi dan tidak dikirim kembali ke tampilan aplikasi.";
+      body.appendChild(intro);
+
+      const provider = document.createElement("select");
+      provider.className = "ai-provider-control";
+      [
+        ["pollinations", "Pollinations — secret key sk_ diperlukan"],
+        ["huggingface", "Hugging Face / Nscale — perlu token"],
+        ["gemini", "Google Gemini — API key"],
+        ["openai", "ChatGPT / OpenAI Images — API berbayar"],
+        ["custom", "Endpoint OpenAI-compatible — kustom"],
+      ].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        provider.appendChild(option);
+      });
+      provider.value = savedSettings?.provider || "pollinations";
+
+      const model = document.createElement("input");
+      model.className = "ai-provider-control";
+      model.type = "text";
+      model.maxLength = 160;
+      model.value = savedSettings?.model ||
+        AI_IMAGE_PROVIDER_DEFAULTS[provider.value].model;
+      model.placeholder = "Nama model";
+
+      const apiKey = document.createElement("input");
+      apiKey.className = "ai-provider-control";
+      apiKey.type = "password";
+      apiKey.autocomplete = "new-password";
+      apiKey.placeholder = savedSettings?.has_api_key
+        ? "API key tersimpan — kosongkan untuk tetap memakai"
+        : "Secret API key";
+
+      const endpoint = document.createElement("input");
+      endpoint.className = "ai-provider-control";
+      endpoint.type = "url";
+      endpoint.maxLength = 1000;
+      endpoint.placeholder = "https://provider.example/v1/images/generations";
+      endpoint.value = savedSettings?.api_endpoint || "";
+
+      const note = document.createElement("p");
+      note.className = "ai-provider-note";
+      const providerField = createAISettingsField("Provider", provider);
+      const modelField = createAISettingsField("Model", model);
+      const keyField = createAISettingsField("API key", apiKey);
+      const endpointField = createAISettingsField(
+        "URL endpoint gambar",
+        endpoint,
+        "Hanya HTTPS yang diizinkan, kecuali endpoint localhost.",
+      );
+      body.append(providerField, modelField, keyField, endpointField, note);
+
+      const footer = document.createElement("div");
+      footer.className = "ui-dialog-foot ai-provider-footer";
+      const cancel = document.createElement("button");
+      cancel.className = "btn btn-secondary";
+      cancel.type = "button";
+      cancel.textContent = "Batal";
+      const save = document.createElement("button");
+      save.className = "btn btn-primary";
+      save.type = "button";
+      save.textContent = "Simpan";
+      footer.append(cancel);
+
+      if (savedSettings) {
+        const remove = document.createElement("button");
+        remove.className = "btn btn-danger";
+        remove.type = "button";
+        remove.textContent = "Hapus";
+        remove.addEventListener("click", async () => {
+          if (!(await UI.confirm("Hapus provider dan API key AI tersimpan?", {
+            title: "Hapus pengaturan AI",
+            okText: "Hapus",
+            danger: true,
+          }))) {
+            return;
+          }
+          try {
+            await window.electronAPI.clearAiImageSettings();
+            finish(null);
+            showToast("Berhasil!", "Pengaturan dan API key AI telah dihapus.");
+          } catch (err) {
+            showToast("Error!", err.message || "Gagal menghapus API key");
+          }
+        });
+        footer.appendChild(remove);
+      }
+      footer.appendChild(save);
+
+      let completed = false;
+      const finish = (value) => {
+        if (completed) return;
+        completed = true;
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+        resolve(value);
+      };
+
+      const updateProviderFields = (previousProvider) => {
+        const currentProvider = provider.value;
+        endpointField.hidden = currentProvider !== "custom";
+        note.textContent = AI_IMAGE_PROVIDER_DEFAULTS[currentProvider].description;
+        keyField.querySelector(".ai-provider-label").textContent =
+          currentProvider === "pollinations" ? "Secret API key (wajib)" : "API key";
+        apiKey.placeholder =
+          currentProvider === savedSettings?.provider && savedSettings?.has_api_key
+            ? "API key tersimpan — kosongkan untuk tetap memakai"
+            : currentProvider === "pollinations"
+              ? "Secret key Pollinations berawalan sk_"
+              : "Masukkan token/API key";
+        if (
+          previousProvider &&
+          model.value === AI_IMAGE_PROVIDER_DEFAULTS[previousProvider]?.model
+        ) {
+          model.value = AI_IMAGE_PROVIDER_DEFAULTS[currentProvider].model;
+        }
+      };
+
+      provider.addEventListener("change", (event) => {
+        const previousProvider = event.target.dataset.previous || "";
+        updateProviderFields(previousProvider);
+        event.target.dataset.previous = event.target.value;
+      });
+      provider.dataset.previous = provider.value;
+      updateProviderFields("");
+
+      save.addEventListener("click", async () => {
+        const settings = {
+          provider: provider.value,
+          model: model.value.trim(),
+          api_key: apiKey.value.trim(),
+          api_endpoint: provider.value === "custom" ? endpoint.value.trim() : "",
+        };
+        if (settings.provider === "custom" && !settings.api_endpoint) {
+          showToast("Error!", "URL endpoint provider kustom wajib diisi.");
+          endpoint.focus();
+          return;
+        }
+        if (!settings.api_key &&
+            !(settings.provider === savedSettings?.provider && savedSettings?.has_api_key)) {
+          showToast("Error!", "API key wajib diisi untuk provider ini.");
+          apiKey.focus();
+          return;
+        }
+        if (
+          settings.provider === "pollinations" &&
+          settings.api_key &&
+          !settings.api_key.startsWith("sk_")
+        ) {
+          showToast("Error!", "Pollinations memerlukan secret key berawalan sk_, bukan App Key pk_.");
+          apiKey.focus();
+          return;
+        }
+        save.disabled = true;
+        try {
+          const stored = await window.electronAPI.saveAiImageSettings(settings);
+          finish(stored);
+        } catch (err) {
+          showToast("Error!", err.message || "Gagal menyimpan pengaturan AI");
+        } finally {
+          save.disabled = false;
+        }
+      });
+
+      cancel.addEventListener("click", () => finish(null));
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) finish(null);
+      });
+      function onKey(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finish(null);
+        }
+      }
+      document.addEventListener("keydown", onKey, true);
+      overlay.appendChild(dialog);
+      dialog.append(heading, body, footer);
+      document.body.appendChild(overlay);
+      provider.focus();
+    };
+
+    if (!window.electronAPI?.getAiImageSettings ||
+        !window.electronAPI?.saveAiImageSettings) {
+      showToast("Error!", "Pengaturan provider AI memerlukan aplikasi desktop.");
+      resolve(null);
+      return;
+    }
+    window.electronAPI.getAiImageSettings()
+      .then(openDialog)
+      .catch((err) => {
+        showToast("Error!", err.message || "Gagal membaca pengaturan AI");
+        resolve(null);
+      });
+  });
+}
+
+window.configureAIImageProvider = async function () {
+  await configureAIImageProvider();
 };
 
 function openUpdateDetailPopup(kwitansiId) {
@@ -2049,6 +2322,12 @@ function openUpdateDetailPopup(kwitansiId) {
                                     title="Generate Foto AI untuk barang ini"
                                     onclick="generateGambarAIItem(${kwitansiId}, ${index})">
                                 ${iconSvg("bot", 15)}
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-ai-settings" style="padding:4px 6px; font-size:11px;"
+                                    title="Pilih provider AI dan atur API key"
+                                    aria-label="Pengaturan provider AI"
+                                    onclick="configureAIImageProvider()">
+                                ${iconSvg("settings", 15)}
                             </button></div></td>
                     </tr>
                 `;
@@ -3631,7 +3910,7 @@ function setIdnImgPreview(imgId, src) {
 async function loadIdentitasPeriode(maxRetry = 3) {
   let attempt = 0;
   let lastError = null;
-  for (;;) {
+  for (; ;) {
     attempt++;
     lastError = null;
     try {
@@ -4338,7 +4617,7 @@ window.toggleSidebar = function () {
   const collapsed = sb.classList.toggle("collapsed");
   try {
     localStorage.setItem("spj-sidebar-collapsed", collapsed ? "1" : "0");
-  } catch (e) {}
+  } catch (e) { }
 };
 
 function restoreSidebarState() {
@@ -4347,7 +4626,7 @@ function restoreSidebarState() {
       const sb = document.getElementById("sidebar");
       if (sb) sb.classList.add("collapsed");
     }
-  } catch (e) {}
+  } catch (e) { }
 }
 
 // Initialize app
@@ -4370,6 +4649,7 @@ function initApp() {
     { tab: "kwitansi", label: "Daftar SPJ", icon: "receipt" },
     { tab: "rekap", label: "Rekap Belanja", icon: "trendingUp" },
     { section: "Sistem" },
+    { tab: "dukung", label: "Dukung Kami", icon: "heart" },
     {
       tab: "update",
       label: "Pembaruan Aplikasi",
@@ -4450,6 +4730,34 @@ function initApp() {
             
             <div id="changelog-container"></div>
         </div><!-- /#tab-update -->
+
+<div id="tab-dukung" class="tab-content">
+    <section class="support-card">
+        <div class="support-copy">
+            <span class="support-icon">${iconSvg("heart", 22)}</span>
+            <h2>Dukung Pengembangan Aplikasi</h2>
+            <p>
+                Jika aplikasi ini membantu pekerjaan Anda, dukungan melalui Saweria
+                akan membantu biaya pengembangan dan pemeliharaan aplikasi.
+            </p>
+            <p class="support-thanks">Terima kasih atas dukungan Anda!</p>
+        </div>
+        <div class="saweria-widget-frame">
+            <img
+                src="../assets/saweria-qr.png"
+                alt="QR Saweria untuk mendukung pengembangan aplikasi"
+                width="300"
+                height="300"
+            >
+        </div>
+        <a
+            class="btn btn-primary support-saweria-link"
+            href="https://saweria.co/widgets/qr?streamKey=9fa01af30cb97401653a0d92eb5935f7"
+            target="_blank"
+            rel="noopener noreferrer"
+        >Buka QR Saweria</a>
+    </section>
+</div><!-- /#tab-dukung -->
 
 <div id="tab-data-bku" class="tab-content">
     <div class="card">

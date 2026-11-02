@@ -1,60 +1,58 @@
-import os
-import io
-import tempfile
+# 1. Python Standard Libraries
 import asyncio
-import httpx
-import sys
-import subprocess
+import base64
+import io
+import json
 import logging
-import fitz  
+import os
 import re
 import shutil
-import json
-import uuid
-import openpyxl
+import subprocess
+import sys
+import tempfile
 import traceback
-import base64
-from urllib.parse import urlparse
-from PyPDF2 import PdfMerger
-from urllib.parse import unquote
-from PIL import Image
-from alembic.config import Config
-from alembic import command
-from urllib.parse import quote
-from fpdf import FPDF
-from io import BytesIO
-from sqlalchemy import insert, delete, update, select, and_, or_, func
-from sqlalchemy.ext.asyncio import AsyncSession
-from dateutil.parser import parse as parse_date
-from typing import Dict, List, Optional
+import uuid
 from collections import defaultdict
-from pathlib import Path
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from io import BytesIO
+from pathlib import Path
+from typing import Dict, List, Optional
+from urllib.parse import quote, unquote, urlparse
+
+# 2. Third-Party Libraries
+import fitz  # PyMuPDF
+import httpx
+import openpyxl
+from alembic import command
+from alembic.config import Config
+from dateutil.parser import parse as parse_date
+from dotenv import load_dotenv
+from fastapi import (
+    APIRouter, Depends, FastAPI, File, Form,
+    HTTPException, Query, Request, UploadFile
+)
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fpdf import FPDF
+from num2words import num2words
+from PIL import Image
+from pydantic import BaseModel
+from PyPDF2 import PdfMerger
+from reportlab.lib import colors
+from reportlab.lib.units import cm, mm
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfbase.pdfmetrics import stringWidth
-from reportlab.lib import colors
 from reportlab.pdfgen import canvas
-from reportlab.lib.units import cm, mm
-from num2words import num2words
-from pydantic import BaseModel
-from fastapi import (
-    FastAPI, APIRouter, UploadFile, File,
-    HTTPException, Depends, Form, Request, Query
-)
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse, JSONResponse
+from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from contextlib import asynccontextmanager
-from database import engine, get_db, Base, BASE_DIR, AsyncSessionLocal
+
+# 3. Local Application Imports
+from database import BASE_DIR, AsyncSessionLocal, Base, engine, get_db
 from models import (
-    Pengaturan,
-    IdentitasPeriode,
-    MasterKegiatan,
-    Transaksi,
-    Kwitansi,
-    MasterRekeningBelanja
+    IdentitasPeriode, Kwitansi, MasterKegiatan,
+    MasterRekeningBelanja, Pengaturan, Transaksi
 )
 _migrated = False
 
@@ -4390,6 +4388,10 @@ class AIImageRequest(BaseModel):
     prompt_items: str  # Contoh: "Laptop Asus ROG" atau "Rapat koordinasi guru"
     jenis_foto: str    # Valid: "barang", "kegiatan", "sebelum", "proses", "sesudah"
     orientation: str = "landscape"  # "landscape" (4:3, pas utk lampiran kop) atau "portrait" (3:4)
+    provider: str = "pollinations"
+    model: str = ""
+    api_key: str = ""
+    api_endpoint: str = ""
 
 # --- 2. HELPER: PROMPT ENGINEER ---
 def build_professional_prompt(item: str, jenis: str) -> str:
@@ -4450,78 +4452,336 @@ async def generate_ai_image(
 
     try:
         # D. Generate Prompt & URL
-        # Kita gunakan model 'flux' yang jauh lebih realistis daripada default
         clean_prompt = build_professional_prompt(request.prompt_items, request.jenis_foto)
-        encoded_prompt = quote(clean_prompt.strip())
         
-        # Seed acak agar gambar selalu unik
-        seed = uuid.uuid4().int % 100000
-
-        # Dimensi hasil disesuaikan dengan area tampil foto pada kop/lampiran PDF:
-        # foto di sana dirender dengan TINGGI tetap (70 mm), jadi rasio 4:3
-        # (landscape) membuat lebarnya proporsional dan tidak mendesak/memotong
-        # kolom lain. Resolusi 640x480 juga menghasilkan file yang lebih ringan.
+        # Dimensi hasil disesuaikan dengan area tampil foto pada kop/lampiran PDF
         orientation = (getattr(request, "orientation", None) or "landscape").lower()
         if orientation == "portrait":
             gen_w, gen_h = 480, 640   # 3:4 -> foto lebih tinggi (dokumentasi orang)
         else:
             gen_w, gen_h = 640, 480   # 4:3 -> landscape, pas untuk lampiran/kop
 
-        # URL Pollinations dengan Model Flux
-        ai_url = (
-            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-            f"?width={gen_w}&height={gen_h}"
-            f"&model=flux"      # <--- KUNCI REALISME
-            f"&seed={seed}"
-            f"&nologo=true"     # Hilangkan watermark
-            f"&enhance=false"   # False agar tidak terlalu 'cantik' (biar natural)
-        )
+        provider = request.provider.strip().lower()
+        if provider not in {
+            "pollinations",
+            "huggingface",
+            "gemini",
+            "openai",
+            "custom",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="Provider AI gambar tidak dikenal.",
+            )
 
-        # E. Request ke AI Server (Non-blocking I/O) dengan beberapa percobaan.
-        # Pollinations kadang mengembalikan teks error (bukan gambar) saat
-        # server sibuk/limit tercapai, jadi kita retry 3x: flux -> flux -> default.
-        response = None
+        model = request.model.strip()[:160]
+        api_key = request.api_key.strip()
+        headers = {"Accept": "image/*, application/json"}
+        payload = None
+        query_params = None
+
+        if provider == "pollinations":
+            model = model or "flux"
+            api_url = (
+                "https://gen.pollinations.ai/image/"
+                f"{quote(clean_prompt, safe='')}"
+            )
+            query_params = {
+                "model": model,
+                "width": gen_w,
+                "height": gen_h,
+                "nologo": "true",
+            }
+            api_key = api_key or os.environ.get("POLLINATIONS_API_KEY", "")
+            if not api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Pollinations memerlukan secret API key berawalan sk_. "
+                        "Buat atau kelola key di https://enter.pollinations.ai/keys."
+                    ),
+                )
+            if api_key.startswith("pk_"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "App Key Pollinations berawalan pk_ tidak dapat dipakai "
+                        "langsung. Gunakan secret key berawalan sk_."
+                    ),
+                )
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        elif provider == "huggingface":
+            model = model or "black-forest-labs/FLUX.1-schnell"
+            api_key = (
+                api_key
+                or os.environ.get("HUGGINGFACE_TOKEN", "")
+                or os.environ.get("HF_TOKEN", "")
+            )
+            if not api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Masukkan token Hugging Face pada pengaturan provider AI.",
+                )
+            api_url = "https://router.huggingface.co/nscale/v1/images/generations"
+            headers["Content-Type"] = "application/json"
+            payload = {
+                "prompt": clean_prompt,
+                "model": model,
+                "n": 1,
+                "size": f"{gen_w}x{gen_h}",
+                "response_format": "b64_json",
+            }
+            headers["Authorization"] = f"Bearer {api_key}"
+        elif provider == "gemini":
+            model = model or "gemini-nano-banana-2.1"
+            api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+            if not api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Masukkan API key Google AI Studio pada pengaturan provider AI.",
+                )
+            api_url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+            headers["Content-Type"] = "application/json"
+            headers["x-goog-api-key"] = api_key
+            payload = {
+                "model": model,
+                "input": clean_prompt,
+            }
+        elif provider == "openai":
+            model = model or "gpt-image-2.5-flare"
+            api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+            if not api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Masukkan OpenAI API key pada pengaturan provider AI.",
+                )
+            api_url = "https://api.openai.com/v1/images/generations"
+            headers["Authorization"] = f"Bearer {api_key}"
+            headers["Content-Type"] = "application/json"
+            payload = {
+                "prompt": clean_prompt,
+                "model": model,
+                "n": 1,
+                "size": "1024x1536" if orientation == "portrait" else "1536x1024",
+                "output_format": "png",
+            }
+        else:
+            model = model or "black-forest-labs/FLUX.1-schnell"
+            api_url = request.api_endpoint.strip()
+            parsed_endpoint = urlparse(api_url)
+            if (
+                parsed_endpoint.scheme not in {"https", "http"}
+                or not parsed_endpoint.hostname
+                or parsed_endpoint.username
+                or parsed_endpoint.password
+                or (
+                    parsed_endpoint.scheme == "http"
+                    and parsed_endpoint.hostname.lower()
+                    not in {"localhost", "127.0.0.1", "::1"}
+                )
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Endpoint kustom harus berupa URL HTTPS (HTTP hanya "
+                        "diizinkan untuk localhost)."
+                    ),
+                )
+            if not api_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Masukkan API key provider kustom.",
+                )
+            headers["Authorization"] = f"Bearer {api_key}"
+            headers["Content-Type"] = "application/json"
+            payload = {
+                "prompt": clean_prompt,
+                "model": model,
+                "n": 1,
+                "size": f"{gen_w}x{gen_h}",
+                "response_format": "b64_json",
+            }
+
+        image_bytes = None
         last_error = ""
-        attempt_urls = [ai_url, ai_url, ai_url.replace("&model=flux", "")]
-        for attempt, url in enumerate(attempt_urls, start=1):
+        failure_status = 502
+
+        for attempt in range(1, 4):
             try:
                 async with httpx.AsyncClient() as client:
-                    candidate = await client.get(url, timeout=90.0)
+                    if provider == "pollinations":
+                        candidate = await client.get(
+                            api_url,
+                            headers=headers,
+                            params=query_params,
+                            timeout=90.0,
+                        )
+                    else:
+                        candidate = await client.post(
+                            api_url,
+                            headers=headers,
+                            json=payload,
+                            timeout=90.0,
+                        )
+                candidate.raise_for_status()
+
+                content_type = candidate.headers.get("content-type", "").lower()
+                if content_type.startswith("image/"):
+                    generated_image = candidate.content
+                else:
+                    try:
+                        result_data = candidate.json()
+                        if provider == "gemini":
+                            encoded_image = result_data["output_image"]["data"]
+                        else:
+                            encoded_image = result_data["data"][0]["b64_json"]
+                        generated_image = base64.b64decode(encoded_image, validate=True)
+                    except (IndexError, KeyError, TypeError, ValueError):
+                        generated_image = b""
+
+                if len(generated_image) > 3000:
+                    image_bytes = generated_image
+                    break
+
+                last_error = "Provider tidak mengembalikan data gambar yang valid."
+                logger.warning(
+                    "AI generate percobaan %d bukan gambar valid (content-type=%s)",
+                    attempt,
+                    content_type or "-",
+                )
             except httpx.TimeoutException:
-                last_error = "Waktu habis saat menghubungi AI server"
+                last_error = f"Waktu habis saat menghubungi provider {provider}."
+                failure_status = 504
                 logger.warning("AI generate percobaan %d: timeout", attempt)
-                continue
-            except httpx.HTTPError as e:
-                last_error = f"Gagal menghubungi AI server: {e}"
-                logger.warning("AI generate percobaan %d error: %s", attempt, e)
-                continue
+                if attempt < 3:
+                    await asyncio.sleep(1)
+            except httpx.ConnectError as e:
+                last_error = (
+                    f"Gagal terhubung ke provider {provider}. "
+                    "Periksa koneksi internet dan DNS pada server."
+                )
+                failure_status = 503
+                logger.warning("AI generate percobaan %d: koneksi gagal: %s", attempt, e)
+                if attempt < 3:
+                    await asyncio.sleep(1)
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                if status_code == 429:
+                    try:
+                        error_data = e.response.json().get("error", {})
+                    except (ValueError, AttributeError):
+                        error_data = {}
+                    provider_message = (
+                        error_data.get("message", "")
+                        if isinstance(error_data, dict)
+                        else ""
+                    )
+                    provider_message = str(provider_message).strip()[:500]
+                    if provider == "gemini":
+                        last_error = (
+                            "Google Gemini membatasi permintaan ini. Periksa "
+                            "kuota RPM/IPM/RPD dan tier proyek di "
+                            "https://aistudio.google.com/rate-limit."
+                        )
+                    else:
+                        last_error = (
+                            f"Provider {provider} membatasi jumlah permintaan "
+                            "atau kuota penggunaan."
+                        )
+                    if provider_message:
+                        last_error += f" Detail provider: {provider_message}"
+                    logger.warning(
+                        "AI generate ditolak karena rate limit provider %s: %s",
+                        provider,
+                        provider_message or "pesan detail tidak tersedia",
+                    )
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Layanan AI gambar {provider} terkena batas kuota. "
+                        f"{last_error}",
+                    ) from e
 
-            ctype = candidate.headers.get("content-type", "")
-            looks_like_image = candidate.content[:4].startswith(b"\xff\xd8") or ctype.startswith("image/")
-            if candidate.status_code == 200 and looks_like_image and len(candidate.content) > 3000:
-                response = candidate
+                if status_code == 503 or status_code >= 500:
+                    last_error = (
+                        f"Provider {provider} sementara tidak tersedia (HTTP {status_code})."
+                    )
+                    failure_status = 503
+                    logger.warning("AI generate percobaan %d: %s", attempt, last_error)
+                    if attempt < 3:
+                        await asyncio.sleep(2)
+                    continue
+
+                if status_code in (401, 403):
+                    try:
+                        error_data = e.response.json().get("error", {})
+                    except (ValueError, AttributeError):
+                        error_data = {}
+                    provider_message = (
+                        error_data.get("message", "")
+                        if isinstance(error_data, dict)
+                        else ""
+                    )
+                    provider_message = str(provider_message).strip()[:500]
+                    if provider == "pollinations":
+                        auth_help = (
+                            "Gunakan secret key Pollinations berawalan sk_ "
+                            "(bukan App Key pk_), dan pastikan key belum "
+                            "kedaluwarsa serta memiliki izin/model dan budget "
+                            "yang cukup. Kelola secret key di "
+                            "https://enter.pollinations.ai/keys."
+                        )
+                        if provider_message:
+                            auth_help += f" Detail provider: {provider_message}"
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                "Pollinations menolak autentikasi atau izin "
+                                f"provider. {auth_help}"
+                            ),
+                        ) from e
+
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Provider {provider} menolak API key atau belum "
+                            "memberikan akses untuk model ini."
+                        ),
+                    ) from e
+
+                if status_code == 402:
+                    raise HTTPException(
+                        status_code=402,
+                        detail=(
+                            f"Provider {provider} meminta kredit/pembayaran. "
+                            "Periksa billing, kuota, saldo, atau budget API key provider."
+                        ),
+                    ) from e
+
+                last_error = (
+                    f"Permintaan ditolak provider {provider} (HTTP {status_code})."
+                )
+                logger.warning("AI generate percobaan %d: %s", attempt, last_error)
                 break
+            except httpx.HTTPError as e:
+                last_error = f"Terjadi gangguan jaringan saat menghubungi {provider}."
+                failure_status = 503
+                logger.warning("AI generate percobaan %d error: %s", attempt, e)
+                if attempt < 3:
+                    await asyncio.sleep(1)
 
-            body_preview = candidate.text[:200] if len(candidate.content) < 2000 else "(respons besar non-gambar)"
-            last_error = (
-                f"status={candidate.status_code}, content-type={ctype or '-'}, body={body_preview!r}"
-            )
-            logger.warning("AI generate percobaan %d bukan gambar valid: %s", attempt, last_error)
-
-        if response is None:
+        if image_bytes is None:
             raise HTTPException(
-                status_code=502,
+                status_code=failure_status,
                 detail=(
-                    "Layanan AI gambar (Pollinations) sedang tidak menghasilkan gambar valid. "
-                    f"Coba lagi beberapa saat. Detail: {last_error}"
+                    f"Layanan AI gambar {provider} gagal memproses permintaan. "
+                    f"{last_error}"
                 ),
             )
 
-        # Validasi hasil benar-benar gambar yang bisa dibaca PIL sebelum disimpan,
-        # agar file korup tidak pernah masuk ke daftar foto (penyebab gambar
-        # "tidak keluar" di preview web maupun di lampiran PDF).
+        # Validasi hasil benar-benar gambar yang bisa dibaca PIL sebelum disimpan
         try:
-            probe = Image.open(io.BytesIO(response.content))
+            probe = Image.open(io.BytesIO(image_bytes))
             probe.verify()
         except Exception as e:
             logger.error("Respons AI bukan gambar valid: %s", e)
@@ -4530,11 +4790,8 @@ async def generate_ai_image(
                 detail="Layanan AI mengembalikan data yang bukan gambar valid, coba lagi.",
             )
 
-        # F. Kompres & sesuaikan dimensi gambar, lalu simpan ke Disk.
-        # Tanpa langkah ini, gambar hasil generate sering berukuran besar
-        # (resolusi & file) sehingga render di kop/lampiran lambat, dokumen
-        # PDF membengkak, dan preview di web sulit terlihat jelas.
-        compressed, ext = compress_image_bytes(response.content, "generate.jpg")
+        # F. Kompres & sesuaikan dimensi gambar, lalu simpan ke Disk
+        compressed, ext = compress_image_bytes(image_bytes, "generate.jpg")
         filename = f"ai_{request.jenis_foto}_{uuid.uuid4().hex[:8]}{ext}"
         filepath = kw_dir / filename
 
@@ -4543,11 +4800,10 @@ async def generate_ai_image(
 
         logger.info(
             "AI image saved: %s (%d bytes -> %d bytes setelah kompres)",
-            filename, len(response.content), len(compressed),
+            filename, len(image_bytes), len(compressed),
         )
 
         # G. Update Database (JSON Append)
-        # Logika merge foto lama dan baru
         foto_list = []
         if kwitansi.foto_bukti:
             try:
@@ -4566,7 +4822,7 @@ async def generate_ai_image(
             "path": f"uploads/kwitansi/{kwitansi_id}/{filename}",
             "jenis": request.jenis_foto,
             "source": "ai",
-            "prompt_used": request.prompt_items # Opsional: simpan prompt buat history
+            "prompt_used": request.prompt_items
         }
         foto_list.append(new_photo_entry)
 
@@ -4580,12 +4836,19 @@ async def generate_ai_image(
             "data": new_photo_entry
         }
 
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Waktu habis saat menghubungi AI server")
+    except HTTPException:
+        await db.rollback()
+        raise
+    except httpx.TimeoutException as e:
+        await db.rollback()
+        logger.warning("AI generate timeout: %s", e)
+        raise HTTPException(
+            status_code=504,
+            detail="Waktu habis saat menghubungi layanan AI gambar.",
+        ) from e
     except Exception as e:
         await db.rollback()
-        # Print error log di terminal server
-        print(f"ERROR GENERATE AI: {e}")
+        logger.exception("Gagal generate gambar AI untuk kwitansi %s", kwitansi_id)
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @api_router.post("/kwitansi/manual")

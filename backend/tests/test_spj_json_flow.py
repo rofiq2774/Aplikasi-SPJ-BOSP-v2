@@ -169,6 +169,481 @@ def test_spj_data_missing_kwitansi_404(spj_client):
     assert res.status_code == 404
 
 
+def test_generate_ai_image_uses_huggingface_router(spj_client, monkeypatch, tmp_path):
+    from io import BytesIO
+    import random
+
+    import httpx
+    import main
+
+    image = main.Image.frombytes(
+        "RGB",
+        (128, 128),
+        random.Random(42).randbytes(128 * 128 * 3),
+    )
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    image_base64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+
+    class HuggingFaceClient:
+        request = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            self.request = (url, kwargs)
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                headers={"content-type": "application/json"},
+                json={"data": [{"b64_json": image_base64}]},
+            )
+
+    hf_client = HuggingFaceClient()
+    monkeypatch.setenv("HUGGINGFACE_TOKEN", "test-token")
+    monkeypatch.setattr(main, "UPLOAD_KWITANSI_DIR", tmp_path)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda: hf_client)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "orientation": "landscape",
+            "provider": "huggingface",
+            "api_key": "test-token",
+        },
+    )
+
+    assert res.status_code == 200, res.text
+    assert hf_client.request is not None
+    url, options = hf_client.request
+    assert url == "https://router.huggingface.co/nscale/v1/images/generations"
+    assert options["headers"]["Authorization"] == "Bearer test-token"
+    assert options["json"]["model"] == "black-forest-labs/FLUX.1-schnell"
+    assert options["json"]["size"] == "640x480"
+    saved_path = tmp_path / "1" / res.json()["data"]["path"].rsplit("/", 1)[-1]
+    assert saved_path.is_file()
+
+
+def test_generate_ai_image_reports_huggingface_dns_failure(spj_client, monkeypatch):
+    import httpx
+    import main
+
+    class HuggingFaceUnavailable:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            self.calls += 1
+            raise httpx.ConnectError(
+                "[Errno 11001] getaddrinfo failed",
+                request=httpx.Request("POST", url),
+            )
+
+    async def skip_delay(_seconds):
+        return None
+
+    unavailable = HuggingFaceUnavailable()
+    monkeypatch.setenv("HUGGINGFACE_TOKEN", "test-token")
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda: unavailable)
+    monkeypatch.setattr(main.asyncio, "sleep", skip_delay)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "huggingface",
+            "api_key": "test-token",
+        },
+    )
+
+    assert res.status_code == 503
+    assert "Periksa koneksi internet dan DNS" in res.json()["detail"]
+    assert "Internal Server Error" not in res.json()["detail"]
+    assert unavailable.calls == 3
+
+
+def test_generate_ai_image_reports_huggingface_billing_error(spj_client, monkeypatch):
+    import httpx
+    import main
+
+    class HuggingFaceBillingRequired:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            self.calls += 1
+            return httpx.Response(
+                402,
+                request=httpx.Request("POST", url),
+                json={"error": "Payment required"},
+            )
+
+    provider = HuggingFaceBillingRequired()
+    monkeypatch.setenv("HUGGINGFACE_TOKEN", "test-token")
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda: provider)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "huggingface",
+            "api_key": "test-token",
+        },
+    )
+
+    assert res.status_code == 402
+    assert "billing" in res.json()["detail"].lower()
+    assert "budget API key" in res.json()["detail"]
+    assert provider.calls == 1
+
+
+def test_generate_ai_image_uses_pollinations_secret_key(spj_client, monkeypatch, tmp_path):
+    from io import BytesIO
+    import random
+
+    import httpx
+    import main
+
+    image = main.Image.frombytes(
+        "RGB",
+        (128, 128),
+        random.Random(13).randbytes(128 * 128 * 3),
+    )
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+
+    class PollinationsClient:
+        request = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            self.request = (url, kwargs)
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                headers={"content-type": "image/png"},
+                content=image_buffer.getvalue(),
+            )
+
+    pollinations = PollinationsClient()
+    monkeypatch.delenv("POLLINATIONS_API_KEY", raising=False)
+    monkeypatch.setattr(main, "UPLOAD_KWITANSI_DIR", tmp_path)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda: pollinations)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "pollinations",
+            "model": "flux",
+            "api_key": "sk_test-secret",
+        },
+    )
+
+    assert res.status_code == 200, res.text
+    assert pollinations.request is not None
+    url, options = pollinations.request
+    assert url.startswith("https://gen.pollinations.ai/image/")
+    assert options["params"]["model"] == "flux"
+    assert options["headers"]["Authorization"].startswith("Bearer ")
+
+
+@pytest.mark.parametrize(
+    ("api_key", "message"),
+    [
+        ("", "memerlukan secret API key berawalan sk_"),
+        ("pk_test-app-key", "App Key Pollinations"),
+    ],
+)
+def test_generate_ai_image_rejects_missing_or_app_pollinations_key(
+    spj_client, monkeypatch, api_key, message
+):
+    monkeypatch.delenv("POLLINATIONS_API_KEY", raising=False)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "pollinations",
+            "api_key": api_key,
+        },
+    )
+
+    assert res.status_code == 400
+    assert message in res.json()["detail"]
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_generate_ai_image_explains_pollinations_auth_error(
+    spj_client, monkeypatch, status_code
+):
+    import httpx
+    import main
+
+    class PollinationsAuthError:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return httpx.Response(
+                status_code,
+                request=httpx.Request("GET", url),
+                json={"error": {"message": "API key does not have permission."}},
+            )
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", PollinationsAuthError)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "pollinations",
+            "api_key": "sk_test-secret",
+        },
+    )
+
+    assert res.status_code == 502
+    assert "secret key Pollinations berawalan sk_" in res.json()["detail"]
+    assert "permission" in res.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_url", "expected_model"),
+    [
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/interactions",
+            "gemini-nano-banana-2.1",
+        ),
+        (
+            "openai",
+            "https://api.openai.com/v1/images/generations",
+            "gpt-image-2.5-flare",
+        ),
+    ],
+)
+def test_generate_ai_image_uses_native_image_providers(
+    spj_client, monkeypatch, tmp_path, provider, expected_url, expected_model
+):
+    from io import BytesIO
+    import random
+
+    import httpx
+    import main
+
+    image = main.Image.frombytes(
+        "RGB",
+        (128, 128),
+        random.Random(23).randbytes(128 * 128 * 3),
+    )
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    image_base64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+
+    class NativeImageClient:
+        request = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            self.request = (url, kwargs)
+            response_data = (
+                {"output_image": {"data": image_base64}}
+                if provider == "gemini"
+                else {"data": [{"b64_json": image_base64}]}
+            )
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                headers={"content-type": "application/json"},
+                json=response_data,
+            )
+
+    native_client = NativeImageClient()
+    monkeypatch.setattr(main, "UPLOAD_KWITANSI_DIR", tmp_path)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda: native_client)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "orientation": "portrait",
+            "provider": provider,
+            "api_key": "test-provider-key",
+        },
+    )
+
+    assert res.status_code == 200, res.text
+    assert native_client.request is not None
+    url, options = native_client.request
+    assert url == expected_url
+    assert options["json"]["model"] == expected_model
+    if provider == "gemini":
+        assert options["headers"]["x-goog-api-key"] == "test-provider-key"
+        assert options["json"]["input"]
+    else:
+        assert options["headers"]["Authorization"].endswith("test-provider-key")
+        assert options["json"]["size"] == "1024x1536"
+        assert options["json"]["output_format"] == "png"
+
+
+def test_generate_ai_image_explains_gemini_rate_limit(spj_client, monkeypatch):
+    import httpx
+    import main
+
+    class GeminiRateLimited:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            self.calls += 1
+            return httpx.Response(
+                429,
+                request=httpx.Request("POST", url),
+                json={
+                    "error": {
+                        "code": 429,
+                        "message": "Quota exceeded for metric images_per_minute.",
+                        "status": "RESOURCE_EXHAUSTED",
+                    }
+                },
+            )
+
+    provider = GeminiRateLimited()
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda: provider)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "gemini",
+            "api_key": "test-provider-key",
+        },
+    )
+
+    assert res.status_code == 429
+    assert "kuota RPM/IPM/RPD" in res.json()["detail"]
+    assert "images_per_minute" in res.json()["detail"]
+    assert provider.calls == 1
+
+
+def test_generate_ai_image_uses_custom_openai_compatible_endpoint(
+    spj_client, monkeypatch, tmp_path
+):
+    from io import BytesIO
+    import random
+
+    import httpx
+    import main
+
+    image = main.Image.frombytes(
+        "RGB",
+        (128, 128),
+        random.Random(7).randbytes(128 * 128 * 3),
+    )
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    image_base64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+
+    class CustomProviderClient:
+        request = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            self.request = (url, kwargs)
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                headers={"content-type": "application/json"},
+                json={"data": [{"b64_json": image_base64}]},
+            )
+
+    custom_client = CustomProviderClient()
+    monkeypatch.setattr(main, "UPLOAD_KWITANSI_DIR", tmp_path)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda: custom_client)
+
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "custom",
+            "model": "image-model",
+            "api_key": "custom-test-token",
+            "api_endpoint": "https://images.example.test/v1/images/generations",
+        },
+    )
+
+    assert res.status_code == 200, res.text
+    assert custom_client.request is not None
+    url, options = custom_client.request
+    assert url == "https://images.example.test/v1/images/generations"
+    assert options["headers"]["Authorization"] == "Bearer custom-test-token"
+    assert options["json"]["model"] == "image-model"
+    assert options["json"]["size"] == "640x480"
+
+
+def test_generate_ai_image_rejects_non_local_http_custom_endpoint(spj_client):
+    res = spj_client.post(
+        "/api/kwitansi/1/generate-ai-image",
+        json={
+            "prompt_items": "Pulpen",
+            "jenis_foto": "barang",
+            "provider": "custom",
+            "api_key": "test-token",
+            "api_endpoint": "http://images.example.test/v1/images/generations",
+        },
+    )
+
+    assert res.status_code == 400
+    assert "HTTPS" in res.json()["detail"]
+
+
 def test_no_pdf_media_type_anywhere_in_spj_flow(spj_client):
     """Alur SPJ baru tidak pernah menghasilkan/mengirim PDF dari backend."""
     res = spj_client.get("/api/kwitansi/1/spj-data")

@@ -6,10 +6,15 @@ aiosqlite
 python-dateutil
 python-dotenv
 num2words
-pymupdf
+PyMuPDF
 fpdf
 reportlab
 python-multipart
 jinja2
 starlette
 tzdata
+openpyxl
+alembic
+Pillow
+PyPDF2
+pydantic

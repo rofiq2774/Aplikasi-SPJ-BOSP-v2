@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, safeStorage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -343,7 +343,7 @@ async function createWindow() {
     }
   });
 
-  // BUGFIX: CSP injected ini menimpa CSP meta di Index.html. Karena backend kini
+  // CSP injected ini menimpa CSP meta di index.html. Karena backend kini
   // berjalan pada port dinamis (child_process), src 'self' saja akan memblokir
   // semua request http://127.0.0.1:<port>. Gunakan wildcard origin untuk host lokal.
   // Catatan: tidak ada lagi servis localhost statis — hanya child_process.
@@ -509,6 +509,154 @@ ipcMain.handle("is-dev", () => !app.isPackaged);
 // BUGFIX: renderer tidak boleh lagi hardcode port 8000. Main process yang
 // memiliki informasi child_process, jadi expose base URL backend via IPC.
 ipcMain.handle("get-backend-url", () => getBackendBaseUrl());
+
+const aiImageSettingsPath = () =>
+  path.join(app.getPath("userData"), "ai-image-settings.dat");
+const AI_IMAGE_PROVIDERS = new Set([
+  "pollinations",
+  "huggingface",
+  "gemini",
+  "openai",
+  "custom",
+]);
+
+function assertTrustedRenderer(event) {
+  const rendererUrl = event.senderFrame?.url || "";
+  if (
+    !mainWindow ||
+    event.sender !== mainWindow.webContents ||
+    (
+      !rendererUrl.startsWith("file://") &&
+      !rendererUrl.startsWith("http://localhost:5173/") &&
+      !rendererUrl.startsWith("http://127.0.0.1:5173/")
+    )
+  ) {
+    throw new Error("Permintaan pengaturan AI berasal dari renderer yang tidak dikenal.");
+  }
+}
+
+function normalizeAiImageSettings(settings) {
+  if (!settings || typeof settings !== "object") {
+    throw new Error("Format pengaturan AI gambar tidak valid.");
+  }
+  const provider = String(settings.provider || "").trim().toLowerCase();
+  if (!AI_IMAGE_PROVIDERS.has(provider)) {
+    throw new Error("Provider AI gambar tidak dikenal.");
+  }
+
+  const apiKey = String(settings.api_key || "").trim();
+  const model = String(settings.model || "").trim().slice(0, 160);
+  const apiEndpoint = String(settings.api_endpoint || "").trim().slice(0, 1000);
+  if (apiKey.length > 8192) {
+    throw new Error("API key terlalu panjang.");
+  }
+
+  return {
+    provider,
+    api_key: apiKey,
+    model,
+    api_endpoint: apiEndpoint,
+  };
+}
+
+function readAiImageSettings() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("Penyimpanan aman sistem operasi belum tersedia.");
+  }
+  const settingsPath = aiImageSettingsPath();
+  if (!fs.existsSync(settingsPath)) return null;
+
+  const encrypted = fs.readFileSync(settingsPath);
+  const settings = JSON.parse(safeStorage.decryptString(encrypted));
+  return normalizeAiImageSettings(settings);
+}
+
+ipcMain.handle("get-ai-image-settings", (event) => {
+  assertTrustedRenderer(event);
+  const settings = readAiImageSettings();
+  if (!settings) return null;
+  return {
+    provider: settings.provider,
+    model: settings.model,
+    api_endpoint: settings.api_endpoint,
+    has_api_key: Boolean(settings.api_key),
+  };
+});
+
+ipcMain.handle("save-ai-image-settings", (event, input) => {
+  assertTrustedRenderer(event);
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("Penyimpanan aman sistem operasi belum tersedia.");
+  }
+  const settings = normalizeAiImageSettings(input);
+  if (!settings.api_key) {
+    const previousSettings = readAiImageSettings();
+    if (previousSettings?.provider === settings.provider) {
+      settings.api_key = previousSettings.api_key;
+    }
+  }
+  fs.writeFileSync(
+    aiImageSettingsPath(),
+    safeStorage.encryptString(JSON.stringify(settings)),
+    { mode: 0o600 },
+  );
+  return {
+    provider: settings.provider,
+    model: settings.model,
+    api_endpoint: settings.api_endpoint,
+    has_api_key: Boolean(settings.api_key),
+  };
+});
+
+ipcMain.handle("clear-ai-image-settings", (event) => {
+  assertTrustedRenderer(event);
+  const settingsPath = aiImageSettingsPath();
+  if (fs.existsSync(settingsPath)) {
+    fs.unlinkSync(settingsPath);
+  }
+  return true;
+});
+
+ipcMain.handle("generate-ai-image", async (event, kwitansiId, input) => {
+  assertTrustedRenderer(event);
+  const settings = readAiImageSettings();
+  if (!settings) {
+    throw new Error("Pengaturan provider AI gambar belum disimpan.");
+  }
+  if (!Number.isInteger(kwitansiId) || kwitansiId < 1) {
+    throw new Error("ID kwitansi tidak valid.");
+  }
+  if (!input || typeof input !== "object") {
+    throw new Error("Data permintaan gambar AI tidak valid.");
+  }
+
+  const backendUrl = getBackendBaseUrl();
+  if (!backendUrl) {
+    throw new Error("Backend belum siap. Coba beberapa saat lagi.");
+  }
+  const response = await fetch(
+    `${backendUrl}/api/kwitansi/${kwitansiId}/generate-ai-image`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...input,
+        provider: settings.provider,
+        model: settings.model,
+        api_endpoint: settings.api_endpoint,
+        api_key: settings.api_key,
+      }),
+    },
+  );
+
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    body = { detail: `Backend memberi respons tidak valid (HTTP ${response.status}).` };
+  }
+  return { status: response.status, body };
+});
 
 ipcMain.handle("get-arial-pdf-fonts", () => {
   if (process.platform !== "win32") {

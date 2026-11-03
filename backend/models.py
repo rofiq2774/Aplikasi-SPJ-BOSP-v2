@@ -115,5 +115,7 @@ class Kwitansi(Base):
     npwp_toko = Column(String, default="")
     alamat_toko = Column(String, default="")
     foto_bukti = Column(Text, default="[]", nullable=False, comment="List path foto bukti (JSON array)")
+    jenis_belanja = Column(String, nullable=False, default="umum")
+    data_lampiran = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

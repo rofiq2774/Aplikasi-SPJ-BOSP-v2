@@ -3,6 +3,7 @@
 // ============================================================================
 
 import pdfMake from "pdfmake/build/pdfmake";
+import { getJenisBelanjaConfig } from "../spjConfig.js";
 
 // Peta nama -> base64 diisi oleh ensureArialFonts() dari IPC Electron main.
 const ARIAL_VFS_NAMES = {
@@ -946,7 +947,7 @@ export function buildBastSection(data) {
     labelRow(
       "Nama",
       formatNamaPenandatangan(
-        b.nama_penerima || ident.nama_pengurus_barang || "-",
+        b.nama_penerima || ident.nama_pengurus_barang || "(..............)",
       ),
       60,
     ),
@@ -957,7 +958,7 @@ export function buildBastSection(data) {
 
   content.push({
     text:
-      `Telah menerima barang persediaan yang diserahkan oleh ${b.nama_penyedia || "-"} ` +
+      `Telah menerima barang persediaan yang diserahkan oleh ${b.nama_penyedia || "(..............)"} ` +
       `sesuai dengan Faktur Pembelian / Nota Pembelian tanggal ${b.tgl_full || "-"} ` +
       "sebagaimana daftar terlampir.",
     fontSize: 12,
@@ -1142,9 +1143,6 @@ export function buildBastSection(data) {
 
   const kota = b.kota || ident.tempat_surat || "Jember";
 
-  // -----------------------------------------------------------------------
-  // Blok tanda tangan BAST — format TABLE konsisten dengan Kwitansi
-  // -----------------------------------------------------------------------
   const BAST_FS = 12;
   const sigCell = (text, opts = {}) => ({
     text,
@@ -1155,63 +1153,37 @@ export function buildBastSection(data) {
     ...opts,
   });
 
-  const sigLineCanvas = {
-    canvas: [
-      {
-        type: "line",
-        x1: 5,
-        y1: 0,
-        x2: 170,
-        y2: 0,
-        lineWidth: 0.6,
-        lineColor: PDF_COLORS.ink,
-      },
-    ],
-    alignment: "center",
-    border: [false, false, false, false],
-    margin: [0, 0, 0, 2],
-  };
-
-  const namaPenyedia = formatNamaPenandatangan(b.nama_penyedia || "-");
-  const namaPenerima = formatNamaPenandatangan(
-    b.nama_penerima || ident.nama_pengurus_barang || "-",
+  const namaPenyedia = formatNamaPenandatangan(
+    b.nama_penyedia || "(..............)",
   );
+  const namaPenerima = formatNamaPenandatangan(
+    b.nama_penerima || ident.nama_pengurus_barang || "(..............)",
+  );
+
   const nipPenerima = b.nip_penerima
     ? `NIP. ${b.nip_penerima}`
     : ident.nip_pengurus_barang
       ? `NIP. ${ident.nip_pengurus_barang}`
-      : "";
+      : "(..............)";
 
-  // Tanda tangan BAST: hanya "Yang Menyerahkan" dan "Yang Menerima"
-  // (tanpa tanda tangan Kepala Sekolah sesuai ketentuan)
   content.push({
     table: {
       widths: ["*", "*"],
       body: [
-        // Baris 1: tanggal surat (pada kolom kanan)
-        [sigCell(""), sigCell(`${kota}, ${b.tgl_full || ""}`)],
-        // Baris 2: pihak penanda tangan
+        [sigCell(" "), sigCell(`${kota}, ${b.tgl_full || "(..............)"}`)],
         [sigCell("Yang Menyerahkan"), sigCell("Yang Menerima")],
-        // Baris 3: jabatan
         [
           sigCell("Penyedia Barang"),
           sigCell(b.jabatan_penerima || "Pengurus Barang"),
         ],
-        // Baris 4: ruang tanda tangan
+        // Baris untuk nama diberi margin atas 48 sebagai ruang tanda tangan (menggantikan garis)
         [
-          sigCell("", { margin: [0, 48, 0, 0] }),
-          sigCell("", { margin: [0, 48, 0, 0] }),
+          sigCell(namaPenyedia, { bold: true, margin: [0, 48, 0, 1] }),
+          sigCell(namaPenerima, { bold: true, margin: [0, 48, 0, 1] }),
         ],
-        // Baris 5: garis tanda tangan
-        [sigLineCanvas, sigLineCanvas],
-        // Baris 6: nama penanda tangan
+        // Baris NIP
         [
-          sigCell(namaPenyedia, { bold: true }),
-          sigCell(namaPenerima, { bold: true }),
-        ],
-        // Baris 7: NIP
-        [
-          sigCell("", { fontSize: BAST_FS - 2 }),
+          sigCell(" ", { fontSize: BAST_FS - 2 }),
           sigCell(nipPenerima, { fontSize: BAST_FS - 2 }),
         ],
       ],
@@ -1228,80 +1200,82 @@ export function buildBastSection(data) {
     unbreakable: true,
   });
 
+  return content;
+}
+
+function buildLampiranFotoSections(data) {
   const lamp = data.lampiran_foto || {};
+  const allowedPhotos = new Set(getJenisBelanjaConfig(data.jenis_belanja).foto);
   const urutan = [
     ["barang", "FOTO BARANG"],
     ["kegiatan", "FOTO KEGIATAN"],
+    ["ktp", "SALINAN KTP"],
+    ["qr_master", "QR LINK FILE MASTER"],
     ["sebelum", "FOTO SEBELUM"],
     ["proses", "FOTO PROSES"],
     ["sesudah", "FOTO SESUDAH"],
   ];
+  const content = [];
+
   for (const [jenis, judul] of urutan) {
+    if (!allowedPhotos.has(jenis)) continue;
     const daftar = Array.isArray(lamp[jenis]) ? lamp[jenis] : [];
     if (!daftar.length) continue;
-    content.push({ text: "", pageBreak: "before" });
-    content.push({
-      text: `LAMPIRAN ${judul}`,
-      bold: true,
-      color: PDF_COLORS.navy,
-      fontSize: 12,
-      alignment: "center",
-      margin: [0, 8, 0, 4],
-    });
-    content.push({
-      text: `Nomor Kwitansi : ${data.kwitansi.nomor_kwitansi || "-"}`,
-      fontSize: 12,
-      color: PDF_COLORS.muted,
-      alignment: "center",
-      margin: [0, 0, 0, 12],
-    });
-    const photos = [];
-    for (const f of daftar) {
-      const raw = typeof f === "string" ? f : f.path || "";
+    content.push(
+      { text: "", pageBreak: "before", pageOrientation: "portrait" },
+      {
+        text: `LAMPIRAN ${judul}`,
+        bold: true,
+        color: PDF_COLORS.navy,
+        fontSize: 12,
+        alignment: "center",
+        margin: [0, 8, 0, 4],
+      },
+      {
+        text: `Nomor Kwitansi : ${data.kwitansi.nomor_kwitansi || "-"}`,
+        fontSize: 12,
+        color: PDF_COLORS.muted,
+        alignment: "center",
+        margin: [0, 0, 0, 12],
+      },
+    );
+
+    const photos = daftar.map((foto) => {
+      const raw = typeof foto === "string" ? foto : foto.path || "";
       const url = absoluteize(raw);
-      const ok =
-        (typeof f === "string" ? true : f.available !== false) && !!url;
-      if (ok) {
-        photos.push({
-          stack: [
-            {
-              image: url,
-              fit: [235, 175],
-              alignment: "center",
-            },
-          ],
-          width: "*",
-        });
-      } else {
-        photos.push({
-          stack: [
-            {
-              canvas: [
-                {
-                  type: "rect",
-                  x: 0,
-                  y: 0,
-                  w: 220,
-                  h: 150,
-                  lineWidth: 0.6,
-                  lineColor: PDF_COLORS.border,
-                },
-              ],
-              alignment: "center",
-            },
-            {
-              text: "Foto tidak ditemukan",
-              italics: true,
-              fontSize: 10,
-              color: PDF_COLORS.muted,
-              alignment: "center",
-              margin: [0, 5, 0, 0],
-            },
-          ],
-          width: "*",
-        });
-      }
-    }
+      const available =
+        (typeof foto === "string" || foto.available !== false) && !!url;
+      return {
+        stack: available
+          ? [{ image: url, fit: [235, 175], alignment: "center" }]
+          : [
+              {
+                canvas: [
+                  {
+                    type: "rect",
+                    x: 0,
+                    y: 0,
+                    w: 220,
+                    h: 150,
+                    lineWidth: 0.6,
+                    lineColor: PDF_COLORS.border,
+                  },
+                ],
+                alignment: "center",
+              },
+              {
+                text: "Foto tidak ditemukan",
+                italics: true,
+                fontSize: 10,
+                color: PDF_COLORS.muted,
+                alignment: "center",
+                margin: [0, 5, 0, 0],
+              },
+            ],
+        width: "*",
+      };
+    });
+
     for (let i = 0; i < photos.length; i += 2) {
       content.push({
         columns: photos.slice(i, i + 2),
@@ -1311,7 +1285,983 @@ export function buildBastSection(data) {
       });
     }
   }
+  return content;
+}
 
+function buildDataLampiranSections(data) {
+  const config = getJenisBelanjaConfig(data.jenis_belanja);
+  const formData = data.data_lampiran || {};
+  const kw = data.kwitansi || {};
+  const ident = data.identitas || {};
+  const content = [];
+
+  for (const dokumen of config.dokumen) {
+    if (
+      dokumen.optional &&
+      !dokumen.fields.some(([key]) => String(formData[key] || "").trim())
+    )
+      continue;
+
+    content.push({
+      text: "",
+      pageBreak: "before",
+      pageOrientation:
+        dokumen.recipientTable ||
+        (dokumen.key === "daftar_hadir" && data.jenis_belanja === "jasa_tukang")
+          ? "landscape"
+          : "portrait",
+    });
+    if (dokumen.key === "surat_tugas") {
+      const fieldValue = (key) => String(formData[key] || "").trim();
+      const tanggalSurat = formatTanggalIndo(
+        formData.surat_tugas_tanggal,
+      );
+      const noBorders = {
+        hLineWidth: () => 0,
+        vLineWidth: () => 0,
+        paddingLeft: () => 0,
+        paddingRight: () => 0,
+        paddingTop: () => 2,
+        paddingBottom: () => 2,
+      };
+      const detailRow = (label, value) => [
+        { text: label, noWrap: true },
+        { text: ":" },
+        { text: value },
+      ];
+
+      content.push(
+        ...kopStack(
+          {
+            baris1: ident.nama_pemda || "",
+            baris2: ident.nama_sekolah || "",
+            alamat: ident.alamat_sekolah || "",
+            logo_pemda: ident.logo_pemda || "",
+            logo_sekolah: ident.logo_sekolah || "",
+          },
+          "portrait",
+        ),
+        ...sectionTitle("SURAT TUGAS"),
+        {
+          text: ["NOMOR", fieldValue("surat_tugas_nomor")]
+            .filter(Boolean)
+            .join(" "),
+          alignment: "center",
+          margin: [0, 0, 0, 34],
+        },
+        {
+          table: {
+            widths: [mmToPt(20), mmToPt(5), "*"],
+            body: [detailRow("Dasar", fieldValue("surat_tugas_dasar"))],
+          },
+          layout: noBorders,
+          margin: [0, 0, 0, 16],
+        },
+        {
+          text: "MEMERINTAHKAN",
+          alignment: "center",
+          margin: [0, 0, 0, 10],
+        },
+        {
+          table: {
+            widths: [mmToPt(20), mmToPt(5), mmToPt(35), mmToPt(5), "*"],
+            body: [
+              [
+                { text: "Kepada", noWrap: true },
+                { text: ":" },
+                { text: "1. Nama", noWrap: true },
+                { text: ":" },
+                { text: fieldValue("surat_tugas_petugas") },
+              ],
+              ["", "", "NIP", ":", fieldValue("surat_tugas_nip")],
+              [
+                "",
+                "",
+                "Pangkat/Gol.",
+                ":",
+                fieldValue("surat_tugas_pangkat_golongan"),
+              ],
+              ["", "", "Jabatan", ":", fieldValue("surat_tugas_jabatan")],
+              [
+                { text: "Untuk", noWrap: true },
+                { text: ":" },
+                "",
+                "",
+                { text: fieldValue("surat_tugas_tujuan") },
+              ],
+            ],
+          },
+          layout: noBorders,
+        },
+        {
+          columns: [
+            { width: "*", text: "" },
+            {
+              width: mmToPt(72),
+              stack: [
+                [ident.tempat_surat || "Jember", tanggalSurat]
+                  .filter(Boolean)
+                  .join(", "),
+                "Kepala Sekolah",
+                { text: "", margin: [0, 0, 0, 48] },
+                {
+                  text: formatNamaPenandatangan(ident.nama_kepala_sekolah),
+                  bold: true,
+                },
+                formData.surat_tugas_pangkat_kepala_sekolah ||
+                  ident.pangkat_kepala_sekolah ||
+                  "........................",
+                ident.nip_kepala_sekolah
+                  ? `NIP. ${ident.nip_kepala_sekolah}`
+                  : "NIP. ........................",
+              ],
+            },
+          ],
+          margin: [0, 40, 0, 0],
+          unbreakable: true,
+        },
+      );
+      continue;
+    }
+
+    if (dokumen.key === "sppd") {
+      const fieldValue = (key) => String(formData[key] || "").trim();
+      const parseSppdDate = (value) => {
+        const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!match) return null;
+        const date = new Date(
+          Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+        );
+        return date.getUTCFullYear() === Number(match[1]) &&
+          date.getUTCMonth() === Number(match[2]) - 1 &&
+          date.getUTCDate() === Number(match[3])
+          ? date
+          : null;
+      };
+      const departure = parseSppdDate(formData.sppd_berangkat);
+      const returnDate = parseSppdDate(formData.sppd_kembali);
+      if (!departure || !returnDate || departure > returnDate) {
+        fail("Tanggal berangkat dan kembali pada SPPD tidak valid.");
+      }
+      const departureLabel = formatTanggalIndo(formData.sppd_berangkat);
+      const returnLabel = formatTanggalIndo(formData.sppd_kembali);
+      const days = Math.floor((returnDate - departure) / 86400000) + 1;
+      const empty = " ";
+      const signatureCell = (roman, action, from, to, date) => {
+        const routeRows =
+          action === "Tiba"
+            ? [["Tiba di", `: ${from || ""}`]]
+            : [
+                ["Berangkat dari", `: ${from || ""}`],
+                ["Ke", `: ${to || ""}`],
+              ];
+        return {
+        stack: [
+          { text: `${roman}.`, bold: true, margin: [0, 0, 0, 4] },
+          {
+            table: {
+              widths: [mmToPt(28), "*"],
+              body: [
+                [{ text: action, colSpan: 2, bold: true }, {}],
+                ...routeRows,
+                ["Pada Tanggal", `: ${date}`],
+                ["Kepala", ":"],
+              ],
+            },
+            layout: "noBorders",
+            margin: [0, 0, 0, 30],
+          },
+          {
+            canvas: [
+              {
+                type: "line",
+                x1: 0,
+                y1: 0,
+                x2: mmToPt(48),
+                y2: 0,
+                lineWidth: 0.6,
+              },
+            ],
+            margin: [0, 0, 0, 3],
+          },
+          { text: "NIP. ........................" },
+        ],
+        margin: [4, 4, 4, 4],
+        };
+      };
+      const ppkName =
+        fieldValue("sppd_ppk_nama") || ident.nama_kepala_sekolah || "";
+      const ppkNip =
+        fieldValue("sppd_ppk_nip") || ident.nip_kepala_sekolah || "";
+      const ppkDetails = [
+        `a. Nama     : ${ppkName}`,
+        `b. NIP        : ${ppkNip}`,
+        `c. Pangkat/Gol : ${fieldValue("sppd_ppk_pangkat_golongan")}`,
+        `d. Jabatan : ${fieldValue("sppd_ppk_jabatan")}`,
+      ].join("\n");
+      const employeeDetails = [
+        `a. Nama     : ${fieldValue("sppd_petugas")}`,
+        `b. NIP        : ${fieldValue("sppd_nip")}`,
+        `c. Pangkat/Gol : ${fieldValue("sppd_pangkat_golongan")}`,
+        `d. Jabatan : ${fieldValue("sppd_jabatan")}`,
+      ].join("\n");
+      const origin = fieldValue("sppd_tempat_berangkat");
+      const destination = fieldValue("sppd_tujuan");
+      const noBorders = {
+        hLineWidth: () => 0,
+        vLineWidth: () => 0,
+        paddingLeft: () => 0,
+        paddingRight: () => 0,
+        paddingTop: () => 1,
+        paddingBottom: () => 1,
+      };
+      const pageOneRows = [
+        [
+          "1.",
+          `Pejabat Pembuat Komitmen\na. Nama\nb. NIP\nc. Pangkat/Gol\nd. Jabatan`,
+          ppkDetails,
+        ],
+        [
+          "2.",
+          `Pegawai yang melaksanakan perjalanan dinas\na. Nama\nb. NIP\nc. Pangkat/Gol\nd. Jabatan`,
+          employeeDetails,
+        ],
+        ["3.", "Maksud perjalanan dinas", fieldValue("sppd_maksud")],
+        ["4.", "Alat angkut yang dipergunakan", fieldValue("sppd_transportasi")],
+        [
+          "5.",
+          "a. Tempat berangkat\nb. Tempat tujuan",
+          `a. ${origin}\nb. ${destination}`,
+        ],
+        [
+          "6.",
+          "a. Lamanya perjalanan dinas\nb. Tanggal berangkat\nc. Tanggal harus kembali/tiba",
+          `a. ${days} hari\nb. ${departureLabel}\nc. ${returnLabel}`,
+        ],
+        [
+          "7.",
+          {
+            text: "Pengikut :",
+            colSpan: 2,
+          },
+          {},
+        ],
+        [
+          "",
+          {
+            table: {
+              widths: ["*", "*", "*"],
+              body: [
+                [
+                  { text: "Nama", bold: true },
+                  { text: "Jabatan", bold: true },
+                  { text: "Tugas", bold: true },
+                ],
+                [
+                  fieldValue("sppd_pengikut_nama"),
+                  fieldValue("sppd_pengikut_jabatan"),
+                  fieldValue("sppd_pengikut_tugas"),
+                ],
+              ],
+            },
+            layout: "lightHorizontalLines",
+            colSpan: 2,
+          },
+          {},
+        ],
+        [
+          "8.",
+          "Pembebanan Anggaran\na. Instansi\nb. Akun",
+          `a. ${fieldValue("sppd_anggaran_instansi")}\nb. ${fieldValue("sppd_anggaran_akun")}`,
+        ],
+        ["9.", "Keterangan lain-lain", fieldValue("sppd_keterangan")],
+      ];
+      const issueDate = formatTanggalIndo(
+        formData.sppd_tanggal_dikeluarkan,
+      );
+      const issueLocation = ident.tempat_surat || "Jember";
+
+      content.push(
+        ...kopStack(
+          {
+            baris1: ident.nama_pemda || "",
+            baris2: ident.nama_sekolah || "",
+            alamat: ident.alamat_sekolah || "",
+            logo_pemda: ident.logo_pemda || "",
+            logo_sekolah: ident.logo_sekolah || "",
+          },
+          "portrait",
+        ),
+        {
+          table: {
+            widths: [mmToPt(37), mmToPt(5), "*"],
+            body: [
+              [
+                "Lampiran ke",
+                ":",
+                fieldValue("sppd_lampiran_ke"),
+              ],
+              [
+                "Nomor Surat Tugas",
+                ":",
+                fieldValue("sppd_nomor_surat_tugas"),
+              ],
+            ],
+          },
+          layout: noBorders,
+          margin: [mmToPt(65), 0, 0, 12],
+        },
+        {
+          text: "SURAT PERINTAH PERJALANAN DINAS (SPPD)",
+          fontSize: 13,
+          bold: true,
+          decoration: "underline",
+          alignment: "center",
+          margin: [0, 0, 0, 8],
+        },
+        {
+          table: {
+            widths: [mmToPt(9), mmToPt(67), "*"],
+            body: pageOneRows,
+          },
+          layout: {
+            hLineWidth: () => 0.6,
+            vLineWidth: () => 0.6,
+            hLineColor: () => PDF_COLORS.border,
+            vLineColor: () => PDF_COLORS.border,
+            paddingLeft: () => 4,
+            paddingRight: () => 4,
+            paddingTop: () => 3,
+            paddingBottom: () => 3,
+          },
+          fontSize: 9,
+        },
+        {
+          text: "*coret yang tidak perlu",
+          fontSize: 9,
+          margin: [0, 2, 0, 0],
+        },
+        {
+          columns: [
+            { width: "*", text: "" },
+            {
+              width: mmToPt(90),
+              stack: [
+                `Dikeluarkan di    : ${issueLocation}`,
+                `Tanggal             : ${issueDate}`,
+                "Pejabat Pembuat Komitmen",
+                { text: "", margin: [0, 0, 0, 38] },
+                {
+                  text: formatNamaPenandatangan(ppkName),
+                  bold: true,
+                },
+                fieldValue("sppd_ppk_pangkat_golongan"),
+                ppkNip ? `NIP. ${ppkNip}` : "",
+              ],
+            },
+          ],
+          margin: [0, 10, 0, 0],
+          unbreakable: true,
+        },
+        {
+          text: "",
+          pageBreak: "before",
+          pageOrientation: "portrait",
+        },
+        {
+          table: {
+            widths: ["*", "*"],
+            body: [
+              [
+                empty,
+                signatureCell(
+                  "I",
+                  "Berangkat",
+                  origin,
+                  destination,
+                  departureLabel,
+                ),
+              ],
+              [
+                signatureCell(
+                  "II",
+                  "Tiba",
+                  destination,
+                  "",
+                  departureLabel,
+                ),
+                signatureCell(
+                  "",
+                  "Berangkat",
+                  destination,
+                  origin,
+                  returnLabel,
+                ),
+              ],
+              [
+                signatureCell(
+                  "III",
+                  "Tiba",
+                  origin,
+                  "",
+                  returnLabel,
+                ),
+                {
+                  text: "Telah diperiksa, dengan keterangan bahwa perjalanan tersebut di atas benar dilakukan atas perintahnya dan semata-mata untuk kepentingan jabatan dalam waktu yang sesingkat-singkatnya.",
+                  alignment: "justify",
+                  margin: [6, 8, 6, 8],
+                },
+              ],
+              [
+                {
+                  text: "IV.  Catatan lain-lain\n\n____________________________________________\n____________________________________________\n____________________________________________",
+                  colSpan: 2,
+                  margin: [4, 5, 4, 5],
+                },
+                {},
+              ],
+            ],
+          },
+          layout: {
+            hLineWidth: () => 0.6,
+            vLineWidth: () => 0.6,
+            hLineColor: () => PDF_COLORS.border,
+            vLineColor: () => PDF_COLORS.border,
+            paddingLeft: () => 2,
+            paddingRight: () => 2,
+            paddingTop: () => 2,
+            paddingBottom: () => 2,
+          },
+          fontSize: 9,
+        },
+        {
+          columns: [
+            { width: "*", text: "" },
+            {
+              width: mmToPt(90),
+              stack: [
+                "Pejabat Pembuat Komitmen",
+                { text: "", margin: [0, 0, 0, 38] },
+                {
+                  text: formatNamaPenandatangan(ppkName),
+                  bold: true,
+                },
+                fieldValue("sppd_ppk_pangkat_golongan"),
+                ppkNip ? `NIP. ${ppkNip}` : "",
+              ],
+            },
+          ],
+          margin: [0, 12, 0, 0],
+          unbreakable: true,
+        },
+      );
+      continue;
+    }
+
+    if (
+      dokumen.key === "daftar_hadir" &&
+      data.jenis_belanja === "jasa_tukang"
+    ) {
+      const parseDate = (raw) => {
+        const match = String(raw || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!match) return null;
+        const date = new Date(
+          Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+        );
+        return date.getUTCFullYear() === Number(match[1]) &&
+          date.getUTCMonth() === Number(match[2]) - 1 &&
+          date.getUTCDate() === Number(match[3])
+          ? date
+          : null;
+      };
+      const startDate = parseDate(formData.hadir_tanggal_awal);
+      const endDate = parseDate(formData.hadir_tanggal_akhir);
+      if (!startDate || !endDate || startDate > endDate) {
+        fail("Tanggal awal dan akhir Daftar Hadir Jasa Tukang tidak valid.");
+      }
+      const totalDays = Math.floor((endDate - startDate) / 86400000) + 1;
+      if (totalDays > 366) {
+        fail("Rentang tanggal Daftar Hadir Jasa Tukang maksimal 366 hari.");
+      }
+      const dates = Array.from(
+        { length: totalDays },
+        (_, index) => new Date(startDate.getTime() + index * 86400000),
+      );
+      const peserta = String(formData.hadir_peserta || "")
+        .split(/\r?\n/)
+        .map((nama) => nama.trim())
+        .filter(Boolean);
+      const kop = {
+        baris1: ident.nama_pemda || "",
+        baris2: ident.nama_sekolah || "",
+        alamat: ident.alamat_sekolah || "",
+        logo_pemda: ident.logo_pemda || "",
+        logo_sekolah: ident.logo_sekolah || "",
+      };
+      const dateLabel = (date) =>
+        date.toLocaleDateString("id-ID", {
+          day: "2-digit",
+          month: "short",
+          timeZone: "UTC",
+        });
+      for (let offset = 0; offset < dates.length; offset += 10) {
+        const pageDates = dates.slice(offset, offset + 10);
+        if (offset > 0) {
+          content.push({
+            text: "",
+            pageBreak: "before",
+            pageOrientation: "landscape",
+          });
+        }
+        content.push(
+          ...kopStack(kop, "landscape"),
+          ...sectionTitle(
+            "DAFTAR HADIR",
+            `Nomor Kwitansi: ${kw.nomor_kwitansi || "-"}`,
+          ),
+          {
+            text: kw.nama_kegiatan || kw.uraian_pembayaran || "",
+            alignment: "center",
+            margin: [0, 4, 0, 6],
+          },
+          {
+            text: `Tempat: ${formData.hadir_tempat || "-"}`,
+            alignment: "center",
+            margin: [0, 0, 0, 8],
+          },
+        );
+
+        const attendanceBody = [
+          [
+            {
+              text: "No.",
+              rowSpan: 2,
+              bold: true,
+              alignment: "center",
+              fillColor: "#f2f2f2",
+            },
+            {
+              text: "Nama Peserta",
+              rowSpan: 2,
+              bold: true,
+              alignment: "center",
+              fillColor: "#f2f2f2",
+            },
+            ...pageDates.map((date) => ({
+              text: dateLabel(date),
+              bold: true,
+              alignment: "center",
+              fillColor: "#f2f2f2",
+            })),
+          ],
+          [
+            {},
+            {},
+            ...pageDates.map(() => ({
+              text: "Tanda Tangan",
+              bold: true,
+              fontSize: 8,
+              alignment: "center",
+              fillColor: "#f2f2f2",
+            })),
+          ],
+        ];
+        for (let index = 0; index < Math.max(peserta.length, 1); index++) {
+          attendanceBody.push([
+            { text: String(index + 1), alignment: "center" },
+            peserta[index] || "",
+            ...pageDates.map(() => ({ text: "", margin: [0, 10, 0, 10] })),
+          ]);
+        }
+        content.push({
+          table: {
+            headerRows: 2,
+            widths: [25, "*", ...pageDates.map(() => 52)],
+            body: attendanceBody,
+            dontBreakRows: true,
+          },
+          layout: {
+            hLineWidth: () => 0.6,
+            vLineWidth: () => 0.6,
+            hLineColor: () => PDF_COLORS.border,
+            vLineColor: () => PDF_COLORS.border,
+            paddingLeft: () => 4,
+            paddingRight: () => 4,
+            paddingTop: () => 5,
+            paddingBottom: () => 5,
+          },
+          fontSize: 9,
+          margin: [0, 0, 0, 12],
+        });
+      }
+      continue;
+    }
+
+    if (dokumen.recipientTable) {
+      const recipients =
+        Array.isArray(formData.penerima_list) && formData.penerima_list.length
+          ? formData.penerima_list
+          : [
+              {
+                nama: formData.penerima_nama || "",
+                jabatan: formData.penerima_jabatan || "",
+                nuptk: "",
+                npwp: "",
+                honor: "",
+                pph21: 0,
+              },
+            ];
+      const nominal = (value) => {
+        const amount = Number(value);
+        return Number.isFinite(amount)
+          ? Math.round(amount).toLocaleString("id-ID")
+          : "0";
+      };
+      const hasAmounts = recipients.some(
+        (row) => String(row.honor ?? "").trim() !== "",
+      );
+      const totalHonor = recipients.reduce(
+        (total, row) => total + (Number(row.honor) || 0),
+        0,
+      );
+      const totalPph = recipients.reduce(
+        (total, row) => total + (Number(row.pph21) || 0),
+        0,
+      );
+      const tanggal = String(kw.tanggal || "");
+      const isoTanggal = tanggal.match(/^(\d{4})-(\d{2})/);
+      const lokalTanggal = tanggal.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+      const bulan = isoTanggal
+        ? Number(isoTanggal[2])
+        : Number(lokalTanggal?.[2]);
+      const tahun = isoTanggal ? isoTanggal[1] : lokalTanggal?.[3];
+      const bulanTahun =
+        bulan >= 1 && bulan <= 12
+          ? `${BULAN_ID[bulan - 1]} ${tahun}`
+          : String(kw.tahun || "");
+      const namaKegiatan = kw.nama_kegiatan || kw.uraian_pembayaran || "-";
+      const namaSekolah = ident.nama_sekolah || "-";
+      const headers = [
+        "No",
+        "Nama",
+        "Jabatan",
+        "NUPTK",
+        "NPWP",
+        "Honor",
+        "PPh 21",
+        "Penerimaan",
+        "Tanda Tangan",
+      ];
+      const body = [
+        [
+          ...headers.map((text) => ({
+            text,
+            bold: true,
+            alignment: "center",
+            fillColor: "#f2f2f2",
+            margin: [2, 8, 2, 8],
+          })),
+        ],
+      ];
+      recipients.forEach((row, index) => {
+        const honor = Number(row.honor) || 0;
+        const pph = Number(row.pph21) || 0;
+        body.push([
+          { text: String(index + 1), alignment: "center" },
+          { text: row.nama || "" },
+          { text: row.jabatan || "" },
+          { text: row.nuptk || "" },
+          { text: row.npwp || "" },
+          {
+            text: String(row.honor ?? "").trim() ? nominal(honor) : "-",
+            alignment: "right",
+          },
+          { text: pph ? nominal(pph) : "-", alignment: "right" },
+          {
+            text: String(row.honor ?? "").trim() ? nominal(honor - pph) : "-",
+            alignment: "right",
+          },
+          { text: "", margin: [0, 15, 0, 15] },
+        ]);
+      });
+      body.push([
+        {
+          text: "JUMLAH",
+          colSpan: 5,
+          bold: true,
+          alignment: "center",
+          margin: [2, 7, 2, 7],
+        },
+        {},
+        {},
+        {},
+        {},
+        {
+          text: hasAmounts ? nominal(totalHonor) : "-",
+          bold: true,
+          alignment: "right",
+        },
+        {
+          text: totalPph ? nominal(totalPph) : "-",
+          bold: true,
+          alignment: "right",
+        },
+        {
+          text: hasAmounts ? nominal(totalHonor - totalPph) : "-",
+          bold: true,
+          alignment: "right",
+        },
+        { text: "" },
+      ]);
+
+      const namaKepsek = formatNamaPenandatangan(ident.nama_kepala_sekolah);
+      const namaBendahara = formatNamaPenandatangan(ident.nama_bendahara);
+      const tanggalLunas =
+        formatTanggalIndo(kw.tanggal) || "........................";
+      const signatureBlock = {
+        columns: [
+          {
+            width: "*",
+            stack: [
+              { text: "Setuju Dibayar\nKepala Sekolah", margin: [0, 0, 0, 52] },
+              {
+                canvas: [
+                  {
+                    type: "line",
+                    x1: 0,
+                    y1: 0,
+                    x2: 190,
+                    y2: 0,
+                    lineWidth: 0.6,
+                  },
+                ],
+                margin: [0, 0, 0, 3],
+              },
+              { text: namaKepsek, bold: true },
+              {
+                text: ident.nip_kepala_sekolah
+                  ? `NIP. ${ident.nip_kepala_sekolah}`
+                  : "NIP. ........................",
+              },
+            ],
+          },
+          {
+            width: "*",
+            stack: [
+              {
+                text: `Lunas Dibayar, ${tanggalLunas}\nBendahara BOS`,
+                margin: [0, 0, 0, 52],
+              },
+              {
+                canvas: [
+                  {
+                    type: "line",
+                    x1: 0,
+                    y1: 0,
+                    x2: 190,
+                    y2: 0,
+                    lineWidth: 0.6,
+                  },
+                ],
+                margin: [0, 0, 0, 3],
+              },
+              { text: namaBendahara, bold: true },
+              {
+                text: ident.nip_bendahara
+                  ? `NIP. ${ident.nip_bendahara}`
+                  : "NIP. ........................",
+              },
+            ],
+          },
+        ],
+        columnGap: mmToPt(20),
+        margin: [mmToPt(12), 28, mmToPt(12), 0],
+        unbreakable: true,
+      };
+
+      content.push(
+        ...kopStack(
+          {
+            baris1: ident.nama_pemda || "",
+            baris2: namaSekolah,
+            alamat: ident.alamat_sekolah || "",
+            logo_pemda: ident.logo_pemda || "",
+            logo_sekolah: ident.logo_sekolah || "",
+          },
+          "landscape",
+        ),
+        {
+          text: `Lampiran No. ${kw.no_bukti || kw.nomor_kwitansi || "-"}`,
+          margin: [0, 0, 0, 14],
+        },
+        {
+          text: [
+            { text: "TANDA TERIMA PEMBAYARAN ", bold: true },
+            { text: String(namaKegiatan), bold: true },
+          ],
+          fontSize: 16,
+          alignment: "center",
+          margin: [0, 0, 0, 3],
+        },
+        {
+          text: [bulanTahun.toUpperCase(), String(namaSekolah).toUpperCase()]
+            .filter(Boolean)
+            .join("\n"),
+          alignment: "center",
+          margin: [0, 0, 0, 14],
+        },
+        {
+          table: {
+            headerRows: 1,
+            widths: [24, "*", 75, 85, 80, 85, 65, 95, 115],
+            body,
+          },
+          layout: {
+            hLineWidth: () => 0.6,
+            vLineWidth: () => 0.6,
+            hLineColor: () => PDF_COLORS.border,
+            vLineColor: () => PDF_COLORS.border,
+            paddingLeft: () => 4,
+            paddingRight: () => 4,
+            paddingTop: () => 6,
+            paddingBottom: () => 6,
+          },
+          fontSize: 9,
+        },
+        signatureBlock,
+      );
+      continue;
+    }
+
+    content.push(
+      ...sectionTitle(
+        dokumen.key === "ktp"
+          ? "IDENTITAS PENERIMA (DATA KTP)"
+          : dokumen.label.toUpperCase(),
+        `Nomor Kwitansi: ${kw.nomor_kwitansi || "-"}`,
+      ),
+    );
+    content.push({
+      text: kw.nama_kegiatan || kw.uraian_pembayaran || "",
+      alignment: "center",
+      margin: [0, 4, 0, 14],
+    });
+
+    if (dokumen.key !== "nota_pembelian") {
+      let rows = [];
+      if (dokumen.key === "tanda_terima") {
+        rows = [
+          ["Telah menerima uang sebesar", formatRupiah(kw.jumlah)],
+          ["Terbilang", kw.terbilang || "-"],
+          ["Untuk pembayaran", kw.uraian_pembayaran || "-"],
+          ...dokumen.fields.map(([key, label]) => [
+            label,
+            formData[key] || "................................",
+          ]),
+        ];
+      } else {
+        rows = dokumen.fields
+          .filter(
+            ([key]) =>
+              !(
+                dokumen.key === "daftar_hadir" &&
+                ["honor_jasa", "makanan_minuman"].includes(data.jenis_belanja) &&
+                key === "hadir_peserta"
+              ),
+          )
+          .map(([key, label]) => [
+            label,
+            formData[key] || "................................",
+          ]);
+      }
+
+      content.push({
+        table: {
+          widths: [145, "*"],
+          body: rows.map(([label, value]) => [
+            { text: label, bold: true },
+            { text: String(value || "-") },
+          ]),
+        },
+        layout: {
+          hLineWidth: () => 0.6,
+          vLineWidth: () => 0.6,
+          hLineColor: () => PDF_COLORS.border,
+          vLineColor: () => PDF_COLORS.border,
+          paddingLeft: () => 7,
+          paddingRight: () => 7,
+          paddingTop: () => 6,
+          paddingBottom: () => 6,
+        },
+        margin: [0, 0, 0, 16],
+      });
+    }
+
+    if (dokumen.key === "daftar_hadir") {
+      const peserta = String(formData.hadir_peserta || "")
+        .split(/\r?\n/)
+        .map((nama) => nama.trim())
+        .filter(Boolean);
+      const body = [
+        [
+          { text: "No.", bold: true, alignment: "center" },
+          {
+            text:
+              ["honor_jasa", "makanan_minuman"].includes(data.jenis_belanja)
+                ? "Nama"
+                : "Nama Peserta",
+            bold: true,
+          },
+          { text: "Tanda Tangan", bold: true, alignment: "center" },
+        ],
+      ];
+      for (let index = 0; index < Math.max(peserta.length, 10); index++) {
+        body.push([
+          { text: String(index + 1), alignment: "center" },
+          peserta[index] || "",
+          "",
+        ]);
+      }
+      content.push({
+        table: { headerRows: 1, widths: [35, "*", 150], body },
+        layout: "lightHorizontalLines",
+      });
+    }
+
+    if (dokumen.key === "qr_master" && formData.qr_link) {
+      content.push({
+        qr: formData.qr_link,
+        fit: 150,
+        alignment: "center",
+        margin: [0, 12, 0, 8],
+      });
+      content.push({
+        text: formData.qr_link,
+        ...(/^https?:\/\//i.test(formData.qr_link)
+          ? { link: formData.qr_link }
+          : {}),
+        color: "blue",
+        alignment: "center",
+        margin: [0, 12, 0, 12],
+      });
+    }
+
+    if (["tanda_terima", "surat_tugas", "sppd"].includes(dokumen.key)) {
+      content.push({
+        columns: [
+          {
+            text: "Mengetahui,\n\n\n\n________________________",
+            alignment: "center",
+          },
+          {
+            text: `${dokumen.key === "tanda_terima" ? "Penerima," : "Pelaksana,"}\n\n\n\n________________________`,
+            alignment: "center",
+          },
+        ],
+        margin: [0, 28, 0, 0],
+      });
+    }
+  }
   return content;
 }
 
@@ -1570,7 +2520,10 @@ export function buildSpjDocumentDefinition(data) {
       ? doc.order
       : ["kwitansi", "bast", "rab"];
   const sec = data.sections || {};
+  const jenisBelanjaConfig = getJenisBelanjaConfig(data.jenis_belanja);
   const included = (name) => {
+    if (name === "bast" && !jenisBelanjaConfig.bast) return false;
+    if (name === "rab" && !jenisBelanjaConfig.rab) return false;
     const s = sec[name];
     if (!s) return false;
     if (typeof s.included === "boolean") return s.included;
@@ -1602,6 +2555,8 @@ export function buildSpjDocumentDefinition(data) {
     content.push(...part);
     first = false;
   }
+  content.push(...buildLampiranFotoSections(data));
+  content.push(...buildDataLampiranSections(data));
   if (first) fail("tidak ada bagian yang dapat dirender (semua ditandai skip)");
 
   const paper = doc.paper || {};

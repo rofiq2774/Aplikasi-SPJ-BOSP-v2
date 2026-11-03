@@ -1108,6 +1108,39 @@ def _foto_bukti_list(kwitansi) -> list:
         return []
 
 
+def _data_lampiran_dict(kwitansi) -> dict:
+    """Parse data form lampiran dengan fallback aman untuk database lama."""
+    raw = getattr(kwitansi, "data_lampiran", None)
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+JENIS_BELANJA_VALID = {
+    "honor_jasa", "makanan_minuman", "perjalanan_dinas",
+    "jasa_tukang", "fotokopi", "telepon_listrik_air", "umum",
+    "bahan_bangunan",
+}
+JENIS_BELANJA_DENGAN_BAST = {"fotokopi", "umum", "bahan_bangunan"}
+JENIS_BELANJA_DENGAN_RAB = {"jasa_tukang", "bahan_bangunan"}
+
+
+def _jenis_foto_tersedia(kwitansi) -> list:
+    jenis_foto = set()
+    for item in _foto_bukti_list(kwitansi):
+        if isinstance(item, str) and item:
+            jenis_foto.add("barang")
+        elif isinstance(item, dict) and item.get("path"):
+            jenis = item.get("jenis", "barang")
+            if isinstance(jenis, str) and jenis:
+                jenis_foto.add(jenis)
+    return sorted(jenis_foto)
+
+
 def _lampiran_foto_payload(kwitansi) -> dict:
     """Kelompokkan foto bukti per jenis untuk frontend (data URI base64 atau path relatif /uploads)."""
     grouped: dict = {}
@@ -1241,6 +1274,10 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     if not kw:
         raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
 
+    jenis_belanja = getattr(kw, "jenis_belanja", None) or "umum"
+    perlu_bast = jenis_belanja in JENIS_BELANJA_DENGAN_BAST
+    perlu_rab = jenis_belanja in JENIS_BELANJA_DENGAN_RAB
+
     ident = await resolve_identitas_for_tanggal(db, getattr(kw, "tanggal", None))
 
     logo_pemda_uri = _logo_datauri_from_db(
@@ -1305,7 +1342,7 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     # ---------- Bagian BAST (opsional: butuh no_bukti + transaksi) ----------
     bast_items: list = []
     bast_total_num = 0.0
-    if kw.no_bukti:
+    if perlu_bast and kw.no_bukti:
         trx_rows = (await db.execute(
             select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti).order_by(Transaksi.id)
         )).scalars().all()
@@ -1352,8 +1389,11 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
         bast_payload = None
         bast_status = {
             "status": "skip",
-            "alasan": ("Kwitansi tidak memiliki no_bukti" if not kw.no_bukti
-                       else "Tidak ada transaksi untuk no_bukti ini"),
+            "alasan": (
+                "Jenis belanja tidak memerlukan BAST" if not perlu_bast
+                else "Kwitansi tidak memiliki no_bukti" if not kw.no_bukti
+                else "Tidak ada transaksi untuk no_bukti ini"
+            ),
         }
 
     # ---------- Bagian RAB (opsional: butuh kode_kegiatan + thp) ----------
@@ -1363,7 +1403,7 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
             select(MasterKegiatan).where(MasterKegiatan.kode_kegiatan == kw.kode_kegiatan)
         )).scalar_one_or_none()
 
-    if kegiatan_data and kw.thp:
+    if perlu_rab and kegiatan_data and kw.thp:
         rab_raw = (await db.execute(
             select(Transaksi, MasterRekeningBelanja.rekap_rekening_belanja)
             .join(Kwitansi, Transaksi.no_bukti == Kwitansi.no_bukti)
@@ -1424,8 +1464,25 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     else:
         rab_payload = None
         rab_status = {"status": "skip",
-                      "alasan": ("Kode kegiatan kosong" if not kegiatan_data
+                      "alasan": ("Jenis belanja tidak memerlukan RAB" if not perlu_rab
+                                 else "Kode kegiatan kosong" if not kegiatan_data
                                  else "Label tahap (thp) kosong")}
+    if perlu_rab and rab_payload is None:
+        lokasi_rab = ident.get("tempat_surat") or "Jember"
+        rab_payload = {
+            "kegiatan": (
+                kegiatan_data.nama_kegiatan if kegiatan_data else kw.nama_kegiatan
+            ) or "-",
+            "thp_label": kw.thp or "",
+            "tahun": kw.tahun or "",
+            "rows": [],
+            "grand_total": 0.0,
+            "grand_total_fmt": format_rupiah(0),
+            "tanggal_surat": _rab_tanggal_surat(lokasi_rab, kw.thp, kw.tahun),
+            "satuan_pendidikan": ident.get("nama_sekolah") or "",
+            "kop": _kop_bersama(),
+        }
+        rab_status = {"status": "included", "alasan": None}
 
     # ---------- Normalisasi anti-kop kwitansi (WAJIB, dua lapis) ----------
     # Aturan produk: kop hanya untuk BAST & RAB. Pastikan tidak ada salinan
@@ -1451,6 +1508,8 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
             "kop_wajib": False,
         },
         "kwitansi": dict(kwitansi_payload, id=kw.id),
+        "jenis_belanja": jenis_belanja,
+        "data_lampiran": _data_lampiran_dict(kw),
         "identitas": {
             "id": ident.get("id"),
             "sumber": ident.get("sumber", ""),
@@ -3169,6 +3228,9 @@ async def get_kwitansi_final(db: AsyncSession = Depends(get_db)):
                 "nama_toko": k.nama_toko,
                 "npwp_toko": k.npwp_toko,
                 "alamat_toko": k.alamat_toko,
+                "jenis_belanja": getattr(k, "jenis_belanja", None) or "umum",
+                "data_lampiran": _data_lampiran_dict(k),
+                "jenis_foto_tersedia": _jenis_foto_tersedia(k),
                 "created_at": k.created_at,
                 "updated_at": k.updated_at
             })
@@ -3974,6 +4036,8 @@ async def get_kwitansi_detail(
             "nama_toko": kw.nama_toko,
             "npwp_toko": kw.npwp_toko,
             "alamat_toko": kw.alamat_toko,
+            "jenis_belanja": getattr(kw, "jenis_belanja", None) or "umum",
+            "data_lampiran": _data_lampiran_dict(kw),
 
             # Data transaksi
             "uraian": uraian_list,
@@ -4083,23 +4147,57 @@ async def update_kwitansi_detail(kwitansi_id: int, payload: dict, db: AsyncSessi
     if not old_transaksi:
         raise HTTPException(status_code=404, detail="Data transaksi tidak ditemukan")
 
+    tanggal_nota_str = payload.get("tanggal_nota", "")
+    tanggal_nota_value = None
+    if tanggal_nota_str:
+        tanggal_nota_text = str(tanggal_nota_str).strip()
+        try:
+            tanggal_nota_value = datetime.fromisoformat(
+                tanggal_nota_text.replace("Z", "+00:00")
+            ).date()
+        except ValueError:
+            for date_format in ("%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                try:
+                    tanggal_nota_value = datetime.strptime(
+                        tanggal_nota_text, date_format
+                    ).date()
+                    break
+                except ValueError:
+                    continue
+        if tanggal_nota_value is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Format tanggal nota tidak valid. Gunakan YYYY-MM-DD "
+                    "atau DD-MM-YYYY."
+                ),
+            )
+
+    jenis_belanja = payload.get("jenis_belanja", "umum")
+    if not isinstance(jenis_belanja, str) or jenis_belanja not in JENIS_BELANJA_VALID:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Jenis belanja tidak valid: {jenis_belanja!r}",
+        )
+    data_lampiran = payload.get("data_lampiran", {})
+    if not isinstance(data_lampiran, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Data lampiran harus berupa objek JSON.",
+        )
+
     # 3. Update data identitas di tabel Kwitansi
     kw.nama_kegiatan = payload.get("nama_kegiatan", kw.nama_kegiatan)
     kw.no_bast = payload.get("no_bast", "")
 
-    # --- PARSE TANGGAL DARI FRONTEND TYPE="DATE" ---
-    tanggal_nota_str = payload.get("tanggal_nota", "")
-    if tanggal_nota_str:
-        try:
-            # Frontend <input type="date"> selalu mengirim "YYYY-MM-DD"
-            kw.tanggal_nota = datetime.strptime(tanggal_nota_str, "%Y-%m-%d").date()
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Format tanggal tidak valid")
-    # Jika kosong, biarkan tetap di DB (tidak overwrite)
+    if tanggal_nota_value is not None:
+        kw.tanggal_nota = tanggal_nota_value
     
     kw.nama_toko = payload.get("nama_toko", "")
     kw.npwp_toko = payload.get("npwp_toko", "")
     kw.alamat_toko = payload.get("alamat_toko", "")
+    kw.jenis_belanja = jenis_belanja
+    kw.data_lampiran = json.dumps(data_lampiran, ensure_ascii=False)
 
     # 4. Sinkronisasi Uraian tanpa menghilangkan nominal
     new_uraian_list = payload.get("uraian") or []
@@ -4145,7 +4243,7 @@ async def upload_foto_kwitansi(
     # =========================
     # 1. Validasi jenis foto
     # =========================
-    JENIS_VALID = ["barang", "kegiatan", "sebelum", "proses", "sesudah"]
+    JENIS_VALID = ["barang", "kegiatan", "sebelum", "proses", "sesudah", "ktp", "qr_master"]
     if jenis_foto not in JENIS_VALID:
         raise HTTPException(
             status_code=400,

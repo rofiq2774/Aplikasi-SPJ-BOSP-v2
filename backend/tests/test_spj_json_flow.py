@@ -136,14 +136,90 @@ def test_spj_data_returns_json_and_valid_payload(spj_client):
     assert data["schema_version"] == 1
     assert data["sections"]["kwitansi"]["status"] == "included"
     assert data["sections"]["bast"]["status"] == "included"
+    assert data["sections"]["rab"]["status"] == "skip"
     # identitas dipilih per periode
     assert data["identitas"]["label"] == "Periode 2026"
     assert data["kwitansi"]["jumlah"] == 1500000.0
     assert data["kwitansi"]["terbilang"]
     # URI logo harus data: (bukan path lokal D:\...)
-    for kop in (data["bast"]["kop"], data["rab"]["kop"]):
-        assert kop["logo_pemda"].startswith("data:image/")
-        assert "\\" not in kop["logo_pemda"]
+    assert data["bast"]["kop"]["logo_pemda"].startswith("data:image/")
+    assert "\\" not in data["bast"]["kop"]["logo_pemda"]
+
+
+def test_update_kwitansi_persists_purchase_type_and_dynamic_form_data(spj_client):
+    payload = {
+        "nama_kegiatan": "Perjalanan dinas",
+        "no_bast": "BA/001",
+        "tanggal_nota": "05-11-2026",
+        "nama_toko": "Penyedia",
+        "npwp_toko": "",
+        "alamat_toko": "",
+        "jenis_belanja": "perjalanan_dinas",
+        "data_lampiran": {
+            "sppd_nomor": "SPPD/001",
+            "sppd_petugas": "Nama Petugas",
+            "sppd_tujuan": "Banyuwangi",
+            "surat_tugas_nomor": "094/123/2026",
+            "surat_tugas_tanggal": "2026-11-03",
+            "surat_tugas_dasar": "Surat undangan kegiatan",
+            "surat_tugas_petugas": "Nama yang ditugaskan",
+            "surat_tugas_nip": "198001012010011001",
+            "surat_tugas_pangkat_golongan": "Penata, III/c",
+            "surat_tugas_jabatan": "Guru",
+            "surat_tugas_tujuan": "Mengikuti kegiatan di Jember",
+        },
+        "uraian": [{
+            "nama_barang": "Transport",
+            "volume": 1,
+            "satuan": "paket",
+            "harga_satuan": 150000,
+        }],
+    }
+    update = spj_client.post("/api/kwitansi/1/update-detail", json=payload)
+    assert update.status_code == 200, update.text
+
+    detail = spj_client.get("/api/kwitansi/1").json()["data"]
+    assert detail["jenis_belanja"] == "perjalanan_dinas"
+    assert detail["data_lampiran"]["sppd_nomor"] == "SPPD/001"
+    assert detail["data_lampiran"]["surat_tugas_nomor"] == "094/123/2026"
+    assert detail["data_lampiran"]["surat_tugas_tanggal"] == "2026-11-03"
+    assert detail["data_lampiran"]["surat_tugas_dasar"] == "Surat undangan kegiatan"
+    assert detail["data_lampiran"]["surat_tugas_petugas"] == "Nama yang ditugaskan"
+    assert detail["data_lampiran"]["surat_tugas_tujuan"] == "Mengikuti kegiatan di Jember"
+    assert detail["tanggal_nota"] == "2026-11-05"
+
+    invalid_date_payload = {**payload, "tanggal_nota": "tanggal-salah"}
+    invalid_date = spj_client.post(
+        "/api/kwitansi/1/update-detail", json=invalid_date_payload
+    )
+    assert invalid_date.status_code == 400
+    assert "YYYY-MM-DD" in invalid_date.json()["detail"]
+
+    spj_data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]
+    assert spj_data["jenis_belanja"] == "perjalanan_dinas"
+    assert spj_data["data_lampiran"]["sppd_tujuan"] == "Banyuwangi"
+    assert spj_data["data_lampiran"]["surat_tugas_nomor"] == "094/123/2026"
+    assert spj_data["data_lampiran"]["surat_tugas_tanggal"] == "2026-11-03"
+    assert spj_data["data_lampiran"]["surat_tugas_dasar"] == "Surat undangan kegiatan"
+    assert spj_data["data_lampiran"]["surat_tugas_petugas"] == "Nama yang ditugaskan"
+    assert spj_data["data_lampiran"]["surat_tugas_tujuan"] == "Mengikuti kegiatan di Jember"
+    assert spj_data["sections"]["bast"]["status"] == "skip"
+    assert spj_data["sections"]["rab"]["status"] == "skip"
+
+    payload["jenis_belanja"] = "jasa_tukang"
+    update = spj_client.post("/api/kwitansi/1/update-detail", json=payload)
+    assert update.status_code == 200, update.text
+    spj_data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]
+    assert spj_data["sections"]["bast"]["status"] == "skip"
+    assert spj_data["sections"]["rab"]["status"] == "included"
+    assert spj_data["rab"] is not None
+
+    payload["jenis_belanja"] = "fotokopi"
+    update = spj_client.post("/api/kwitansi/1/update-detail", json=payload)
+    assert update.status_code == 200, update.text
+    spj_data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]
+    assert spj_data["sections"]["bast"]["status"] == "included"
+    assert spj_data["sections"]["rab"]["status"] == "skip"
 
 
 def test_kwitansi_section_has_no_kop_metadata(spj_client):
@@ -152,9 +228,9 @@ def test_kwitansi_section_has_no_kop_metadata(spj_client):
     assert "kop" not in data["kwitansi"]
     assert "kop" not in data["document"]
     assert data["document"]["kop_wajib"] is False
-    # BAST & RAB boleh (dan memang) membawa kop sendiri
+    # BAST may carry a kop; RAB is excluded for Pembelanjaan Umum.
     assert data["bast"]["kop"]["baris2"] == "SDN CONTOH 1"
-    assert data["rab"]["kop"]["baris2"] == "SDN CONTOH 1"
+    assert data["rab"] is None
 
 
 def test_legacy_pdf_endpoint_is_gone(spj_client):

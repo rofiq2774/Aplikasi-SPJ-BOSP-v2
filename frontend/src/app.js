@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import UI from "./ui.js";
 import { iconSvg } from "./icons.js";
 import { buildSpjPdf, setBackendOriginGetter } from "./pdf/spjPdf.js";
+import { JENIS_BELANJA_SPJ } from "./spjConfig.js";
 
 // ===================== BACKEND BASE URL (child_process) =====================
 // Backend TIDAK lagi dilayani oleh "servis localhost" statis (port 8000).
@@ -906,6 +907,164 @@ async function downloadKwitansi(id, noBukti = "") {
   }
 }
 
+let _spjPreviewState = null;
+let _spjPreviewGeneration = 0;
+let _pdfJsPromise = null;
+
+function loadPdfJs() {
+  if (!_pdfJsPromise) {
+    _pdfJsPromise = Promise.all([
+      import("pdfjs-dist"),
+      import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+    ]).then(([pdfjsLib, worker]) => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
+      return pdfjsLib;
+    }).catch((err) => {
+      _pdfJsPromise = null;
+      throw err;
+    });
+  }
+  return _pdfJsPromise;
+}
+
+function disposeSpjPreview() {
+  _spjPreviewGeneration += 1;
+  if (!_spjPreviewState) return;
+  _spjPreviewState.renderTask?.cancel();
+  const task = _spjPreviewState.loadingTask;
+  _spjPreviewState = null;
+  if (task) {
+    task.destroy().catch((err) => {
+      appLog("warn", `previewKwitansi: gagal menutup dokumen PDF: ${err.message || err}`);
+    });
+  }
+}
+
+async function renderSpjPreviewPages() {
+  const state = _spjPreviewState;
+  const container = document.getElementById("spj-preview-pages");
+  if (!state || !container) return;
+
+  for (let pageNumber = 1; pageNumber <= state.document.numPages; pageNumber += 1) {
+    if (state !== _spjPreviewState) return;
+    const page = await state.document.getPage(pageNumber);
+    if (state !== _spjPreviewState) return;
+
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(
+      1.5,
+      Math.max(0.5, (container.clientWidth - 32) / baseViewport.width),
+    );
+    const viewport = page.getViewport({ scale });
+    const outputScale = Math.min(window.devicePixelRatio || 1, 1.5);
+    const pageContainer = document.createElement("div");
+    pageContainer.style.cssText =
+      "display:flex; justify-content:center; padding:16px; background:#e5e7eb;";
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "background:white; box-shadow:0 2px 8px #0003;";
+    canvas.width = Math.floor(viewport.width * outputScale);
+    canvas.height = Math.floor(viewport.height * outputScale);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    pageContainer.appendChild(canvas);
+    container.appendChild(pageContainer);
+
+    state.renderTask = page.render({
+      canvasContext: canvas.getContext("2d"),
+      viewport,
+      transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
+    });
+    await state.renderTask.promise;
+    state.renderTask = null;
+  }
+}
+
+async function previewKwitansi(id) {
+  showPopup(`
+    <div class="popup-content" style="width:min(1100px,96vw); max-width:96vw;">
+      <div class="popup-header">
+        <div>
+          <h3 style="margin:0;">Preview SPJ</h3>
+          <small style="color:#666;">Memuat data terbaru...</small>
+        </div>
+        <button class="btn btn-secondary" onclick="closePopup()">Tutup</button>
+      </div>
+      <div class="popup-body" style="padding:10px;">
+        <div id="spj-preview-frame" style="height:78vh; display:grid; place-items:center;">
+          Menyiapkan preview SPJ...
+        </div>
+      </div>
+    </div>
+  `);
+  const requestId = ++_spjPreviewGeneration;
+
+  try {
+    const res = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(
+        error.detail || `Gagal memuat data SPJ (HTTP ${res.status})`,
+      );
+    }
+
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      throw new Error(`Respons backend bukan JSON (${contentType || "kosong"})`);
+    }
+    const payload = await res.json();
+    if (payload.status !== "success" || !payload.data) {
+      throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
+    }
+
+    setBackendOriginGetter(() => _backendOrigin);
+    const blob = await buildSpjPdf(payload.data);
+    if (!(blob instanceof Blob) || blob.size === 0) {
+      throw new Error("Renderer frontend menghasilkan PDF kosong");
+    }
+    const preview = document.getElementById("spj-preview-frame");
+    if (!preview || requestId !== _spjPreviewGeneration) return;
+
+    const pdfjsLib = await loadPdfJs();
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(await blob.arrayBuffer()),
+    });
+    const pdfDocument = await loadingTask.promise;
+    if (requestId !== _spjPreviewGeneration) {
+      await loadingTask.destroy();
+      return;
+    }
+    _spjPreviewState = {
+      loadingTask,
+      document: pdfDocument,
+      renderTask: null,
+    };
+    preview.innerHTML = `
+      <div style="position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:center; padding:8px; background:#f8f9fa; border-bottom:1px solid #ddd;">
+        <span>${pdfDocument.numPages} halaman — gulir untuk melihat seluruh dokumen</span>
+      </div>
+      <div id="spj-preview-pages" style="height:calc(78vh - 45px); overflow:auto; background:#e5e7eb;">
+      </div>
+    `;
+    await renderSpjPreviewPages();
+    const subtitle = document.querySelector("#popup-overlay .popup-header small");
+    if (subtitle) subtitle.textContent = "Preview menggunakan data tersimpan terbaru.";
+    appLog(
+      "info",
+      `previewKwitansi: OK id=${id}, jenis=${payload.data.jenis_belanja || "umum"}, halaman=${pdfDocument.numPages}, ukuran=${blob.size} byte`,
+    );
+  } catch (err) {
+    if (err?.name === "RenderingCancelledException") return;
+    if (requestId !== _spjPreviewGeneration) return;
+    const message = err?.message || String(err);
+    const preview = document.getElementById("spj-preview-frame");
+    if (preview) {
+      preview.innerHTML = `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(message)}</div>`;
+    }
+    appLog("error", `previewKwitansi: GAGAL id=${id}: ${message}`);
+    showToast("Error!", `Gagal menampilkan preview SPJ: ${message}`);
+  }
+}
+
 // Import referensi kegiatan from Excel
 async function importMasterKegiatan() {
   const fileInput = document.getElementById("excelFile");
@@ -1675,12 +1834,12 @@ function renderKwitansiList(list) {
       const isBlank = (val) => !val || val.toString().trim() === "";
 
       const needsUpdate =
-        isBlank(k.no_bast) &&
         isBlank(k.tanggal_nota) &&
         isBlank(k.nama_toko) &&
         isBlank(k.alamat_toko) &&
         isBlank(k.npwp_toko) &&
-        (!Array.isArray(k.uraian) || k.uraian.length === 0);
+        (!Array.isArray(k.uraian) || k.uraian.length === 0) ||
+        !isSpjDetailComplete(k);
 
       html += `
         <tr>
@@ -1695,13 +1854,16 @@ function renderKwitansiList(list) {
                 </button>
             </td>
 <td style="text-align:center; vertical-align:middle; white-space:nowrap;">
+    <button class="btn-sm btn-outline-primary" onclick="previewKwitansi(${k.id})">
+        ${iconSvg("eye", 13)} Preview
+    </button>
     ${k.nomor_kwitansi
           ? `
             <button class="btn-sm btn-outline-primary" onclick="downloadKwitansi(${k.id}, '${k.no_bukti}')">
-                  ${iconSvg("package", 13)} SPJ
+                  ${iconSvg("package", 13)} Unduh
             </button>
           `
-          : `<span style="color:#aaa; font-size:11px; font-style: italic;">Menunggu Generate</span>`
+          : `<span style="color:#aaa; font-size:11px; font-style: italic;">Draft</span>`
         }
 </td>
         </tr>
@@ -1804,6 +1966,8 @@ function previewFotoKwitansi(input, kwitansiId) {
     return;
   }
 
+  const jenisFoto = document.getElementById("jenis-foto")?.value || "barang";
+  const previewItems = [];
   // ===============================
   // PREVIEW SAJA (TANPA SELECT PER FOTO)
   // ===============================
@@ -1815,7 +1979,11 @@ function previewFotoKwitansi(input, kwitansiId) {
       div.innerHTML = `
                 <img src="${e.target.result}"
                      style="width:100%; height:80px; object-fit:cover;">
+                <span style="position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,.65); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; text-transform:uppercase;">
+                    ${escapeSpjFormValue(jenisFoto)}
+                </span>
             `;
+      previewItems.push(div);
       previewContainer.appendChild(div);
     };
     reader.readAsDataURL(file);
@@ -1853,10 +2021,8 @@ function previewFotoKwitansi(input, kwitansiId) {
 
       showToast("Berhasil!", "Foto berhasil diupload");
       input.value = "";
-
-      // refresh popup agar foto + label jenis muncul
-      openUpdateDetailPopup(kwitansiId);
     } catch (err) {
+      previewItems.forEach((item) => item.remove());
       showToast("Error!", err.message || "Gagal upload foto");
       input.value = "";
     }
@@ -2209,6 +2375,162 @@ window.configureAIImageProvider = async function () {
   await configureAIImageProvider();
 };
 
+function escapeSpjFormValue(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char]);
+}
+
+function renderTandaTerimaRecipientRows(data = {}) {
+  const rows = Array.isArray(data.penerima_list) && data.penerima_list.length
+    ? data.penerima_list
+    : [{
+        nama: data.penerima_nama || "",
+        jabatan: data.penerima_jabatan || "",
+        nuptk: "",
+        npwp: "",
+        honor: "",
+        pph21: "0",
+      }];
+  const columns = [
+    ["nama", "Nama", "text"],
+    ["jabatan", "Jabatan", "text"],
+    ["nuptk", "NUPTK", "text"],
+    ["npwp", "NPWP", "text"],
+    ["honor", "Honor", "number"],
+    ["pph21", "PPh 21", "number"],
+  ];
+  return `
+    <div style="overflow-x:auto;">
+      <table class="modern-table" style="min-width:920px;">
+        <thead><tr>${columns.map(([, label]) => `<th>${label}</th>`).join("")}<th>Aksi</th></tr></thead>
+        <tbody id="lampiran-penerima-list">
+          ${rows.map((row) => `
+            <tr class="tt-penerima-row">
+              ${columns.map(([key, label, type]) => `
+                <td><input class="form-control tt-penerima-${key}" type="${type}" ${type === "number" ? 'min="0" step="1"' : ""}
+                  aria-label="${label}" placeholder="${label}" value="${escapeSpjFormValue(row[key])}"
+                  ${key === "nama" || key === "honor" ? "required" : ""}></td>
+              `).join("")}
+              <td><button type="button" class="btn btn-secondary" onclick="removeTandaTerimaRecipientRow(this)">Hapus</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+    <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="addTandaTerimaRecipientRow()">+ Tambah Penerima</button>
+    <small style="display:block;color:#666;margin-top:6px;">Penerimaan dihitung otomatis saat PDF dibuat: Honor dikurangi PPh 21.</small>
+  `;
+}
+
+function collectDataLampiranForm() {
+  const result = { ...(window._spjLampiranDraft || {}) };
+  document.querySelectorAll("input[id^='lampiran-'], textarea[id^='lampiran-']").forEach((input) => {
+    result[input.id.slice("lampiran-".length)] = input.value;
+  });
+  const recipientRows = Array.from(document.querySelectorAll(".tt-penerima-row"));
+  if (recipientRows.length) {
+    result.penerima_list = recipientRows.map((row) => ({
+      nama: row.querySelector(".tt-penerima-nama").value.trim(),
+      jabatan: row.querySelector(".tt-penerima-jabatan").value.trim(),
+      nuptk: row.querySelector(".tt-penerima-nuptk").value.trim(),
+      npwp: row.querySelector(".tt-penerima-npwp").value.trim(),
+      honor: row.querySelector(".tt-penerima-honor").value,
+      pph21: row.querySelector(".tt-penerima-pph21").value || "0",
+    }));
+  }
+  return result;
+}
+
+function addTandaTerimaRecipientRow() {
+  const body = document.getElementById("lampiran-penerima-list");
+  if (!body) return;
+  const template = body.querySelector(".tt-penerima-row");
+  if (template) {
+    const row = template.cloneNode(true);
+    row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+    row.querySelector(".tt-penerima-pph21").value = "0";
+    body.appendChild(row);
+  }
+}
+
+function removeTandaTerimaRecipientRow(button) {
+  const row = button.closest(".tt-penerima-row");
+  const body = document.getElementById("lampiran-penerima-list");
+  if (body?.querySelectorAll(".tt-penerima-row").length === 1) {
+    row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+    row.querySelector(".tt-penerima-pph21").value = "0";
+  } else {
+    row?.remove();
+  }
+}
+
+function renderDataLampiranForm(jenis, data = {}) {
+  const config = JENIS_BELANJA_SPJ[jenis] || JENIS_BELANJA_SPJ.umum;
+  return config.dokumen.map((dokumen) => `
+    <div class="form-section">
+      <span class="form-section-title">${dokumen.label}${dokumen.optional ? " — Opsional" : ""}</span>
+      ${dokumen.recipientTable ? renderTandaTerimaRecipientRows(data) : `
+      <div class="modern-grid">
+        ${dokumen.fields.map(([key, label, type, optional]) => {
+          const value = escapeSpjFormValue(data[key]);
+          const control = type === "textarea"
+            ? `<textarea id="lampiran-${key}" class="form-control" rows="3" ${dokumen.optional || optional ? "" : "required"}>${value}</textarea>`
+            : `<input id="lampiran-${key}" class="form-control" type="${type || "text"}" value="${value}" ${dokumen.optional || optional ? "" : "required"}>`;
+          return `<div class="form-group"><label for="lampiran-${key}">${label}${dokumen.optional || optional ? "" : " *"}</label>${control}</div>`;
+        }).join("")}
+      </div>`}
+    </div>
+  `).join("");
+}
+
+function changeJenisBelanjaSpj() {
+  const jenis = document.getElementById("edit-jenis-belanja")?.value || "umum";
+  const data = collectDataLampiranForm();
+  window._spjLampiranDraft = data;
+  const forms = document.getElementById("edit-data-lampiran");
+  if (forms) forms.innerHTML = renderDataLampiranForm(jenis, data);
+  const photoTypes = JENIS_BELANJA_SPJ[jenis]?.foto || [];
+  const photoSelect = document.getElementById("jenis-foto");
+  if (photoSelect) {
+    photoSelect.innerHTML = photoTypes.length
+      ? photoTypes.map((type) =>
+        `<option value="${type}">${type[0].toUpperCase()}${type.slice(1)}</option>`).join("")
+      : '<option value="">Tidak diperlukan</option>';
+    photoSelect.disabled = photoTypes.length === 0;
+    const fileInput = document.getElementById("upload-foto-kwitansi");
+    if (fileInput) fileInput.disabled = photoTypes.length === 0;
+  }
+}
+
+function isSpjDetailComplete(item) {
+  const config = JENIS_BELANJA_SPJ[item.jenis_belanja] || JENIS_BELANJA_SPJ.umum;
+  const formData = item.data_lampiran || {};
+  const fieldsComplete = config.dokumen
+    .filter((dokumen) => !dokumen.optional)
+    .every((dokumen) =>
+      dokumen.recipientTable
+        ? Array.isArray(formData.penerima_list) &&
+          formData.penerima_list.length > 0 &&
+          formData.penerima_list.every((row) =>
+            String(row.nama || "").trim() &&
+            String(row.honor ?? "").trim() &&
+            Number.isFinite(Number(row.honor)) &&
+            Number(row.honor) >= 0 &&
+            Number.isFinite(Number(row.pph21 || 0)) &&
+            Number(row.pph21 || 0) >= 0 &&
+            Number(row.pph21 || 0) <= Number(row.honor),
+          )
+        : dokumen.fields.every(([key, , , optional]) =>
+          optional || String(formData[key] || "").trim(),
+        ),
+    );
+  const bastComplete = !config.bast || Boolean(String(item.no_bast || "").trim());
+  const availablePhotos = new Set(item.jenis_foto_tersedia || []);
+  const photosComplete = config.foto.every((jenis) => availablePhotos.has(jenis));
+  return fieldsComplete && bastComplete && photosComplete;
+}
+
 function openUpdateDetailPopup(kwitansiId) {
   apiFetch(`${API_BASE}/kwitansi/${kwitansiId}`)
     .then((res) => res.json())
@@ -2218,6 +2540,13 @@ function openUpdateDetailPopup(kwitansiId) {
       const kw = k.data;
       const uraian = kw.uraian || [];
       const fotoBukti = kw.foto_bukti || [];
+      const jenisBelanja = JENIS_BELANJA_SPJ[kw.jenis_belanja]
+        ? kw.jenis_belanja
+        : "umum";
+      const dataLampiran = kw.data_lampiran && typeof kw.data_lampiran === "object"
+        ? kw.data_lampiran
+        : {};
+      window._spjLampiranDraft = { ...dataLampiran };
 
       // -------------------------------
       // STYLE CSS INJECTION
@@ -2351,7 +2680,18 @@ function openUpdateDetailPopup(kwitansiId) {
                     </div>
 
                     <div class="popup-body">
-                        
+
+                        <div class="form-section">
+                            <span class="form-section-title">Jenis Belanja</span>
+                            <div class="form-group">
+                                <label for="edit-jenis-belanja">Pilih jenis belanja</label>
+                                <select id="edit-jenis-belanja" class="form-control" onchange="changeJenisBelanjaSpj()">
+                                    ${Object.entries(JENIS_BELANJA_SPJ).map(([key, config]) =>
+                                      `<option value="${key}" ${key === jenisBelanja ? "selected" : ""}>${config.label}</option>`).join("")}
+                                </select>
+                            </div>
+                        </div>
+
                         <div class="form-section">
                             <span class="form-section-title">Informasi Kegiatan</span>
                             <div class="form-group">
@@ -2369,6 +2709,10 @@ function openUpdateDetailPopup(kwitansiId) {
                                     <input type="date" id="edit-tanggal-nota" class="form-control" value="${kw.tanggal_nota || ""}">
                                 </div>
                             </div>
+                        </div>
+
+                        <div id="edit-data-lampiran">
+                            ${renderDataLampiranForm(jenisBelanja, dataLampiran)}
                         </div>
 
                         <div class="form-section">
@@ -2407,11 +2751,10 @@ function openUpdateDetailPopup(kwitansiId) {
 
                             <select id="jenis-foto" class="form-control"
                                     style="max-width:220px; margin:10px auto;">
-                                <option value="barang">Barang</option>
-                                <option value="kegiatan">Kegiatan</option>
-                                <option value="sebelum">Sebelum</option>
-                                <option value="proses">Proses</option>
-                                <option value="sesudah">Sesudah</option>
+                                ${(JENIS_BELANJA_SPJ[jenisBelanja].foto.length
+                                  ? JENIS_BELANJA_SPJ[jenisBelanja].foto
+                                  : ["kegiatan"]).map((type) =>
+                                    `<option value="${type}">${type[0].toUpperCase()}${type.slice(1)}</option>`).join("")}
                             </select>
 
                             <input type="file"
@@ -2442,6 +2785,7 @@ function openUpdateDetailPopup(kwitansiId) {
       // LOGIKA BARU: HANDLE PASTE (CTRL+V) IMAGE
       // ==========================================
       setTimeout(() => {
+        changeJenisBelanjaSpj();
         const uploadInput = document.getElementById("upload-foto-kwitansi");
         const uploadArea = document.getElementById("drop-area-foto");
 
@@ -2459,7 +2803,7 @@ function openUpdateDetailPopup(kwitansiId) {
           // karena elemen-nya hilang.
           const pasteHandler = function (event) {
             // Cek apakah input masih ada di dokumen (popup masih buka)
-            if (!document.body.contains(uploadInput)) return;
+            if (!document.body.contains(uploadInput) || uploadInput.disabled) return;
 
             const items = (
               event.clipboardData || event.originalEvent.clipboardData
@@ -3384,6 +3728,38 @@ async function saveUpdateDetail(kwitansiId) {
     // ===============================
     // 2. Payload utama (JSON)
     // ===============================
+    const dataLampiran = collectDataLampiranForm();
+    const jenisBelanja = document.getElementById("edit-jenis-belanja").value;
+    if (JENIS_BELANJA_SPJ[jenisBelanja]?.dokumen.some((dokumen) => dokumen.recipientTable)) {
+      const recipients = dataLampiran.penerima_list || [];
+      if (!recipients.length || recipients.some((recipient) =>
+        !recipient.nama ||
+        recipient.honor === "" ||
+        !Number.isFinite(Number(recipient.honor)) ||
+        Number(recipient.honor) < 0 ||
+        !Number.isFinite(Number(recipient.pph21 || 0)) ||
+        Number(recipient.pph21 || 0) < 0 ||
+        Number(recipient.pph21 || 0) > Number(recipient.honor)
+      )) {
+        throw new Error("Isi nama dan honor setiap penerima. PPh 21 tidak boleh melebihi honor.");
+      }
+    }
+    if (jenisBelanja === "jasa_tukang") {
+      const start = new Date(`${dataLampiran.hadir_tanggal_awal}T00:00:00Z`);
+      const end = new Date(`${dataLampiran.hadir_tanggal_akhir}T00:00:00Z`);
+      const totalDays = Math.floor((end - start) / 86400000) + 1;
+      if (
+        !dataLampiran.hadir_tanggal_awal ||
+        !dataLampiran.hadir_tanggal_akhir ||
+        Number.isNaN(start.getTime()) ||
+        Number.isNaN(end.getTime()) ||
+        start > end ||
+        totalDays > 366
+      ) {
+        throw new Error("Tanggal awal dan akhir kegiatan harus valid, berurutan, dan maksimal 366 hari.");
+      }
+    }
+
     const payload = {
       nama_kegiatan: document.getElementById("edit-nama-kegiatan").value,
       no_bast: document.getElementById("edit-no-bast").value,
@@ -3392,6 +3768,8 @@ async function saveUpdateDetail(kwitansiId) {
       npwp_toko: document.getElementById("edit-npwp-toko").value,
       alamat_toko: document.getElementById("edit-alamat-toko").value,
       uraian: uraianData,
+      jenis_belanja: jenisBelanja,
+      data_lampiran: dataLampiran,
     };
 
     // ===============================
@@ -3407,8 +3785,14 @@ async function saveUpdateDetail(kwitansiId) {
     );
 
     const result = await res.json();
-    if (result.status !== "success") {
-      throw new Error(result.detail || "Gagal update detail");
+    if (!res.ok || result.status !== "success") {
+      const message =
+        result.detail || `Gagal update detail (HTTP ${res.status})`;
+      appLog(
+        "error",
+        `saveUpdateDetail: gagal kwitansi=${kwitansiId}, HTTP ${res.status}: ${message}`,
+      );
+      throw new Error(message);
     }
 
     // ===============================
@@ -3451,6 +3835,7 @@ async function saveUpdateDetail(kwitansiId) {
 }
 
 function showPopup(html) {
+  disposeSpjPreview();
   let overlay = document.getElementById("popup-overlay");
   if (!overlay) {
     overlay = document.createElement("div");
@@ -3464,6 +3849,7 @@ function showPopup(html) {
 }
 
 function closePopup() {
+  disposeSpjPreview();
   const overlay = document.getElementById("popup-overlay");
   if (overlay) {
     overlay.style.display = "none";
@@ -5156,10 +5542,14 @@ window.uploadBKU = uploadBKU;
 window.saveTransaksi = saveTransaksi;
 window.generateKwitansi = generateKwitansi;
 window.downloadKwitansi = downloadKwitansi;
+window.previewKwitansi = previewKwitansi;
 window.deleteMasterKegiatan = deleteMasterKegiatan;
 window.importMasterKegiatan = importMasterKegiatan;
 window.importMasterRekeningBelanja = importMasterRekeningBelanja;
 window.openUpdateDetailPopup = openUpdateDetailPopup;
+window.changeJenisBelanjaSpj = changeJenisBelanjaSpj;
+window.addTandaTerimaRecipientRow = addTandaTerimaRecipientRow;
+window.removeTandaTerimaRecipientRow = removeTandaTerimaRecipientRow;
 window.saveUpdateDetail = saveUpdateDetail;
 window.previewFotoKwitansi = previewFotoKwitansi;
 window.closePopup = closePopup;

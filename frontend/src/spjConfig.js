@@ -91,6 +91,23 @@ export const JENIS_BELANJA_SPJ = {
       ] },
     ],
   },
+  sewa: {
+    label: "Sewa",
+    bast: false,
+    rab: false,
+    foto: ["ktp", "kegiatan", "kendaraan_stnk"],
+    dokumen: [
+      {
+        key: "tanda_terima",
+        label: "Tanda Terima Pembayaran",
+        recipientTable: true,
+        fields: [
+          ["penerima_nama", "Nama penerima"],
+          ["penerima_jabatan", "Jabatan"],
+        ],
+      },
+    ],
+  },
   jasa_tukang: {
     label: "Jasa Tukang",
     bast: false,
@@ -156,6 +173,21 @@ export const JENIS_BELANJA_SPJ = {
     ],
   },
 };
+
+const FOTO_JENIS_LABEL = {
+  barang: "Barang",
+  kegiatan: "Kegiatan",
+  ktp: "KTP",
+  qr_master: "QR Master",
+  sebelum: "Sebelum",
+  proses: "Proses",
+  sesudah: "Sesudah",
+  kendaraan_stnk: "Kendaraan dan STNK",
+};
+
+export function getFotoJenisLabel(jenis) {
+  return FOTO_JENIS_LABEL[jenis] || String(jenis || "");
+}
 
 export function getJenisBelanjaConfig(jenis) {
   // Gunakan konfigurasi umum agar jenis lama/tidak dikenal tetap dapat diproses.

@@ -2,7 +2,10 @@ import * as XLSX from "xlsx";
 import UI from "./ui.js";
 import { iconSvg } from "./icons.js";
 import { buildSpjPdf, setBackendOriginGetter } from "./pdf/spjPdf.js";
-import { JENIS_BELANJA_SPJ } from "./spjConfig.js";
+import {
+  getFotoJenisLabel,
+  JENIS_BELANJA_SPJ,
+} from "./spjConfig.js";
 
 // ===================== BACKEND BASE URL (child_process) =====================
 // Backend TIDAK lagi dilayani oleh "servis localhost" statis (port 8000).
@@ -2386,8 +2389,11 @@ function escapeSpjFormValue(value) {
   })[char]);
 }
 
-function renderTandaTerimaRecipientRows(data = {}) {
-  const rows = Array.isArray(data.penerima_list) && data.penerima_list.length
+function renderTandaTerimaRecipientRows(data = {}, jenisBelanja) {
+  const isSewa = jenisBelanja === "sewa";
+  const taxField = isSewa ? "pph23" : "pph21";
+  const taxLabel = isSewa ? "PPh 23" : "PPh 21";
+  const savedRecipients = Array.isArray(data.penerima_list) && data.penerima_list.length
     ? data.penerima_list
     : [{
         nama: data.penerima_nama || "",
@@ -2397,13 +2403,17 @@ function renderTandaTerimaRecipientRows(data = {}) {
         honor: "",
         pph21: "0",
       }];
+  const rows = savedRecipients.map((recipient) => ({
+    ...recipient,
+    [taxField]: recipient[taxField] ?? recipient[isSewa ? "pph21" : "pph23"] ?? "0",
+  }));
   const columns = [
     ["nama", "Nama", "text"],
     ["jabatan", "Jabatan", "text"],
     ["nuptk", "NUPTK", "text"],
     ["npwp", "NPWP", "text"],
     ["honor", "Honor", "number"],
-    ["pph21", "PPh 21", "number"],
+    [taxField, taxLabel, "number"],
   ];
   return `
     <div style="overflow-x:auto;">
@@ -2424,7 +2434,7 @@ function renderTandaTerimaRecipientRows(data = {}) {
       </table>
     </div>
     <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="addTandaTerimaRecipientRow()">+ Tambah Penerima</button>
-    <small style="display:block;color:#666;margin-top:6px;">Penerimaan dihitung otomatis saat PDF dibuat: Honor dikurangi PPh 21.</small>
+    <small style="display:block;color:#666;margin-top:6px;">Penerimaan dihitung otomatis saat PDF dibuat: Honor dikurangi ${taxLabel}.</small>
   `;
 }
 
@@ -2435,14 +2445,20 @@ function collectDataLampiranForm() {
   });
   const recipientRows = Array.from(document.querySelectorAll(".tt-penerima-row"));
   if (recipientRows.length) {
-    result.penerima_list = recipientRows.map((row) => ({
-      nama: row.querySelector(".tt-penerima-nama").value.trim(),
-      jabatan: row.querySelector(".tt-penerima-jabatan").value.trim(),
-      nuptk: row.querySelector(".tt-penerima-nuptk").value.trim(),
-      npwp: row.querySelector(".tt-penerima-npwp").value.trim(),
-      honor: row.querySelector(".tt-penerima-honor").value,
-      pph21: row.querySelector(".tt-penerima-pph21").value || "0",
-    }));
+    result.penerima_list = recipientRows.map((row) => {
+      const taxInput = row.querySelector(
+        ".tt-penerima-pph21, .tt-penerima-pph23",
+      );
+      return {
+        nama: row.querySelector(".tt-penerima-nama").value.trim(),
+        jabatan: row.querySelector(".tt-penerima-jabatan").value.trim(),
+        nuptk: row.querySelector(".tt-penerima-nuptk").value.trim(),
+        npwp: row.querySelector(".tt-penerima-npwp").value.trim(),
+        honor: row.querySelector(".tt-penerima-honor").value,
+        [taxInput.classList.contains("tt-penerima-pph23") ? "pph23" : "pph21"]:
+          taxInput.value || "0",
+      };
+    });
   }
   return result;
 }
@@ -2454,7 +2470,7 @@ function addTandaTerimaRecipientRow() {
   if (template) {
     const row = template.cloneNode(true);
     row.querySelectorAll("input").forEach((input) => { input.value = ""; });
-    row.querySelector(".tt-penerima-pph21").value = "0";
+    row.querySelector(".tt-penerima-pph21, .tt-penerima-pph23").value = "0";
     body.appendChild(row);
   }
 }
@@ -2464,18 +2480,19 @@ function removeTandaTerimaRecipientRow(button) {
   const body = document.getElementById("lampiran-penerima-list");
   if (body?.querySelectorAll(".tt-penerima-row").length === 1) {
     row.querySelectorAll("input").forEach((input) => { input.value = ""; });
-    row.querySelector(".tt-penerima-pph21").value = "0";
+    row.querySelector(".tt-penerima-pph21, .tt-penerima-pph23").value = "0";
   } else {
     row?.remove();
   }
 }
 
 function renderDataLampiranForm(jenis, data = {}) {
+  // Tampilkan hanya isian lampiran yang ditentukan konfigurasi jenis belanja.
   const config = JENIS_BELANJA_SPJ[jenis] || JENIS_BELANJA_SPJ.umum;
   return config.dokumen.map((dokumen) => `
     <div class="form-section">
       <span class="form-section-title">${dokumen.label}${dokumen.optional ? " — Opsional" : ""}</span>
-      ${dokumen.recipientTable ? renderTandaTerimaRecipientRows(data) : `
+      ${dokumen.recipientTable ? renderTandaTerimaRecipientRows(data, jenis) : `
       <div class="modern-grid">
         ${dokumen.fields.map(([key, label, type, optional]) => {
           const value = escapeSpjFormValue(data[key]);
@@ -2490,6 +2507,7 @@ function renderDataLampiranForm(jenis, data = {}) {
 }
 
 function changeJenisBelanjaSpj() {
+  // Simpan isian sementara, lalu sesuaikan form dan kategori foto dengan pilihan baru.
   const jenis = document.getElementById("edit-jenis-belanja")?.value || "umum";
   const data = collectDataLampiranForm();
   window._spjLampiranDraft = data;
@@ -2500,7 +2518,7 @@ function changeJenisBelanjaSpj() {
   if (photoSelect) {
     photoSelect.innerHTML = photoTypes.length
       ? photoTypes.map((type) =>
-        `<option value="${type}">${type[0].toUpperCase()}${type.slice(1)}</option>`).join("")
+        `<option value="${type}">${getFotoJenisLabel(type)}</option>`).join("")
       : '<option value="">Tidak diperlukan</option>';
     photoSelect.disabled = photoTypes.length === 0;
     const fileInput = document.getElementById("upload-foto-kwitansi");
@@ -2509,8 +2527,10 @@ function changeJenisBelanjaSpj() {
 }
 
 function isSpjDetailComplete(item) {
+  // Periksa kolom wajib, dokumen wajib, BAST bila diperlukan, dan semua foto kategori.
   const config = JENIS_BELANJA_SPJ[item.jenis_belanja] || JENIS_BELANJA_SPJ.umum;
   const formData = item.data_lampiran || {};
+  const taxField = item.jenis_belanja === "sewa" ? "pph23" : "pph21";
   const fieldsComplete = config.dokumen
     .filter((dokumen) => !dokumen.optional)
     .every((dokumen) =>
@@ -2522,9 +2542,9 @@ function isSpjDetailComplete(item) {
             String(row.honor ?? "").trim() &&
             Number.isFinite(Number(row.honor)) &&
             Number(row.honor) >= 0 &&
-            Number.isFinite(Number(row.pph21 || 0)) &&
-            Number(row.pph21 || 0) >= 0 &&
-            Number(row.pph21 || 0) <= Number(row.honor),
+            Number.isFinite(Number(row[taxField] ?? row.pph21 ?? 0)) &&
+            Number(row[taxField] ?? row.pph21 ?? 0) >= 0 &&
+            Number(row[taxField] ?? row.pph21 ?? 0) <= Number(row.honor),
           )
         : dokumen.fields.every(([key, , , optional]) =>
           optional || String(formData[key] || "").trim(),
@@ -2759,7 +2779,7 @@ function openUpdateDetailPopup(kwitansiId) {
                                 ${(JENIS_BELANJA_SPJ[jenisBelanja].foto.length
                                   ? JENIS_BELANJA_SPJ[jenisBelanja].foto
                                   : ["kegiatan"]).map((type) =>
-                                    `<option value="${type}">${type[0].toUpperCase()}${type.slice(1)}</option>`).join("")}
+                                    `<option value="${type}">${getFotoJenisLabel(type)}</option>`).join("")}
                             </select>
 
                             <input type="file"
@@ -2933,7 +2953,7 @@ function openUpdateDetailPopup(kwitansiId) {
                             ${iconSvg("x", 12)}
                         </button>
                         <span style="position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,.65); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; text-transform:uppercase;">
-                            ${foto.jenis}
+                            ${escapeSpjFormValue(getFotoJenisLabel(foto.jenis))}
                         </span>
                         <img src="${fullUrl}" style="width:100%; height:80px; object-fit:cover; cursor:pointer;" onclick="window.open('${fullUrl}', '_blank')">
                     `;
@@ -3712,6 +3732,7 @@ async function deleteExistingFoto(kwitansiId, index) {
 
 // --- Fungsi Save Update Detail (dengan upload foto bukti) ---
 async function saveUpdateDetail(kwitansiId) {
+  // Validasi detail dan lampiran, simpan formulir, lalu unggah foto yang dipilih.
   try {
     // ===============================
     // 1. Ambil data uraian
@@ -3735,6 +3756,7 @@ async function saveUpdateDetail(kwitansiId) {
     // ===============================
     const dataLampiran = collectDataLampiranForm();
     const jenisBelanja = document.getElementById("edit-jenis-belanja").value;
+    const taxField = jenisBelanja === "sewa" ? "pph23" : "pph21";
     if (JENIS_BELANJA_SPJ[jenisBelanja]?.dokumen.some((dokumen) => dokumen.recipientTable)) {
       const recipients = dataLampiran.penerima_list || [];
       if (!recipients.length || recipients.some((recipient) =>
@@ -3742,11 +3764,12 @@ async function saveUpdateDetail(kwitansiId) {
         recipient.honor === "" ||
         !Number.isFinite(Number(recipient.honor)) ||
         Number(recipient.honor) < 0 ||
-        !Number.isFinite(Number(recipient.pph21 || 0)) ||
-        Number(recipient.pph21 || 0) < 0 ||
-        Number(recipient.pph21 || 0) > Number(recipient.honor)
+        !Number.isFinite(Number(recipient[taxField] ?? recipient.pph21 ?? 0)) ||
+        Number(recipient[taxField] ?? recipient.pph21 ?? 0) < 0 ||
+        Number(recipient[taxField] ?? recipient.pph21 ?? 0) > Number(recipient.honor)
       )) {
-        throw new Error("Isi nama dan honor setiap penerima. PPh 21 tidak boleh melebihi honor.");
+        const taxLabel = jenisBelanja === "sewa" ? "PPh 23" : "PPh 21";
+        throw new Error(`Isi nama dan honor setiap penerima. ${taxLabel} tidak boleh melebihi honor.`);
       }
     }
     if (jenisBelanja === "jasa_tukang") {

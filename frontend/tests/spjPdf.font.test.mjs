@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import esbuild from "esbuild";
+import { getJenisBelanjaConfig, getFotoJenisLabel } from "../src/spjConfig.js";
 
 const require = createRequire(import.meta.url);
 
@@ -304,6 +305,7 @@ test("jenis belanja membangun lampiran PDF yang sesuai kategori", async () => {
       ...mealAttendanceData,
       jenis_belanja: jenis,
     });
+
     const attendanceTable = attendanceDefinition.content.find(
       (node) =>
         node?.table?.body?.[0]?.[0]?.text === "No." &&
@@ -454,6 +456,84 @@ test("jenis belanja membangun lampiran PDF yang sesuai kategori", async () => {
   assert.equal(attendanceTables.length, 2, "Rentang lebih dari 10 hari dibagi menjadi beberapa lembar");
   assert.equal(attendanceTables[0].table.body[0].length, 12);
   assert.equal(attendanceTables[1].table.body[0][2].text, "11 Nov");
+});
+
+test("jenis belanja sewa memakai format tanda terima umum dan urutan lampiran", async () => {
+  const pm = await loadBrowserPdfMake();
+  const mod = await loadSpjPdfWith(pm);
+  const config = getJenisBelanjaConfig("sewa");
+
+  assert.equal(config.label, "Sewa");
+  assert.equal(config.dokumen[0].recipientTable, true);
+  assert.deepEqual(config.foto, ["ktp", "kegiatan", "kendaraan_stnk"]);
+  assert.equal(getFotoJenisLabel("ktp"), "KTP");
+  assert.equal(getFotoJenisLabel("kendaraan_stnk"), "Kendaraan dan STNK");
+
+  const data = {
+    schema_version: 1,
+    document: { order: ["kwitansi", "bast", "rab"] },
+    sections: {
+      kwitansi: { status: "included" },
+      bast: { status: "skip" },
+      rab: { status: "skip" },
+    },
+    kwitansi: {
+      nomor_kwitansi: "KW-SEWA-001",
+      no_bukti: "BPU-SEWA-001",
+      tanggal: "2026-11-03",
+      jumlah: 100000,
+      nama_kegiatan: "Sewa kendaraan",
+      uraian_pembayaran: "Sewa kendaraan",
+      terbilang: "seratus ribu rupiah",
+    },
+    identitas: {
+      nama_pemda: "Pemerintah Kabupaten Jember",
+      nama_sekolah: "SDN Contoh",
+      alamat_sekolah: "Jl. Contoh",
+      tempat_surat: "Jember",
+    },
+    jenis_belanja: "sewa",
+    data_lampiran: {
+      penerima_list: [{
+        nama: "Pemilik Kendaraan",
+        jabatan: "Pemilik",
+        honor: 100000,
+        pph23: 2300,
+      }],
+    },
+    lampiran_foto: {
+      ktp: ["/uploads/ktp.jpg"],
+      kegiatan: ["/uploads/kegiatan.jpg"],
+      kendaraan_stnk: ["/uploads/kendaraan.jpg"],
+    },
+  };
+  const definition = mod.buildSpjDocumentDefinition(data);
+  const contentText = JSON.stringify(definition.content);
+  const tandaTerimaTitleIndex = definition.content.findIndex(
+    (node) => Array.isArray(node?.text) &&
+      node.text.some((part) => part.text === "TANDA TERIMA PEMBAYARAN "),
+  );
+  const receiptPageBreak = definition.content
+    .slice(0, tandaTerimaTitleIndex)
+    .reverse()
+    .find((node) => node?.pageBreak === "before");
+  const ktpIndex = contentText.indexOf("LAMPIRAN SALINAN KTP");
+  const kegiatanIndex = contentText.indexOf("LAMPIRAN FOTO KEGIATAN");
+  const kendaraanIndex = contentText.indexOf("LAMPIRAN FOTO KENDARAAN DAN STNK");
+  const receiptTable = definition.content
+    .slice(tandaTerimaTitleIndex)
+    .find((node) => node?.table?.body?.[0]?.[0]?.text === "No");
+
+  assert.ok(tandaTerimaTitleIndex >= 0, "PDF harus memuat tanda terima pembayaran");
+  assert.equal(receiptPageBreak?.pageOrientation, "landscape");
+  assert.ok(receiptTable, "Tanda terima harus memakai tabel penerima standar");
+  assert.equal(receiptTable.table.body[0][6].text, "PPh 23");
+  assert.equal(receiptTable.table.body[1][1].text, "Pemilik Kendaraan");
+  assert.equal(receiptTable.table.body[1][6].text, "2.300");
+  assert.equal(receiptTable.table.body[1][7].text, "97.700");
+  assert.ok(ktpIndex > 0, "Lampiran KTP harus ada");
+  assert.ok(kegiatanIndex > ktpIndex, "Foto kegiatan harus setelah KTP");
+  assert.ok(kendaraanIndex > kegiatanIndex, "Foto kendaraan/STNK harus paling akhir");
 });
 
 test("Surat Tugas Honor dan Perjalanan Dinas mengikuti format surat resmi", async () => {

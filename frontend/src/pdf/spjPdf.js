@@ -1228,9 +1228,15 @@ export function buildBastSection(data) {
 }
 
 function buildLampiranFotoSections(data) {
+  // Rakit foto dari kategori yang diizinkan; lampiran sewa mengikuti urutan khusus.
   const lamp = data.lampiran_foto || {};
   const allowedPhotos = new Set(getJenisBelanjaConfig(data.jenis_belanja).foto);
-  const urutan = [
+  const jenisFotoSewa = [
+    ["ktp", "SALINAN KTP"],
+    ["kegiatan", "FOTO KEGIATAN"],
+    ["kendaraan_stnk", "FOTO KENDARAAN DAN STNK"],
+  ];
+  const urutanFotoUmum = [
     ["barang", "FOTO BARANG"],
     ["kegiatan", "FOTO KEGIATAN"],
     ["ktp", "SALINAN KTP"],
@@ -1238,10 +1244,14 @@ function buildLampiranFotoSections(data) {
     ["sebelum", "FOTO SEBELUM"],
     ["proses", "FOTO PROSES"],
     ["sesudah", "FOTO SESUDAH"],
+    ["kendaraan_stnk", "FOTO KENDARAAN DAN STNK"],
   ];
+  const urutanFoto = data.jenis_belanja === "sewa"
+    ? jenisFotoSewa
+    : urutanFotoUmum;
   const content = [];
 
-  for (const [jenis, judul] of urutan) {
+  for (const [jenis, judul] of urutanFoto) {
     if (!allowedPhotos.has(jenis)) continue;
     const daftar = Array.isArray(lamp[jenis]) ? lamp[jenis] : [];
     if (!daftar.length) continue;
@@ -1923,6 +1933,8 @@ function buildDataLampiranSections(data) {
     }
 
     if (dokumen.recipientTable) {
+      const taxField = data.jenis_belanja === "sewa" ? "pph23" : "pph21";
+      const taxLabel = data.jenis_belanja === "sewa" ? "PPh 23" : "PPh 21";
       const recipients =
         Array.isArray(formData.penerima_list) && formData.penerima_list.length
           ? formData.penerima_list
@@ -1933,7 +1945,7 @@ function buildDataLampiranSections(data) {
                 nuptk: "",
                 npwp: "",
                 honor: "",
-                pph21: 0,
+                [taxField]: 0,
               },
             ];
       const nominal = (value) => {
@@ -1950,7 +1962,8 @@ function buildDataLampiranSections(data) {
         0,
       );
       const totalPph = recipients.reduce(
-        (total, row) => total + (Number(row.pph21) || 0),
+        (total, row) =>
+          total + (Number(row[taxField] ?? row.pph21 ?? 0) || 0),
         0,
       );
       const tanggal = String(kwitansi.tanggal || "");
@@ -1974,7 +1987,7 @@ function buildDataLampiranSections(data) {
         "NUPTK",
         "NPWP",
         "Honor",
-        "PPh 21",
+        taxLabel,
         "Penerimaan",
         "Tanda Tangan",
       ];
@@ -1991,7 +2004,7 @@ function buildDataLampiranSections(data) {
       ];
       recipients.forEach((row, index) => {
         const honor = Number(row.honor) || 0;
-        const pph = Number(row.pph21) || 0;
+        const pph = Number(row[taxField] ?? row.pph21 ?? 0) || 0;
         body.push([
           { text: String(index + 1), alignment: "center" },
           { text: row.nama || "" },
@@ -2587,8 +2600,13 @@ export function buildSpjDocumentDefinition(data) {
     content.push(...sectionContent);
     isFirstRenderedSection = false;
   }
-  content.push(...buildLampiranFotoSections(data));
-  content.push(...buildDataLampiranSections(data));
+  const lampiranFotoSections = buildLampiranFotoSections(data);
+  const dataLampiranSections = buildDataLampiranSections(data);
+  if (data.jenis_belanja === "sewa") {
+    content.push(...dataLampiranSections, ...lampiranFotoSections);
+  } else {
+    content.push(...lampiranFotoSections, ...dataLampiranSections);
+  }
   if (isFirstRenderedSection)
     fail("tidak ada bagian yang dapat dirender (semua ditandai skip)");
 

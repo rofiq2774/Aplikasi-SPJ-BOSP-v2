@@ -222,6 +222,54 @@ def test_update_kwitansi_persists_purchase_type_and_dynamic_form_data(spj_client
     assert spj_data["sections"]["rab"]["status"] == "skip"
 
 
+def test_sewa_type_and_vehicle_stnk_photo_are_persisted(spj_client):
+    """Pastikan isian sewa dan kategori foto kendaraan/STNK tersimpan dan terbaca."""
+    update_response = spj_client.post(
+        "/api/kwitansi/1/update-detail",
+        json={
+            "nama_kegiatan": "Sewa kendaraan",
+            "tanggal_nota": "2026-11-05",
+            "jenis_belanja": "sewa",
+            "data_lampiran": {
+                "penerima_list": [{
+                    "nama": "Pemilik Kendaraan",
+                    "jabatan": "Pemilik",
+                    "honor": 150000,
+                    "pph23": 3450,
+                }],
+            },
+            "uraian": [{
+                "nama_barang": "Sewa kendaraan",
+                "volume": 1,
+                "satuan": "hari",
+                "harga_satuan": 150000,
+            }],
+        },
+    )
+    assert update_response.status_code == 200, update_response.text
+
+    upload_response = spj_client.post(
+        "/api/kwitansi/1/upload-foto",
+        files=[("files", ("kendaraan.png", b"test-image", "image/png"))],
+        data={"jenis_foto": "kendaraan_stnk"},
+    )
+    assert upload_response.status_code == 200, upload_response.text
+
+    detail = spj_client.get("/api/kwitansi/1").json()["data"]
+    assert detail["jenis_belanja"] == "sewa"
+    assert detail["data_lampiran"]["penerima_list"][0]["nama"] == "Pemilik Kendaraan"
+    assert detail["data_lampiran"]["penerima_list"][0]["pph23"] == 3450
+    assert len(detail["foto_bukti"]["kendaraan_stnk"]) == 1
+
+    spj_data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]
+    assert spj_data["jenis_belanja"] == "sewa"
+    assert spj_data["data_lampiran"]["penerima_list"][0]["nama"] == "Pemilik Kendaraan"
+    assert spj_data["data_lampiran"]["penerima_list"][0]["pph23"] == 3450
+    assert spj_data["sections"]["bast"]["status"] == "skip"
+    assert spj_data["sections"]["rab"]["status"] == "skip"
+    assert spj_data["lampiran_foto"]["kendaraan_stnk"]
+
+
 def test_kwitansi_section_has_no_kop_metadata(spj_client):
     """Aturan produk: metadata kop tidak boleh mengalir ke bagian kwitansi."""
     data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]

@@ -1129,7 +1129,7 @@ def _data_lampiran_dict(kwitansi) -> dict:
 
 JENIS_BELANJA_VALID = {
     "honor_jasa", "makanan_minuman", "perjalanan_dinas",
-    "jasa_tukang", "fotokopi", "telepon_listrik_air", "umum",
+    "sewa", "jasa_tukang", "fotokopi", "telepon_listrik_air", "umum",
     "bahan_bangunan",
 }
 JENIS_BELANJA_DENGAN_BAST = {"fotokopi", "umum", "bahan_bangunan"}
@@ -4275,10 +4275,14 @@ async def upload_foto_kwitansi(
     jenis_foto: str = Form("barang"),  # ⬅⬅⬅ TAMBAHAN PENTING
     db: AsyncSession = Depends(get_db)
 ):
+    """Validasi kategori, simpan gambar, lalu kaitkan dengan kwitansi."""
     # =========================
     # 1. Validasi jenis foto
     # =========================
-    JENIS_VALID = ["barang", "kegiatan", "sebelum", "proses", "sesudah", "ktp", "qr_master"]
+    JENIS_VALID = [
+        "barang", "kegiatan", "sebelum", "proses", "sesudah", "ktp",
+        "qr_master", "kendaraan_stnk",
+    ]
     if jenis_foto not in JENIS_VALID:
         raise HTTPException(
             status_code=400,

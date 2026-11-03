@@ -1,8 +1,13 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text
-from database import Base
 from datetime import datetime
 
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
+
+from database import Base
+
+
 class Transaksi(Base):
+    """Data transaksi buku kas yang terhubung ke kegiatan dan bukti."""
+
     __tablename__ = "transaksi"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -20,13 +25,16 @@ class Transaksi(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
 class Pengaturan(Base):
+    """Pengaturan umum sekolah yang dipakai sebagai data identitas bawaan."""
+
     __tablename__ = "pengaturan"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    nama_pemda = Column(String, default="") 
-    logo_pemda = Column(String, default="") 
-    logo_sekolah = Column(String, default="") 
+    nama_pemda = Column(String, default="")
+    logo_pemda = Column(String, default="")
+    logo_sekolah = Column(String, default="")
     nama_sekolah = Column(String, default="")
     nama_kepala_sekolah = Column(String, default="")
     nip_kepala_sekolah = Column(String, default="")
@@ -38,6 +46,7 @@ class Pengaturan(Base):
     tempat_surat = Column(String, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class IdentitasPeriode(Base):
     """Identitas satuan pendidikan per periode waktu.
@@ -53,17 +62,17 @@ class IdentitasPeriode(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     # --- Periode keberlakuan ---
-    tanggal_awal = Column(String, nullable=False, default="")   # ISO yyyy-mm-dd
-    tanggal_akhir = Column(String, nullable=True, default="")   # kosong = masih berlaku
-    label = Column(String, default="")                          # nama periode (opsional)
+    tanggal_awal = Column(String, nullable=False, default="")  # ISO yyyy-mm-dd
+    tanggal_akhir = Column(String, nullable=True, default="")  # kosong = masih berlaku
+    label = Column(String, default="")  # nama periode (opsional)
     is_active = Column(Boolean, default=True)
     # --- Kop / letterhead ---
     nama_pemda = Column(String, default="")
     nama_sekolah = Column(String, default="")
     alamat_sekolah = Column(String, default="")
     tempat_surat = Column(String, default="")
-    logo_pemda = Column(String, default="")     # base64 data URI
-    logo_sekolah = Column(String, default="")   # base64 data URI
+    logo_pemda = Column(String, default="")  # base64 data URI
+    logo_sekolah = Column(String, default="")  # base64 data URI
     # --- Pejabat penanda tangan ---
     nama_kepala_sekolah = Column(String, default="")
     nip_kepala_sekolah = Column(String, default="")
@@ -76,8 +85,10 @@ class IdentitasPeriode(Base):
 
 
 class MasterKegiatan(Base):
+    """Daftar kode dan nama kegiatan yang dapat dipilih pada transaksi."""
+
     __tablename__ = "master_kegiatan"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     kode_kegiatan = Column(String, unique=True, nullable=False)
     nama_kegiatan = Column(String, nullable=False)
@@ -86,6 +97,8 @@ class MasterKegiatan(Base):
 
 
 class MasterRekeningBelanja(Base):
+    """Master kode rekening dan atribut pengelompokan belanja."""
+
     __tablename__ = "master_rekening_belanja"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -98,8 +111,10 @@ class MasterRekeningBelanja(Base):
 
 
 class Kwitansi(Base):
+    """Data kwitansi beserta referensi foto dan lampiran SPJ dalam format JSON."""
+
     __tablename__ = "kwitansi"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     nomor_kwitansi = Column(String, unique=True, nullable=False)
     no_bukti = Column(String, nullable=False)
@@ -114,7 +129,12 @@ class Kwitansi(Base):
     nama_toko = Column(String, default="")
     npwp_toko = Column(String, default="")
     alamat_toko = Column(String, default="")
-    foto_bukti = Column(Text, default="[]", nullable=False, comment="List path foto bukti (JSON array)")
+    foto_bukti = Column(
+        Text,
+        default="[]",
+        nullable=False,
+        comment="List path foto bukti (JSON array)",
+    )
     jenis_belanja = Column(String, nullable=False, default="umum")
     data_lampiran = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)

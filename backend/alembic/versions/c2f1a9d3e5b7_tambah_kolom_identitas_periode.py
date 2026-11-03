@@ -55,6 +55,7 @@ def _table_columns(table: str) -> set:
 
 
 def upgrade():
+    """Tambahkan kolom periode yang belum ada dan salin lokasi surat lama."""
     if "identitas_periode" not in sa.inspect(op.get_bind()).get_table_names():
         # Database baru: tabel akan dibuat lengkap oleh create_all/migrasi lain.
         return
@@ -111,16 +112,17 @@ def upgrade():
 
 
 def downgrade():
+    """Hapus kolom tambahan identitas periode yang dikelola revisi ini."""
     if "identitas_periode" not in sa.inspect(op.get_bind()).get_table_names():
         return
     cols = _table_columns("identitas_periode")
-    drop_map = [
-        ("nip_pengurus_barang",), ("nama_pengurus_barang",), ("nip_bendahara",),
-        ("nama_bendahara",), ("nip_kepala_sekolah",), ("nama_kepala_sekolah",),
-        ("logo_sekolah",), ("logo_pemda",), ("tempat_surat",), ("alamat_sekolah",),
-        ("nama_pemda",), ("is_active",), ("label",), ("tanggal_akhir",),
+    columns_to_drop = [
+        "nip_pengurus_barang", "nama_pengurus_barang", "nip_bendahara",
+        "nama_bendahara", "nip_kepala_sekolah", "nama_kepala_sekolah",
+        "logo_sekolah", "logo_pemda", "tempat_surat", "alamat_sekolah",
+        "nama_pemda", "is_active", "label", "tanggal_akhir",
     ]
     with op.batch_alter_table("identitas_periode") as batch_op:
-        for (name,) in drop_map:
-            if name in cols:
-                batch_op.drop_column(name)
+        for column_name in columns_to_drop:
+            if column_name in cols:
+                batch_op.drop_column(column_name)

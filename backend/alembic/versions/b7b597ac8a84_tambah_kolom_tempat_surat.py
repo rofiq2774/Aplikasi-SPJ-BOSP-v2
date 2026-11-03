@@ -19,6 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade():
+    """Tambahkan kolom tempat_surat agar lokasi surat dapat disimpan."""
     with op.batch_alter_table("pengaturan") as batch_op:
         batch_op.add_column(
             sa.Column("tempat_surat", sa.String(length=255), nullable=True)
@@ -26,5 +27,6 @@ def upgrade():
 
 
 def downgrade():
+    """Hapus kolom tempat_surat saat revisi ini dibatalkan."""
     with op.batch_alter_table("pengaturan") as batch_op:
         batch_op.drop_column("tempat_surat")

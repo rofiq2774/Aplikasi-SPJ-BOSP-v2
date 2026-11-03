@@ -373,16 +373,17 @@ export function formatNamaPenandatangan(rawNama) {
   return namaDenganGelarDepan;
 }
 
-function num(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 0;
-  return Number.isInteger(n) ? n : n;
+function toNumberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }
 
-function fmtVolume(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "-";
-  return Number.isInteger(n) ? String(n) : String(n).replace(".", ",");
+function formatVolume(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return Number.isInteger(number)
+    ? String(number)
+    : String(number).replace(".", ",");
 }
 
 function fail(msg) {
@@ -398,26 +399,29 @@ export function validateSpjPayload(data) {
     if (!data[key] || typeof data[key] !== "object")
       fail(`field '${key}' hilang`);
   }
-  const kw = data.kwitansi;
+  const kwitansi = data.kwitansi;
   for (const f of ["nomor_kwitansi", "tanggal", "jumlah"]) {
-    if (kw[f] === undefined || kw[f] === null) fail(`kwitansi.${f} hilang`);
+    if (kwitansi[f] === undefined || kwitansi[f] === null)
+      fail(`kwitansi.${f} hilang`);
   }
-  if (num(kw.jumlah) <= 0) fail("kwitansi.jumlah harus > 0");
+  if (toNumberOrZero(kwitansi.jumlah) <= 0)
+    fail("kwitansi.jumlah harus > 0");
 
-  const sec = data.sections || {};
-  const st = (s) => (s && (s.status || s.included)) || null;
-  const included = (name) => {
-    const v = st(sec[name]);
-    return v === true || v === "included";
+  const sections = data.sections || {};
+  const sectionStatus = (section) =>
+    (section && (section.status || section.included)) || null;
+  const isIncluded = (name) => {
+    const status = sectionStatus(sections[name]);
+    return status === true || status === "included";
   };
-  if (!included("kwitansi")) fail("bagian kwitansi wajib");
+  if (!isIncluded("kwitansi")) fail("bagian kwitansi wajib");
 
-  if (included("bast") && !data.bast)
+  if (isIncluded("bast") && !data.bast)
     fail("sections.bast=included tetapi data bast kosong");
-  if (included("rab") && !data.rab)
+  if (isIncluded("rab") && !data.rab)
     fail("sections.rab=included tetapi data rab kosong");
 
-  return { included };
+  return { included: isIncluded };
 }
 
 // ---------------------------------------------------------------------------
@@ -602,12 +606,16 @@ function labelRow(label, value, labelW = 40) {
 // ---------------------------------------------------------------------------
 
 export function buildKwitansiSection(data) {
-  const kw = data.kwitansi;
-  const ident = data.identitas;
+  const kwitansi = data.kwitansi;
+  const identitas = data.identitas;
   const content = [];
 
   // ATURAN PRODUK: KWITANSI TANPA KOP
-  if (kw?.kop || data.document?.kop || data.document?.kop_wajib) {
+  if (
+    kwitansi?.kop ||
+    data.document?.kop ||
+    data.document?.kop_wajib
+  ) {
     console.warn(
       "[spjPdf] Payload membawa metadata kop untuk kwitansi; diabaikan " +
         "sesuai aturan 'kwitansi tanpa kop'.",
@@ -615,19 +623,22 @@ export function buildKwitansiSection(data) {
   }
 
   // Persiapan data teks
-  const jumlahFmt = kw.jumlah_rupiah || formatRupiah(kw.jumlah);
-  let terbilangStr = kw.terbilang || "................ rupiah";
-  terbilangStr = terbilangStr.charAt(0).toUpperCase() + terbilangStr.slice(1);
+  const formattedAmount =
+    kwitansi.jumlah_rupiah || formatRupiah(kwitansi.jumlah);
+  let amountInWords = kwitansi.terbilang || "................ rupiah";
+  amountInWords =
+    amountInWords.charAt(0).toUpperCase() + amountInWords.slice(1);
 
-  const noKwitansi =
-    kw.nomor_kwitansi || "....................................";
-  const namaSekolah = `BENDAHARA BOSP ${(ident.nama_sekolah || "").toUpperCase()}`;
+  const receiptNumber =
+    kwitansi.nomor_kwitansi || "....................................";
+  const namaSekolah = `BENDAHARA BOSP ${(identitas.nama_sekolah || "").toUpperCase()}`;
   const uraian =
-    kw.uraian_pembayaran ||
-    kw.nama_kegiatan ||
+    kwitansi.uraian_pembayaran ||
+    kwitansi.nama_kegiatan ||
     "....................................";
-  const kota = kw.kota_tempat_surat || ident.tempat_surat || "Jember";
-  const tgl = formatTanggalIndo(kw.tanggal);
+  const kota =
+    kwitansi.kota_tempat_surat || identitas.tempat_surat || "Jember";
+  const formattedDate = formatTanggalIndo(kwitansi.tanggal);
 
   // Susunan formulir mengikuti format kwitansi yang digunakan.
   const headerBox = {
@@ -688,7 +699,7 @@ export function buildKwitansiSection(data) {
             color: PDF_COLORS.ink,
             border: [false, false, false, false],
           },
-          valueCell(noKwitansi, { bold: true }),
+          valueCell(receiptNumber, { bold: true }),
         ],
         [
           fieldLabel("Telah terima dari"),
@@ -709,7 +720,7 @@ export function buildKwitansiSection(data) {
             border: [false, false, false, false],
           },
           {
-            ...valueCell(terbilangStr, {
+            ...valueCell(amountInWords, {
               fillColor: "#f2f2f2",
               border: [false, false, false, false],
               margin: [4, 5, 4, 5],
@@ -750,7 +761,7 @@ export function buildKwitansiSection(data) {
           body: [
             [
               {
-                text: jumlahFmt.replace(/^Rp\s*/i, ""),
+                text: formattedAmount.replace(/^Rp\s*/i, ""),
                 bold: true,
                 italics: true,
                 alignment: "center",
@@ -803,16 +814,16 @@ export function buildKwitansiSection(data) {
     margin: [0, 0, 0, 2],
   };
 
-  const namaKepsek = formatNamaPenandatangan(ident.nama_kepala_sekolah);
-  const namaBendahara = formatNamaPenandatangan(ident.nama_bendahara);
+  const namaKepsek = formatNamaPenandatangan(identitas.nama_kepala_sekolah);
+  const namaBendahara = formatNamaPenandatangan(identitas.nama_bendahara);
   const namaPenerima = formatNamaPenandatangan(
-    kw.nama_toko || "(...................)",
+    kwitansi.nama_toko || "(...................)",
   );
-  const nipKepsek = ident.nip_kepala_sekolah
-    ? `NIP. ${ident.nip_kepala_sekolah}`
+  const nipKepsek = identitas.nip_kepala_sekolah
+    ? `NIP. ${identitas.nip_kepala_sekolah}`
     : "NIP. .............................";
-  const nipBendahara = ident.nip_bendahara
-    ? `NIP. ${ident.nip_bendahara}`
+  const nipBendahara = identitas.nip_bendahara
+    ? `NIP. ${identitas.nip_bendahara}`
     : "NIP. .............................";
 
   const signatures = {
@@ -822,8 +833,8 @@ export function buildKwitansiSection(data) {
         // Baris 1: judul / tanggal
         [
           sigCell("Setuju Dibayar"),
-          sigCell(`Lunas Dibayar, ${tgl}`),
-          sigCell(`${kota}, ${tgl}`),
+          sigCell(`Lunas Dibayar, ${formattedDate}`),
+          sigCell(`${kota}, ${formattedDate}`),
         ],
         // Baris 2: jabatan
         [
@@ -904,8 +915,8 @@ export function buildKwitansiSection(data) {
 // ---------------------------------------------------------------------------
 
 export function buildBastSection(data) {
-  const b = data.bast;
-  const ident = data.identitas;
+  const bast = data.bast;
+  const identitas = data.identitas;
   const content = [];
 
   content.push({
@@ -915,7 +926,7 @@ export function buildBastSection(data) {
     alignment: "right",
     margin: [0, 0, 0, 5],
   });
-  content.push(...kopStack(b.kop || data.document?.kop));
+  content.push(...kopStack(bast.kop || data.document?.kop));
   content.push(
     ...sectionTitle(
       "BERITA ACARA SERAH TERIMA BARANG",
@@ -923,18 +934,18 @@ export function buildBastSection(data) {
     ),
   );
   content.push({
-    text: `Nomor: ${b.nomor_surat || "-"}`,
+    text: `Nomor: ${bast.nomor_surat || "-"}`,
     fontSize: 12,
     alignment: "center",
     margin: [0, 5, 0, 15],
   });
 
   const hari =
-    b.hari_ini ||
+    bast.hari_ini ||
     hariIndo(data.kwitansi?.tanggal_nota || data.kwitansi?.tanggal);
   const pembuka =
-    `Pada hari ini ${hari || "..."} tanggal ${b.tgl_terbilang || "..."} ` +
-    `bulan ${b.bulan_indo || "..."} tahun ${b.tahun_terbilang || "..."} ` +
+    `Pada hari ini ${hari || "..."} tanggal ${bast.tgl_terbilang || "..."} ` +
+    `bulan ${bast.bulan_indo || "..."} tahun ${bast.tahun_terbilang || "..."} ` +
     "yang bertanda tangan di bawah ini :";
 
   content.push({
@@ -947,19 +958,21 @@ export function buildBastSection(data) {
     labelRow(
       "Nama",
       formatNamaPenandatangan(
-        b.nama_penerima || ident.nama_pengurus_barang || "(..............)",
+        bast.nama_penerima ||
+          identitas.nama_pengurus_barang ||
+          "(..............)",
       ),
       60,
     ),
   );
   content.push(
-    labelRow("Jabatan", b.jabatan_penerima || "Pengurus Barang", 60),
+    labelRow("Jabatan", bast.jabatan_penerima || "Pengurus Barang", 60),
   );
 
   content.push({
     text:
-      `Telah menerima barang persediaan yang diserahkan oleh ${b.nama_penyedia || "(..............)"} ` +
-      `sesuai dengan Faktur Pembelian / Nota Pembelian tanggal ${b.tgl_full || "-"} ` +
+      `Telah menerima barang persediaan yang diserahkan oleh ${bast.nama_penyedia || "(..............)"} ` +
+      `sesuai dengan Faktur Pembelian / Nota Pembelian tanggal ${bast.tgl_full || "-"} ` +
       "sebagaimana daftar terlampir.",
     fontSize: 12,
     alignment: "justify",
@@ -1034,40 +1047,40 @@ export function buildBastSection(data) {
     ],
   ];
 
-  for (const it of b.items || []) {
+  for (const item of bast.items || []) {
     body.push([
       {
-        text: String(it.no ?? ""),
+        text: String(item.no ?? ""),
         fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
       {
-        text: it.uraian || "-",
+        text: item.uraian || "-",
         fontSize: 12,
         alignment: "left",
         margin: [4, 4, 0, 4],
       },
       {
-        text: it.harga_satuan_fmt || formatRupiah(it.harga_satuan),
+        text: item.harga_satuan_fmt || formatRupiah(item.harga_satuan),
         fontSize: 12,
         alignment: "right",
         margin: [0, 4, 4, 4],
       },
       {
-        text: it.satuan || "-",
+        text: item.satuan || "-",
         fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
       {
-        text: fmtVolume(it.volume),
+        text: formatVolume(item.volume),
         fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
       },
       {
-        text: it.jumlah_fmt || formatRupiah(it.jumlah),
+        text: item.jumlah_fmt || formatRupiah(item.jumlah),
         fontSize: 12,
         alignment: "right",
         margin: [0, 4, 4, 4],
@@ -1076,8 +1089,9 @@ export function buildBastSection(data) {
     ]);
   }
 
-  const totalVol = fmtVolume(b.total_volume ?? 0);
-  const grandFmt = b.grand_total_fmt || formatRupiah(b.grand_total);
+  const totalVolume = formatVolume(bast.total_volume ?? 0);
+  const formattedGrandTotal =
+    bast.grand_total_fmt || formatRupiah(bast.grand_total);
 
   body.push([
     {
@@ -1091,9 +1105,14 @@ export function buildBastSection(data) {
     {},
     {},
     {},
-    { text: totalVol, fontSize: 12, alignment: "center", margin: [0, 5, 0, 5] },
     {
-      text: grandFmt,
+      text: totalVolume,
+      fontSize: 12,
+      alignment: "center",
+      margin: [0, 5, 0, 5],
+    },
+    {
+      text: formattedGrandTotal,
       fontSize: 12,
       bold: true,
       alignment: "right",
@@ -1116,7 +1135,7 @@ export function buildBastSection(data) {
     {},
     { text: "" },
     {
-      text: grandFmt,
+      text: formattedGrandTotal,
       fontSize: 12,
       bold: true,
       alignment: "right",
@@ -1141,7 +1160,7 @@ export function buildBastSection(data) {
     alignment: "justify",
   });
 
-  const kota = b.kota || ident.tempat_surat || "Jember";
+  const kota = bast.kota || identitas.tempat_surat || "Jember";
 
   const BAST_FS = 12;
   const sigCell = (text, opts = {}) => ({
@@ -1154,27 +1173,32 @@ export function buildBastSection(data) {
   });
 
   const namaPenyedia = formatNamaPenandatangan(
-    b.nama_penyedia || "(..............)",
+    bast.nama_penyedia || "(..............)",
   );
   const namaPenerima = formatNamaPenandatangan(
-    b.nama_penerima || ident.nama_pengurus_barang || "(..............)",
+    bast.nama_penerima ||
+      identitas.nama_pengurus_barang ||
+      "(..............)",
   );
 
-  const nipPenerima = b.nip_penerima
-    ? `NIP. ${b.nip_penerima}`
-    : ident.nip_pengurus_barang
-      ? `NIP. ${ident.nip_pengurus_barang}`
+  const nipPenerima = bast.nip_penerima
+    ? `NIP. ${bast.nip_penerima}`
+    : identitas.nip_pengurus_barang
+      ? `NIP. ${identitas.nip_pengurus_barang}`
       : "(..............)";
 
   content.push({
     table: {
       widths: ["*", "*"],
       body: [
-        [sigCell(" "), sigCell(`${kota}, ${b.tgl_full || "(..............)"}`)],
+        [
+          sigCell(" "),
+          sigCell(`${kota}, ${bast.tgl_full || "(..............)"}`),
+        ],
         [sigCell("Yang Menyerahkan"), sigCell("Yang Menerima")],
         [
           sigCell("Penyedia Barang"),
-          sigCell(b.jabatan_penerima || "Pengurus Barang"),
+          sigCell(bast.jabatan_penerima || "Pengurus Barang"),
         ],
         // Baris untuk nama diberi margin atas 48 sebagai ruang tanda tangan (menggantikan garis)
         [
@@ -1288,11 +1312,12 @@ function buildLampiranFotoSections(data) {
   return content;
 }
 
+// Rakit dokumen lampiran sesuai jenis belanja; format khusus ditangani sebelum tabel umum.
 function buildDataLampiranSections(data) {
   const config = getJenisBelanjaConfig(data.jenis_belanja);
   const formData = data.data_lampiran || {};
-  const kw = data.kwitansi || {};
-  const ident = data.identitas || {};
+  const kwitansi = data.kwitansi || {};
+  const identitas = data.identitas || {};
   const content = [];
 
   for (const dokumen of config.dokumen) {
@@ -1333,11 +1358,11 @@ function buildDataLampiranSections(data) {
       content.push(
         ...kopStack(
           {
-            baris1: ident.nama_pemda || "",
-            baris2: ident.nama_sekolah || "",
-            alamat: ident.alamat_sekolah || "",
-            logo_pemda: ident.logo_pemda || "",
-            logo_sekolah: ident.logo_sekolah || "",
+            baris1: identitas.nama_pemda || "",
+            baris2: identitas.nama_sekolah || "",
+            alamat: identitas.alamat_sekolah || "",
+            logo_pemda: identitas.logo_pemda || "",
+            logo_sekolah: identitas.logo_sekolah || "",
           },
           "portrait",
         ),
@@ -1399,20 +1424,20 @@ function buildDataLampiranSections(data) {
             {
               width: mmToPt(72),
               stack: [
-                [ident.tempat_surat || "Jember", tanggalSurat]
+                [identitas.tempat_surat || "Jember", tanggalSurat]
                   .filter(Boolean)
                   .join(", "),
                 "Kepala Sekolah",
                 { text: "", margin: [0, 0, 0, 48] },
                 {
-                  text: formatNamaPenandatangan(ident.nama_kepala_sekolah),
+                  text: formatNamaPenandatangan(identitas.nama_kepala_sekolah),
                   bold: true,
                 },
                 formData.surat_tugas_pangkat_kepala_sekolah ||
-                  ident.pangkat_kepala_sekolah ||
+                  identitas.pangkat_kepala_sekolah ||
                   "........................",
-                ident.nip_kepala_sekolah
-                  ? `NIP. ${ident.nip_kepala_sekolah}`
+                identitas.nip_kepala_sekolah
+                  ? `NIP. ${identitas.nip_kepala_sekolah}`
                   : "NIP. ........................",
               ],
             },
@@ -1456,43 +1481,43 @@ function buildDataLampiranSections(data) {
                 ["Ke", `: ${to || ""}`],
               ];
         return {
-        stack: [
-          { text: `${roman}.`, bold: true, margin: [0, 0, 0, 4] },
-          {
-            table: {
-              widths: [mmToPt(28), "*"],
-              body: [
-                [{ text: action, colSpan: 2, bold: true }, {}],
-                ...routeRows,
-                ["Pada Tanggal", `: ${date}`],
-                ["Kepala", ":"],
-              ],
-            },
-            layout: "noBorders",
-            margin: [0, 0, 0, 30],
-          },
-          {
-            canvas: [
-              {
-                type: "line",
-                x1: 0,
-                y1: 0,
-                x2: mmToPt(48),
-                y2: 0,
-                lineWidth: 0.6,
+          stack: [
+            { text: `${roman}.`, bold: true, margin: [0, 0, 0, 4] },
+            {
+              table: {
+                widths: [mmToPt(28), "*"],
+                body: [
+                  [{ text: action, colSpan: 2, bold: true }, {}],
+                  ...routeRows,
+                  ["Pada Tanggal", `: ${date}`],
+                  ["Kepala", ":"],
+                ],
               },
-            ],
-            margin: [0, 0, 0, 3],
-          },
-          { text: "NIP. ........................" },
-        ],
-        margin: [4, 4, 4, 4],
+              layout: "noBorders",
+              margin: [0, 0, 0, 30],
+            },
+            {
+              canvas: [
+                {
+                  type: "line",
+                  x1: 0,
+                  y1: 0,
+                  x2: mmToPt(48),
+                  y2: 0,
+                  lineWidth: 0.6,
+                },
+              ],
+              margin: [0, 0, 0, 3],
+            },
+            { text: "NIP. ........................" },
+          ],
+          margin: [4, 4, 4, 4],
         };
       };
       const ppkName =
-        fieldValue("sppd_ppk_nama") || ident.nama_kepala_sekolah || "";
+        fieldValue("sppd_ppk_nama") || identitas.nama_kepala_sekolah || "";
       const ppkNip =
-        fieldValue("sppd_ppk_nip") || ident.nip_kepala_sekolah || "";
+        fieldValue("sppd_ppk_nip") || identitas.nip_kepala_sekolah || "";
       const ppkDetails = [
         `a. Nama     : ${ppkName}`,
         `b. NIP        : ${ppkNip}`,
@@ -1579,16 +1604,16 @@ function buildDataLampiranSections(data) {
       const issueDate = formatTanggalIndo(
         formData.sppd_tanggal_dikeluarkan,
       );
-      const issueLocation = ident.tempat_surat || "Jember";
+      const issueLocation = identitas.tempat_surat || "Jember";
 
       content.push(
         ...kopStack(
           {
-            baris1: ident.nama_pemda || "",
-            baris2: ident.nama_sekolah || "",
-            alamat: ident.alamat_sekolah || "",
-            logo_pemda: ident.logo_pemda || "",
-            logo_sekolah: ident.logo_sekolah || "",
+            baris1: identitas.nama_pemda || "",
+            baris2: identitas.nama_sekolah || "",
+            alamat: identitas.alamat_sekolah || "",
+            logo_pemda: identitas.logo_pemda || "",
+            logo_sekolah: identitas.logo_sekolah || "",
           },
           "portrait",
         ),
@@ -1792,11 +1817,11 @@ function buildDataLampiranSections(data) {
         .map((nama) => nama.trim())
         .filter(Boolean);
       const kop = {
-        baris1: ident.nama_pemda || "",
-        baris2: ident.nama_sekolah || "",
-        alamat: ident.alamat_sekolah || "",
-        logo_pemda: ident.logo_pemda || "",
-        logo_sekolah: ident.logo_sekolah || "",
+        baris1: identitas.nama_pemda || "",
+        baris2: identitas.nama_sekolah || "",
+        alamat: identitas.alamat_sekolah || "",
+        logo_pemda: identitas.logo_pemda || "",
+        logo_sekolah: identitas.logo_sekolah || "",
       };
       const dateLabel = (date) =>
         date.toLocaleDateString("id-ID", {
@@ -1817,10 +1842,10 @@ function buildDataLampiranSections(data) {
           ...kopStack(kop, "landscape"),
           ...sectionTitle(
             "DAFTAR HADIR",
-            `Nomor Kwitansi: ${kw.nomor_kwitansi || "-"}`,
+            `Nomor Kwitansi: ${kwitansi.nomor_kwitansi || "-"}`,
           ),
           {
-            text: kw.nama_kegiatan || kw.uraian_pembayaran || "",
+            text: kwitansi.nama_kegiatan || kwitansi.uraian_pembayaran || "",
             alignment: "center",
             margin: [0, 4, 0, 6],
           },
@@ -1928,7 +1953,7 @@ function buildDataLampiranSections(data) {
         (total, row) => total + (Number(row.pph21) || 0),
         0,
       );
-      const tanggal = String(kw.tanggal || "");
+      const tanggal = String(kwitansi.tanggal || "");
       const isoTanggal = tanggal.match(/^(\d{4})-(\d{2})/);
       const lokalTanggal = tanggal.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
       const bulan = isoTanggal
@@ -1938,9 +1963,10 @@ function buildDataLampiranSections(data) {
       const bulanTahun =
         bulan >= 1 && bulan <= 12
           ? `${BULAN_ID[bulan - 1]} ${tahun}`
-          : String(kw.tahun || "");
-      const namaKegiatan = kw.nama_kegiatan || kw.uraian_pembayaran || "-";
-      const namaSekolah = ident.nama_sekolah || "-";
+          : String(kwitansi.tahun || "");
+      const namaKegiatan =
+        kwitansi.nama_kegiatan || kwitansi.uraian_pembayaran || "-";
+      const namaSekolah = identitas.nama_sekolah || "-";
       const headers = [
         "No",
         "Nama",
@@ -2014,10 +2040,10 @@ function buildDataLampiranSections(data) {
         { text: "" },
       ]);
 
-      const namaKepsek = formatNamaPenandatangan(ident.nama_kepala_sekolah);
-      const namaBendahara = formatNamaPenandatangan(ident.nama_bendahara);
+      const namaKepsek = formatNamaPenandatangan(identitas.nama_kepala_sekolah);
+      const namaBendahara = formatNamaPenandatangan(identitas.nama_bendahara);
       const tanggalLunas =
-        formatTanggalIndo(kw.tanggal) || "........................";
+        formatTanggalIndo(kwitansi.tanggal) || "........................";
       const signatureBlock = {
         columns: [
           {
@@ -2039,8 +2065,8 @@ function buildDataLampiranSections(data) {
               },
               { text: namaKepsek, bold: true },
               {
-                text: ident.nip_kepala_sekolah
-                  ? `NIP. ${ident.nip_kepala_sekolah}`
+                text: identitas.nip_kepala_sekolah
+                  ? `NIP. ${identitas.nip_kepala_sekolah}`
                   : "NIP. ........................",
               },
             ],
@@ -2067,8 +2093,8 @@ function buildDataLampiranSections(data) {
               },
               { text: namaBendahara, bold: true },
               {
-                text: ident.nip_bendahara
-                  ? `NIP. ${ident.nip_bendahara}`
+                text: identitas.nip_bendahara
+                  ? `NIP. ${identitas.nip_bendahara}`
                   : "NIP. ........................",
               },
             ],
@@ -2082,16 +2108,16 @@ function buildDataLampiranSections(data) {
       content.push(
         ...kopStack(
           {
-            baris1: ident.nama_pemda || "",
+            baris1: identitas.nama_pemda || "",
             baris2: namaSekolah,
-            alamat: ident.alamat_sekolah || "",
-            logo_pemda: ident.logo_pemda || "",
-            logo_sekolah: ident.logo_sekolah || "",
+            alamat: identitas.alamat_sekolah || "",
+            logo_pemda: identitas.logo_pemda || "",
+            logo_sekolah: identitas.logo_sekolah || "",
           },
           "landscape",
         ),
         {
-          text: `Lampiran No. ${kw.no_bukti || kw.nomor_kwitansi || "-"}`,
+          text: `Lampiran No. ${kwitansi.no_bukti || kwitansi.nomor_kwitansi || "-"}`,
           margin: [0, 0, 0, 14],
         },
         {
@@ -2138,11 +2164,11 @@ function buildDataLampiranSections(data) {
         dokumen.key === "ktp"
           ? "IDENTITAS PENERIMA (DATA KTP)"
           : dokumen.label.toUpperCase(),
-        `Nomor Kwitansi: ${kw.nomor_kwitansi || "-"}`,
+        `Nomor Kwitansi: ${kwitansi.nomor_kwitansi || "-"}`,
       ),
     );
     content.push({
-      text: kw.nama_kegiatan || kw.uraian_pembayaran || "",
+      text: kwitansi.nama_kegiatan || kwitansi.uraian_pembayaran || "",
       alignment: "center",
       margin: [0, 4, 0, 14],
     });
@@ -2151,9 +2177,9 @@ function buildDataLampiranSections(data) {
       let rows = [];
       if (dokumen.key === "tanda_terima") {
         rows = [
-          ["Telah menerima uang sebesar", formatRupiah(kw.jumlah)],
-          ["Terbilang", kw.terbilang || "-"],
-          ["Untuk pembayaran", kw.uraian_pembayaran || "-"],
+          ["Telah menerima uang sebesar", formatRupiah(kwitansi.jumlah)],
+          ["Terbilang", kwitansi.terbilang || "-"],
+          ["Untuk pembayaran", kwitansi.uraian_pembayaran || "-"],
           ...dokumen.fields.map(([key, label]) => [
             label,
             formData[key] || "................................",
@@ -2270,21 +2296,21 @@ function buildDataLampiranSections(data) {
 // ---------------------------------------------------------------------------
 
 export function buildRabSection(data) {
-  const r = data.rab;
-  const ident = data.identitas;
+  const rab = data.rab;
+  const identitas = data.identitas;
   const content = [];
 
-  content.push(...kopStack(r.kop || data.document?.kop, "landscape"));
+  content.push(...kopStack(rab.kop || data.document?.kop, "landscape"));
   content.push(...sectionTitle("RINCIAN ANGGARAN BIAYA (RAB)"));
   content.push({ text: "", margin: [0, 10, 0, 0] });
 
-  content.push(labelRow("Kegiatan", r.kegiatan || "-", 80));
-  content.push(labelRow("Tahap", r.thp_label || "-", 80));
-  content.push(labelRow("Tahun Anggaran", r.tahun || "-", 80));
+  content.push(labelRow("Kegiatan", rab.kegiatan || "-", 80));
+  content.push(labelRow("Tahap", rab.thp_label || "-", 80));
+  content.push(labelRow("Tahun Anggaran", rab.tahun || "-", 80));
   content.push(
     labelRow(
       "Satuan Pendidikan",
-      r.satuan_pendidikan || ident.nama_sekolah || "-",
+      rab.satuan_pendidikan || identitas.nama_sekolah || "-",
       80,
     ),
   );
@@ -2350,7 +2376,7 @@ export function buildRabSection(data) {
       },
     ],
   ];
-  for (const row of r.rows || []) {
+  for (const row of rab.rows || []) {
     body.push([
       {
         text: String(row.no ?? ""),
@@ -2365,7 +2391,7 @@ export function buildRabSection(data) {
         margin: [4, 4, 0, 4],
       },
       {
-        text: fmtVolume(row.volume),
+        text: formatVolume(row.volume),
         fontSize: 12,
         alignment: "center",
         margin: [0, 4, 0, 4],
@@ -2403,7 +2429,8 @@ export function buildRabSection(data) {
     ]);
   }
 
-  const grandFmt = r.grand_total_fmt || formatRupiah(r.grand_total);
+  const formattedGrandTotal =
+    rab.grand_total_fmt || formatRupiah(rab.grand_total);
   body.push([
     {
       text: "Jumlah Total",
@@ -2418,7 +2445,7 @@ export function buildRabSection(data) {
     {},
     {},
     {
-      text: grandFmt,
+      text: formattedGrandTotal,
       fontSize: 12,
       bold: true,
       alignment: "right",
@@ -2469,9 +2496,9 @@ export function buildRabSection(data) {
     margin: [0, 0, 0, 2],
   };
 
-  const namaKepsek = formatNamaPenandatangan(ident.nama_kepala_sekolah);
-  const nipKepsek = ident.nip_kepala_sekolah
-    ? `NIP. ${ident.nip_kepala_sekolah}`
+  const namaKepsek = formatNamaPenandatangan(identitas.nama_kepala_sekolah);
+  const nipKepsek = identitas.nip_kepala_sekolah
+    ? `NIP. ${identitas.nip_kepala_sekolah}`
     : "NIP. .............................";
 
   content.push({
@@ -2479,7 +2506,7 @@ export function buildRabSection(data) {
       widths: ["*", 240],
       body: [
         // Baris 1: tanggal surat
-        [sigCell(""), sigCell(r.tanggal_surat || "")],
+        [sigCell(""), sigCell(rab.tanggal_surat || "")],
         // Baris 2: judul
         [sigCell(""), sigCell("Mengetahui,")],
         // Baris 3: jabatan
@@ -2514,67 +2541,73 @@ export function buildRabSection(data) {
 export function buildSpjDocumentDefinition(data) {
   validateSpjPayload(data);
 
-  const doc = data.document || {};
-  const order =
-    Array.isArray(doc.order) && doc.order.length
-      ? doc.order
+  const documentData = data.document || {};
+  const sectionOrder =
+    Array.isArray(documentData.order) && documentData.order.length
+      ? documentData.order
       : ["kwitansi", "bast", "rab"];
-  const sec = data.sections || {};
+  const sections = data.sections || {};
   const jenisBelanjaConfig = getJenisBelanjaConfig(data.jenis_belanja);
-  const included = (name) => {
+  const isSectionIncluded = (name) => {
     if (name === "bast" && !jenisBelanjaConfig.bast) return false;
     if (name === "rab" && !jenisBelanjaConfig.rab) return false;
-    const s = sec[name];
-    if (!s) return false;
-    if (typeof s.included === "boolean") return s.included;
-    return s.status === "included";
+    const section = sections[name];
+    if (!section) return false;
+    if (typeof section.included === "boolean") return section.included;
+    return section.status === "included";
   };
 
   const content = [];
-  const firstSection = order.find(included);
-  let first = true;
-  for (const name of order) {
-    if (!included(name)) continue;
-    let part;
+  const firstSection = sectionOrder.find(isSectionIncluded);
+  let isFirstRenderedSection = true;
+  // Susun bagian sesuai urutan payload, lalu sisipkan jeda halaman dan lampiran.
+  for (const name of sectionOrder) {
+    if (!isSectionIncluded(name)) continue;
+    let sectionContent;
     if (name === "kwitansi") {
-      part = buildKwitansiSection(data);
+      sectionContent = buildKwitansiSection(data);
       // Penjaga anti-kop: tidak boleh ada node kop/logo/garis kop yang
       // lolos ke subtree kwitansi, apa pun isi payload.
-      stripKopNodes(part);
-    } else if (name === "bast") part = buildBastSection(data);
-    else if (name === "rab") part = buildRabSection(data);
-    else fail(`bagian tak dikenal pada document.order: ${name}`);
+      stripKopNodes(sectionContent);
+    } else if (name === "bast") {
+      sectionContent = buildBastSection(data);
+    } else if (name === "rab") {
+      sectionContent = buildRabSection(data);
+    } else {
+      fail(`bagian tak dikenal pada document.order: ${name}`);
+    }
 
-    if (!first) {
-      part.unshift({
+    if (!isFirstRenderedSection) {
+      sectionContent.unshift({
         text: "",
         pageBreak: "before",
         pageOrientation: name === "rab" ? "landscape" : "portrait",
       });
     }
-    content.push(...part);
-    first = false;
+    content.push(...sectionContent);
+    isFirstRenderedSection = false;
   }
   content.push(...buildLampiranFotoSections(data));
   content.push(...buildDataLampiranSections(data));
-  if (first) fail("tidak ada bagian yang dapat dirender (semua ditandai skip)");
+  if (isFirstRenderedSection)
+    fail("tidak ada bagian yang dapat dirender (semua ditandai skip)");
 
-  const paper = doc.paper || {};
+  const paperSettings = documentData.paper || {};
   return {
     pageSize: {
-      width: mmToPt(num(paper.width_mm) || 215),
-      height: mmToPt(num(paper.height_mm) || 330),
+      width: mmToPt(toNumberOrZero(paperSettings.width_mm) || 215),
+      height: mmToPt(toNumberOrZero(paperSettings.height_mm) || 330),
     },
     pageOrientation: firstSection === "rab" ? "landscape" : "portrait",
     pageMargins: [
-      mmToPt(num(paper.margin_mm) || 15),
-      mmToPt(num(paper.margin_mm) || 15),
-      mmToPt(num(paper.margin_mm) || 15),
-      mmToPt(num(paper.margin_bottom_mm) || 20),
+      mmToPt(toNumberOrZero(paperSettings.margin_mm) || 15),
+      mmToPt(toNumberOrZero(paperSettings.margin_mm) || 15),
+      mmToPt(toNumberOrZero(paperSettings.margin_mm) || 15),
+      mmToPt(toNumberOrZero(paperSettings.margin_bottom_mm) || 20),
     ],
     defaultStyle: { font: "Arial", fontSize: 12, lineHeight: 1.2 },
     info: {
-      title: doc.filename || "SPJ.pdf",
+      title: documentData.filename || "SPJ.pdf",
       creator: "Aplikasi SPJ (frontend pdfmake)",
     },
     content,
@@ -2589,29 +2622,31 @@ export function buildSpjDocumentDefinition(data) {
 // tidak cukup — fungsi ini memindai SELURUH document definition dan menolak
 // properti `font` apa pun selain "Arial", serta style kustom yang mengganti
 // fontFamily. Roboto/serif tidak punya jalan masuk: VFS hanya berisi Arial.
-export function assertArialOnly(dd) {
+export function assertArialOnly(documentDefinition) {
   const bad = [];
-  const walk = (node, path) => {
+  const inspectNode = (node, path) => {
     if (Array.isArray(node)) {
-      node.forEach((n, i) => walk(n, `${path}[${i}]`));
+      node.forEach((child, index) =>
+        inspectNode(child, `${path}[${index}]`),
+      );
       return;
     }
     if (!node || typeof node !== "object") return;
     if (typeof node.font === "string" && node.font !== "Arial") {
       bad.push(`${path}.font=${node.font}`);
     }
-    for (const [k, v] of Object.entries(node)) {
-      if (k === "font") continue;
-      walk(v, path ? `${path}.${k}` : k);
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "font") continue;
+      inspectNode(value, path ? `${path}.${key}` : key);
     }
   };
-  walk(dd.content, "content");
-  if (dd.defaultStyle?.font !== "Arial") {
-    bad.push(`defaultStyle.font=${dd.defaultStyle?.font}`);
+  inspectNode(documentDefinition.content, "content");
+  if (documentDefinition.defaultStyle?.font !== "Arial") {
+    bad.push(`defaultStyle.font=${documentDefinition.defaultStyle?.font}`);
   }
-  for (const [name, st] of Object.entries(dd.styles || {})) {
-    if (st?.font && st.font !== "Arial")
-      bad.push(`styles.${name}.font=${st.font}`);
+  for (const [name, style] of Object.entries(documentDefinition.styles || {})) {
+    if (style?.font && style.font !== "Arial")
+      bad.push(`styles.${name}.font=${style.font}`);
   }
   if (bad.length) {
     throw new Error(
@@ -2623,6 +2658,7 @@ export function assertArialOnly(dd) {
 export async function buildSpjPdf(data) {
   await ensureArialFonts();
 
+  // Siapkan logo dan foto sebelum membangun definisi yang akan dirender pdfmake.
   // Logo kop mempertahankan warna; foto lampiran tetap hitam-putih.
   const kops = new Set([data.document?.kop, data.bast?.kop, data.rab?.kop]);
   for (const kop of kops) {
@@ -2639,34 +2675,38 @@ export async function buildSpjPdf(data) {
       });
   }
 
-  for (const daftar of Object.values(data.lampiran_foto || {})) {
-    if (!Array.isArray(daftar)) continue;
-    for (let i = 0; i < daftar.length; i++) {
-      const foto = daftar[i];
+  for (const photoList of Object.values(data.lampiran_foto || {})) {
+    if (!Array.isArray(photoList)) continue;
+    for (let index = 0; index < photoList.length; index++) {
+      const photo = photoList[index];
       try {
-        if (typeof foto === "string") {
-          daftar[i] = await processPdfImage(foto, { monochrome: false });
-        } else if (foto?.available !== false && foto?.path) {
-          foto.path = await processPdfImage(foto.path, { monochrome: false });
+        if (typeof photo === "string") {
+          photoList[index] = await processPdfImage(photo, {
+            monochrome: false,
+          });
+        } else if (photo?.available !== false && photo?.path) {
+          photo.path = await processPdfImage(photo.path, {
+            monochrome: false,
+          });
         }
       } catch (err) {
         console.warn("[spjPdf] Gagal memproses gambar lampiran:", err);
-        if (typeof foto === "object" && foto !== null) {
-          foto.available = false;
+        if (typeof photo === "object" && photo !== null) {
+          photo.available = false;
         } else {
-          daftar[i] = { available: false, path: "" };
+          photoList[index] = { available: false, path: "" };
         }
       }
     }
   }
 
-  const dd = buildSpjDocumentDefinition(data);
+  const documentDefinition = buildSpjDocumentDefinition(data);
   // Penjaga font: seluruh definisi dokumen WAJIB Arial — tolak render
   // sebelum pdfmake bekerja jika ada override font lain yang lolos.
-  assertArialOnly(dd);
+  assertArialOnly(documentDefinition);
 
   try {
-    const blob = await pdfMake.createPdf(dd).getBlob();
+    const blob = await pdfMake.createPdf(documentDefinition).getBlob();
     if (!blob || blob.size === 0) {
       throw new Error("Renderer menghasilkan PDF kosong");
     }

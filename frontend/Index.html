@@ -13,9 +13,7 @@ style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob: http://127.0.0.1:* file:;
 connect-src 'self' http://127.0.0.1:*;
 ">
-  <!-- Catatan: backend HANYA berjalan sebagai child_process dengan port dinamis.
-       Tidak ada servis localhost statis (8000) lagi — karena itu CSP memakai
-       wildcard port http://127.0.0.1:* dan BUKAN http://127.0.0.1:8000. -->
+  <!-- Backend Electron menggunakan port localhost dinamis, bukan port tetap. -->
   <title>Aplikasi SPJ BOSP</title>
   <!-- Tema modern ala native app (dimuat lebih dulu agar tidak FOUC) -->
   <link rel="stylesheet" href="./src/styles.css">

@@ -59,15 +59,15 @@ const PATHS = {
  * @param {number} size  diameter piksel
  */
 export function iconSvg(name, size = 16) {
-    const p = PATHS[name] || PATHS.info;
-    return `<svg class="icon-svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+    const iconMarkup = PATHS[name] || PATHS.info;
+    return `<svg class="icon-svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconMarkup}</svg>`;
 }
 
 /** Elemen <svg> sungguhan (untuk DOM API, mis. toast/dialog). */
 export function iconEl(name, size = 16) {
-    const wrap = document.createElement("span");
-    wrap.innerHTML = iconSvg(name, size);
-    return wrap.firstElementChild;
+    const container = document.createElement("span");
+    container.innerHTML = iconSvg(name, size);
+    return container.firstElementChild;
 }
 
 export default { iconSvg, iconEl };

@@ -158,5 +158,6 @@ export const JENIS_BELANJA_SPJ = {
 };
 
 export function getJenisBelanjaConfig(jenis) {
+  // Gunakan konfigurasi umum agar jenis lama/tidak dikenal tetap dapat diproses.
   return JENIS_BELANJA_SPJ[jenis] || JENIS_BELANJA_SPJ.umum;
 }

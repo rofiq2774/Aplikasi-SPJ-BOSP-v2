@@ -848,17 +848,19 @@ async function downloadKwitansi(id, noBukti = "") {
   appLog("info", `downloadKwitansi: mulai render SPJ frontend id=${id}`);
 
   try {
-    const res = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
+    const response = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || `Gagal memuat data SPJ (HTTP ${res.status})`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(
+        err.detail || `Gagal memuat data SPJ (HTTP ${response.status})`,
+      );
     }
 
     // Validasi tipe konten: endpoint ini WAJIB JSON. Kalau backend (atau
     // proxy) mengirim application/pdf, hentikan di sini — alur baru tidak
     // boleh menerima PDF dari backend.
-    const contentType = res.headers.get("content-type") || "";
+    const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("json")) {
       throw new Error(
         `Respons backend bukan JSON (Content-Type: ${contentType || "kosong"}); ` +
@@ -866,7 +868,7 @@ async function downloadKwitansi(id, noBukti = "") {
       );
     }
 
-    const payload = await res.json();
+    const payload = await response.json();
     if (payload.status !== "success" || !payload.data) {
       throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
     }
@@ -876,26 +878,26 @@ async function downloadKwitansi(id, noBukti = "") {
     if (!(blob instanceof Blob) || blob.size === 0) {
       throw new Error("Renderer frontend menghasilkan PDF kosong");
     }
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    const requestedName =
+    const objectUrl = window.URL.createObjectURL(blob);
+    const downloadLink = document.createElement("a");
+    downloadLink.href = objectUrl;
+    const requestedFileName =
       noBukti || payload.data.document?.filename || String(id);
-    const safeFileName = String(requestedName)
+    const safeFileName = String(requestedFileName)
       .replace(/\.pdf$/i, "")
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
       .replace(/^[. ]+/, "")
       .slice(0, 120) || `kwitansi-${id}`;
-    a.download = `SPJ-${safeFileName}.pdf`;
+    downloadLink.download = `SPJ-${safeFileName}.pdf`;
 
-    document.body.appendChild(a);
-    a.click();
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
 
-    document.body.removeChild(a);
-    window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    document.body.removeChild(downloadLink);
+    window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
     appLog(
       "info",
-      `downloadKwitansi: OK id=${id} file=${a.download} ukuran=${blob.size} byte (render frontend)`,
+      `downloadKwitansi: OK id=${id} file=${downloadLink.download} ukuran=${blob.size} byte (render frontend)`,
     );
     showToast("Berhasil!", "SPJ berhasil diunduh");
   } catch (err) {
@@ -916,13 +918,15 @@ function loadPdfJs() {
     _pdfJsPromise = Promise.all([
       import("pdfjs-dist"),
       import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
-    ]).then(([pdfjsLib, worker]) => {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
-      return pdfjsLib;
-    }).catch((err) => {
-      _pdfJsPromise = null;
-      throw err;
-    });
+    ])
+      .then(([pdfjsLib, worker]) => {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
+        return pdfjsLib;
+      })
+      .catch((err) => {
+        _pdfJsPromise = null;
+        throw err;
+      });
   }
   return _pdfJsPromise;
 }
@@ -996,22 +1000,23 @@ async function previewKwitansi(id) {
       </div>
     </div>
   `);
+  // Abaikan hasil lambat bila popup ditutup atau pengguna membuka preview lain.
   const requestId = ++_spjPreviewGeneration;
 
   try {
-    const res = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
-    if (!res.ok) {
-      const error = await res.json().catch(() => ({}));
+    const response = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
       throw new Error(
-        error.detail || `Gagal memuat data SPJ (HTTP ${res.status})`,
+        error.detail || `Gagal memuat data SPJ (HTTP ${response.status})`,
       );
     }
 
-    const contentType = res.headers.get("content-type") || "";
+    const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("json")) {
       throw new Error(`Respons backend bukan JSON (${contentType || "kosong"})`);
     }
-    const payload = await res.json();
+    const payload = await response.json();
     if (payload.status !== "success" || !payload.data) {
       throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
     }
@@ -1021,8 +1026,8 @@ async function previewKwitansi(id) {
     if (!(blob instanceof Blob) || blob.size === 0) {
       throw new Error("Renderer frontend menghasilkan PDF kosong");
     }
-    const preview = document.getElementById("spj-preview-frame");
-    if (!preview || requestId !== _spjPreviewGeneration) return;
+    const previewContainer = document.getElementById("spj-preview-frame");
+    if (!previewContainer || requestId !== _spjPreviewGeneration) return;
 
     const pdfjsLib = await loadPdfJs();
     const loadingTask = pdfjsLib.getDocument({
@@ -1038,7 +1043,7 @@ async function previewKwitansi(id) {
       document: pdfDocument,
       renderTask: null,
     };
-    preview.innerHTML = `
+    previewContainer.innerHTML = `
       <div style="position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:center; padding:8px; background:#f8f9fa; border-bottom:1px solid #ddd;">
         <span>${pdfDocument.numPages} halaman — gulir untuk melihat seluruh dokumen</span>
       </div>
@@ -1056,9 +1061,9 @@ async function previewKwitansi(id) {
     if (err?.name === "RenderingCancelledException") return;
     if (requestId !== _spjPreviewGeneration) return;
     const message = err?.message || String(err);
-    const preview = document.getElementById("spj-preview-frame");
-    if (preview) {
-      preview.innerHTML = `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(message)}</div>`;
+    const previewContainer = document.getElementById("spj-preview-frame");
+    if (previewContainer) {
+      previewContainer.innerHTML = `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(message)}</div>`;
     }
     appLog("error", `previewKwitansi: GAGAL id=${id}: ${message}`);
     showToast("Error!", `Gagal menampilkan preview SPJ: ${message}`);

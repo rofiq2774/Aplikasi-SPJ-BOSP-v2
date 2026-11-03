@@ -60,5 +60,6 @@ Base = declarative_base()
 # DEPENDENCY
 # ===============================
 async def get_db():
+    """Buka sesi database untuk satu request lalu tutup setelah request selesai."""
     async with AsyncSessionLocal() as session:
         yield session

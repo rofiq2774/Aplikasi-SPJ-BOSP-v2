@@ -23,24 +23,32 @@ except ImportError:
     zoneinfo = None
 
 if zoneinfo is not None:
-    bases = []
+    search_directories = []
     if getattr(sys, "frozen", False):
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
-            bases.append(meipass)
-        bases.append(os.path.dirname(os.path.abspath(sys.executable)))
+            search_directories.append(meipass)
+        search_directories.append(os.path.dirname(os.path.abspath(sys.executable)))
         # Build COLLECT modern menaruh data di _internal/
-        bases.append(os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "_internal"))
-    for base in bases:
-        for rel in (
+        search_directories.append(
+            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "_internal")
+        )
+    for search_directory in search_directories:
+        for relative_zoneinfo_path in (
             os.path.join("tzdata", "zoneinfo"),
             "zoneinfo",
         ):
-            cand = os.path.join(base, rel)
-            if os.path.isfile(os.path.join(cand, "Asia", "Jakarta")):
-                paths = list(zoneinfo.TZPATH)
-                if cand not in paths:
-                    zoneinfo.reset_tzpath([cand] + paths)
+            zoneinfo_directory = os.path.join(
+                search_directory, relative_zoneinfo_path
+            )
+            if os.path.isfile(
+                os.path.join(zoneinfo_directory, "Asia", "Jakarta")
+            ):
+                zoneinfo_search_paths = list(zoneinfo.TZPATH)
+                if zoneinfo_directory not in zoneinfo_search_paths:
+                    zoneinfo.reset_tzpath(
+                        [zoneinfo_directory] + zoneinfo_search_paths
+                    )
                 break
         else:
             continue

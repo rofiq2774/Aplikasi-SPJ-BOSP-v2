@@ -78,7 +78,7 @@ select,
    - Flex dipasang di #app, BUKAN di body. Saat script belum jalan, body
      tetap block biasa — tidak ada elemen flex ber tinggi nol yang membuat
      konten seolah hilang/tertindih.
-   - Sidebar memakai position:sticky (bukan fixed) sehingga ia MEMBELI ruang
+   - Sidebar memakai position: sticky (bukan fixed) sehingga tetap mengambil ruang
      sendiri di dalam baris flex; konten utama tidak pernah berada di bawahnya.
    ========================================================================== */
 html,
@@ -123,9 +123,7 @@ h4 .icon-svg {
   flex-direction: column;
   background: #0f172a;
   color: #cbd5e1;
-  /* sticky di dalam baris flex #app: sidebar menempati ruangnya sendiri
-       (tidak pernah menimpa konten) sekaligus ikut ter-scroll-keep saat
-       halaman panjang. */
+  /* Sidebar tetap menempati ruangnya sendiri dan tidak menimpa konten. */
   position: sticky;
   top: 0;
   align-self: flex-start;

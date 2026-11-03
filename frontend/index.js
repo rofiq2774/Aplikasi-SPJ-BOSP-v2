@@ -14,6 +14,7 @@ const log = require("electron-log");
 //   - Windows packaged : %LOCALAPPDATA%\AplikasiSPJ\app.log
 //   - development      : <repo>/backend/app.log
 function resolveAppLogPath() {
+  // Samakan lokasi log Electron dengan backend, lalu caller menyiapkan foldernya.
   if (
     process.platform === "win32" &&
     app.isPackaged &&
@@ -44,6 +45,7 @@ try {
 } catch (e) {}
 
 function writeAppLog(level, source, message) {
+  // Tulis ke file bersama, logger Electron, dan konsol untuk debugging.
   const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] [${source}] ${message}`;
   if (APP_LOG_PATH) {
     try {
@@ -109,6 +111,7 @@ let backendPort = 0;
 const net = require("net");
 
 function getRandomPort() {
+  // Minta port bebas dari OS lalu tutup server sementara sebelum backend dimulai.
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.once("error", reject);
@@ -165,6 +168,7 @@ process.on("exit", stopBackend);
 
 /* ===================== WAIT BACKEND ===================== */
 function waitForBackend(url, timeout = 20000) {
+  // Ulangi health check sampai backend menjawab atau batas waktu terlampaui.
   return new Promise((resolve, reject) => {
     const start = Date.now();
 
@@ -203,6 +207,7 @@ function waitForBackend(url, timeout = 20000) {
 // Tidak ada lagi "servis localhost" statis (port 8000) — jika port dinamis
 // gagal diperoleh, proses dihentikan dengan pesan error yang jelas di app.log.
 async function spawnBackendOnPort(port) {
+  // Pilih executable sesuai mode, teruskan konfigurasi, lalu sambungkan log proses.
   const isDev = !app.isPackaged;
 
   const pyPath = isDev
@@ -266,6 +271,7 @@ async function spawnBackendOnPort(port) {
 }
 
 async function startPythonBackend() {
+  // Ulangi pemilihan port dan startup jika backend gagal mencapai health endpoint.
   const MAX_PORT_ATTEMPTS = 3;
 
   for (let attempt = 1; attempt <= MAX_PORT_ATTEMPTS; attempt++) {
@@ -313,6 +319,7 @@ app.commandLine.appendSwitch("lang", "id-ID");
 /* ===================================================== */
 
 async function createWindow() {
+  // Siapkan jendela, pastikan backend sehat, muat renderer, lalu teruskan lognya.
   const version = app.getVersion();
 
   const win = new BrowserWindow({
@@ -522,6 +529,7 @@ const AI_IMAGE_PROVIDERS = new Set([
 ]);
 
 function assertTrustedRenderer(event) {
+  // Batasi IPC pengaturan ke jendela utama dari origin aplikasi yang diizinkan.
   const rendererUrl = event.senderFrame?.url || "";
   if (
     !mainWindow ||
@@ -537,6 +545,7 @@ function assertTrustedRenderer(event) {
 }
 
 function normalizeAiImageSettings(settings) {
+  // Validasi provider dan batasi panjang input sebelum pengaturan disimpan.
   if (!settings || typeof settings !== "object") {
     throw new Error("Format pengaturan AI gambar tidak valid.");
   }
@@ -561,6 +570,7 @@ function normalizeAiImageSettings(settings) {
 }
 
 function readAiImageSettings() {
+  // Baca berkas terenkripsi, uraikan JSON, lalu validasi bentuk pengaturannya.
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error("Penyimpanan aman sistem operasi belum tersedia.");
   }

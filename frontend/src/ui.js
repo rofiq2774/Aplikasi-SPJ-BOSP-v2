@@ -26,25 +26,28 @@ const UI = (() => {
         edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.481.97l-.77 3.454a1 1 0 0 0 1.23 1.23l3.454-.77a2 2 0 0 0 .97-.48z"/><path d="m15 5 4 4"/>',
         close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     };
+    // Pilih ikon status dan bentuk SVG dengan ukuran yang diminta.
     function iconSvg(name, size = 16) {
         return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ICON_PATHS.info}</svg>`;
     }
 
-    function esc(str) {
+    // Escape karakter HTML sebelum nilai dipakai dalam konteks markup.
+    function esc(value) {
         // Hanya untuk keamanan ganda bila suatu saat perlu innerHTML.
-        return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+        return String(value ?? "").replace(/[&<>"']/g, (character) => ({
             "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-        }[c]));
+        }[character]));
     }
 
+    // Gunakan satu container bersama untuk semua toast.
     function ensureContainer() {
-        let c = document.getElementById("toast-container");
-        if (!c) {
-            c = document.createElement("div");
-            c.id = "toast-container";
-            document.body.appendChild(c);
+        let container = document.getElementById("toast-container");
+        if (!container) {
+            container = document.createElement("div");
+            container.id = "toast-container";
+            document.body.appendChild(container);
         }
-        return c;
+        return container;
     }
 
     // ----------------------------- TOAST -----------------------------------
@@ -52,6 +55,7 @@ const UI = (() => {
     // signature lama showToast(title, message, actionText, actionCallback)
     // tetap didukung (lihat pembungkus di bawah).
     function notify(opts = {}) {
+        // Susun toast dari node DOM agar isi pesan selalu ditampilkan sebagai teks.
         const {
             title = "Notifikasi",
             message = "",
@@ -73,16 +77,16 @@ const UI = (() => {
         const body = document.createElement("div");
         body.className = "toast-body";
 
-        const t = document.createElement("span");
-        t.className = "toast-title";
-        t.textContent = title;
-        body.appendChild(t);
+        const titleElement = document.createElement("span");
+        titleElement.className = "toast-title";
+        titleElement.textContent = title;
+        body.appendChild(titleElement);
 
         if (message !== "" && message != null) {
-            const m = document.createElement("span");
-            m.className = "toast-msg";
-            m.textContent = message;
-            body.appendChild(m);
+            const messageElement = document.createElement("span");
+            messageElement.className = "toast-msg";
+            messageElement.textContent = message;
+            body.appendChild(messageElement);
         }
 
         if (actionText && typeof onAction === "function") {
@@ -104,11 +108,11 @@ const UI = (() => {
         close.innerHTML = iconSvg("close", 14);
         close.addEventListener("click", () => dismiss(toast));
 
-        const bar = document.createElement("div");
-        bar.className = "toast-progress";
-        if (duration > 0) bar.style.animationDuration = `${duration}ms`;
+        const progressBar = document.createElement("div");
+        progressBar.className = "toast-progress";
+        if (duration > 0) progressBar.style.animationDuration = `${duration}ms`;
 
-        toast.append(icon, body, close, bar);
+        toast.append(icon, body, close, progressBar);
         container.appendChild(toast);
 
         if (duration > 0) {
@@ -119,17 +123,19 @@ const UI = (() => {
         return toast;
     }
 
+    // Jalankan animasi keluar, lalu hapus node dengan timeout sebagai fallback.
     function dismiss(toast) {
         toast.classList.add("toast-out");
-        const done = () => toast.remove();
-        toast.addEventListener("animationend", done, { once: true });
-        setTimeout(done, 400); // jaring pengaman bila animasi tidak terpicu
+        const removeToast = () => toast.remove();
+        toast.addEventListener("animationend", removeToast, { once: true });
+        setTimeout(removeToast, 400); // jaring pengaman bila animasi tidak terpicu
     }
 
     // ----------------------------- DIALOG ----------------------------------
     // makeDialog({ kind, tone, title, message, inputType, defaultValue,
     //             okText, cancelText, danger }) => Promise<string|boolean|null>
     function makeDialog(opts = {}) {
+        // Bangun dialog, lalu selesaikan Promise dari tombol atau tombol keyboard.
         const {
             kind = "alert",          // alert | confirm | prompt
             tone = "info",           // info | success | warning | error
@@ -145,7 +151,7 @@ const UI = (() => {
 
         return new Promise((resolve) => {
             // Tutup dialog aktif sebelumnya agar tidak menumpuk (anti-bug).
-            document.querySelectorAll(".ui-dialog-overlay").forEach((o) => o.remove());
+            document.querySelectorAll(".ui-dialog-overlay").forEach((previousOverlay) => previousOverlay.remove());
 
             const overlay = document.createElement("div");
             overlay.className = `ui-dialog-overlay ui-dialog-kind-${kind}`;
@@ -166,49 +172,49 @@ const UI = (() => {
                 : kind === "prompt" ? "edit"
                 : (tone in ICON_PATHS ? tone : "info"), 20);
             head.appendChild(icon);
-            const h = document.createElement("h2");
-            h.className = "ui-dialog-title";
-            h.textContent =
+            const heading = document.createElement("h2");
+            heading.className = "ui-dialog-title";
+            heading.textContent =
                 title || (kind === "confirm" ? "Konfirmasi" : kind === "prompt" ? "Masukkan" : "Pemberitahuan");
-            head.appendChild(h);
+            head.appendChild(heading);
 
             // Body + pesan (textContent => aman dari injeksi HTML)
             const bodyEl = document.createElement("div");
             bodyEl.className = "ui-dialog-body";
             if (message !== "" && message != null) {
-                const p = document.createElement("p");
-                p.className = "ui-dialog-message";
-                p.textContent = message;
-                bodyEl.appendChild(p);
+                const messageElement = document.createElement("p");
+                messageElement.className = "ui-dialog-message";
+                messageElement.textContent = message;
+                bodyEl.appendChild(messageElement);
             }
 
-            let inputEl = null;
+            let promptInput = null;
             if (kind === "prompt") {
-                const wrap = document.createElement("div");
-                wrap.className = "ui-dialog-input";
-                inputEl = inputType === "textarea"
+                const inputWrapper = document.createElement("div");
+                inputWrapper.className = "ui-dialog-input";
+                promptInput = inputType === "textarea"
                     ? document.createElement("textarea")
                     : document.createElement("input");
-                inputEl.type = "text";
-                inputEl.value = defaultValue ?? "";
-                if (placeholder) inputEl.placeholder = placeholder;
-                wrap.appendChild(inputEl);
-                bodyEl.appendChild(wrap);
+                promptInput.type = "text";
+                promptInput.value = defaultValue ?? "";
+                if (placeholder) promptInput.placeholder = placeholder;
+                inputWrapper.appendChild(promptInput);
+                bodyEl.appendChild(inputWrapper);
             }
 
             // Footer tombol
-            const foot = document.createElement("div");
-            foot.className = "ui-dialog-foot";
+            const footer = document.createElement("div");
+            footer.className = "ui-dialog-foot";
 
             let closed = false; // pastikan resolve hanya sekali (anti race)
             function finish(value) {
                 if (closed) return;
                 closed = true;
-                document.removeEventListener("keydown", onKey, true);
+                document.removeEventListener("keydown", handleKeydown, true);
                 overlay.classList.add("closing");
-                const rm = () => overlay.remove();
-                overlay.addEventListener("animationend", rm, { once: true });
-                setTimeout(rm, 350);
+                const removeOverlay = () => overlay.remove();
+                overlay.addEventListener("animationend", removeOverlay, { once: true });
+                setTimeout(removeOverlay, 350);
                 resolve(value);
             }
 
@@ -218,38 +224,38 @@ const UI = (() => {
                 cancel.className = "btn btn-secondary";
                 cancel.textContent = cancelText;
                 cancel.addEventListener("click", () => finish(kind === "confirm" ? false : null));
-                foot.appendChild(cancel);
+                footer.appendChild(cancel);
             }
 
-            const ok = document.createElement("button");
-            ok.type = "button";
+            const confirmButton = document.createElement("button");
+            confirmButton.type = "button";
             const useDanger = danger || kind === "confirm";
-            ok.className = `btn ${useDanger ? "btn-danger" : "btn-primary"}`;
-            ok.textContent = okText;
-            ok.addEventListener("click", () => {
+            confirmButton.className = `btn ${useDanger ? "btn-danger" : "btn-primary"}`;
+            confirmButton.textContent = okText;
+            confirmButton.addEventListener("click", () => {
                 if (kind === "confirm") finish(true);
-                else if (kind === "prompt") finish(inputEl ? inputEl.value : "");
+                else if (kind === "prompt") finish(promptInput ? promptInput.value : "");
                 else finish(undefined);
             });
-            foot.appendChild(ok);
+            footer.appendChild(confirmButton);
 
-            box.append(head, bodyEl, foot);
+            box.append(head, bodyEl, footer);
             overlay.appendChild(box);
-            overlay.addEventListener("click", (e) => {
-                if (e.target === overlay) finish(kind === "confirm" ? false : kind === "prompt" ? null : undefined);
+            overlay.addEventListener("click", (event) => {
+                if (event.target === overlay) finish(kind === "confirm" ? false : kind === "prompt" ? null : undefined);
             });
 
-            function onKey(e) {
-                if (e.key === "Escape") { e.preventDefault(); finish(kind === "confirm" ? false : kind === "prompt" ? null : undefined); }
-                if (e.key === "Enter" && (!inputEl || e.target !== inputEl || inputEl.tagName !== "TEXTAREA")) {
-                    e.preventDefault();
-                    ok.click();
+            function handleKeydown(event) {
+                if (event.key === "Escape") { event.preventDefault(); finish(kind === "confirm" ? false : kind === "prompt" ? null : undefined); }
+                if (event.key === "Enter" && (!promptInput || event.target !== promptInput || promptInput.tagName !== "TEXTAREA")) {
+                    event.preventDefault();
+                    confirmButton.click();
                 }
             }
-            document.addEventListener("keydown", onKey, true);
+            document.addEventListener("keydown", handleKeydown, true);
 
             document.body.appendChild(overlay);
-            (inputEl || ok).focus();
+            (promptInput || confirmButton).focus();
         });
     }
 

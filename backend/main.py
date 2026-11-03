@@ -180,9 +180,12 @@ async def lifespan(app):
     # sebelum penyelarasan sempat berjalan — request pertama kemudian
     # menjawab 500 "no such column".
     try:
-        n = _sync_schema_columns()
-        if n:
-            logger.info(f"Penyelarasan skema (pra-create): {n} kolom baru ditambahkan.")
+        added_columns = _sync_schema_columns()
+        if added_columns:
+            logger.info(
+                "Penyelarasan skema (pra-create): "
+                f"{added_columns} kolom baru ditambahkan."
+            )
     except Exception as e:
         logger.exception("Penyelarasan kolom skema (pra-create) gagal: %s", e)
     try:
@@ -191,9 +194,11 @@ async def lifespan(app):
     except Exception as e:
         logger.exception("create_all gagal (diteruskan ke sinkronisasi): %s", e)
     try:
-        n = _sync_schema_columns()
-        if n:
-            logger.info(f"Penyelarasan skema: {n} kolom baru ditambahkan.")
+        added_columns = _sync_schema_columns()
+        if added_columns:
+            logger.info(
+                f"Penyelarasan skema: {added_columns} kolom baru ditambahkan."
+            )
     except Exception as e:
         logger.exception("Penyelarasan kolom skema gagal: %s", e)
     if _schema_sync_ok:
@@ -655,6 +660,7 @@ def _ensure_schema_columns_for(tables) -> bool:
 
 
 def run_migrations(force: bool = False):
+    """Jalankan upgrade Alembic sekali saat startup, atau ulangi saat dipaksa."""
     global _migrated
 
     # force=True dipakai oleh penambal otomatis "no such column" agar
@@ -752,6 +758,7 @@ def run_migrations(force: bool = False):
 
 
 def resolve_foto_path(foto_rel_path: str) -> Path | None:
+    """Cari foto berurutan dari path absolut lalu lokasi relatif terhadap BASE_DIR."""
     if not foto_rel_path:
         return None
 
@@ -1592,7 +1599,9 @@ COLUMNS = {
 # --- HELPER FUNCTIONS ---
 
 def parse_amount(val: str) -> float:
-    if not val: return 0.0
+    """Normalisasi format rupiah Indonesia menjadi angka untuk kolom transaksi."""
+    if not val:
+        return 0.0
     # Hilangkan Rp, spasi, dan titik ribuan
     clean_val = str(val).replace("Rp", "").replace(" ", "").replace(".", "")
     # Ganti koma desimal menjadi titik
@@ -1695,7 +1704,8 @@ def print_debug_table(transaksi_list):
 
 # --- MAIN EXTRACTION FUNCTION ---
 async def extract_bku_data(pdf_content: bytes, db):
-    doc = fitz.open(stream=pdf_content, filetype="pdf")
+    """Petakan kata PDF ke kolom BKU, wariskan tanggal, dan cari nama kegiatan."""
+    pdf_document = fitz.open(stream=pdf_content, filetype="pdf")
     transaksi_list = []
 
     BLACKLIST = [
@@ -1715,80 +1725,95 @@ async def extract_bku_data(pdf_content: bytes, db):
     try:
         last_valid_date = ""
 
-        for page in doc:
+        for page in pdf_document:
             words = page.get_text("words")
-            lines = {}
+            words_by_y = {}
             
             # --- LOGIKA GROUPING BARIS ---
-            for w in words:
-                y_coord = round(w[1])
-                found_line = False
-                for existing_y in list(lines.keys()):
-                    if abs(y_coord - existing_y) <= 8: # Tolerance y
-                        lines[existing_y].append(w)
-                        found_line = True
+            for word in words:
+                word_y = round(word[1])
+                matched_existing_row = False
+                for row_y in list(words_by_y.keys()):
+                    if abs(word_y - row_y) <= 8: # Tolerance y
+                        words_by_y[row_y].append(word)
+                        matched_existing_row = True
                         break
-                if not found_line:
-                    lines[y_coord] = [w]
+                if not matched_existing_row:
+                    words_by_y[word_y] = [word]
 
-            for y in sorted(lines.keys()):
-                line_words = sorted(lines[y], key=lambda x: x[0])
-                full_line_text = " ".join([w[4] for w in line_words]).strip()
+            for row_y in sorted(words_by_y.keys()):
+                words_in_row = sorted(words_by_y[row_y], key=lambda word: word[0])
+                full_line_text = " ".join(
+                    word[4] for word in words_in_row
+                ).strip()
                 
                 if not full_line_text:
                     continue
 
-                clean_text_check = full_line_text.replace(" ", "").upper()
+                normalized_line_text = full_line_text.replace(" ", "").upper()
 
-                is_date_start = date_pattern.search(full_line_text[:12])
+                date_at_line_start = date_pattern.search(full_line_text[:12])
                 
-                if not is_date_start:
-                     if any(k in clean_text_check for k in BLACKLIST):
+                if not date_at_line_start:
+                    if any(k in normalized_line_text for k in BLACKLIST):
                         continue
-                     # Cek footer khusus (Jumlah/Total)
-                     if any(full_line_text.upper().startswith(k) for k in FOOTER_KEYWORDS):
-                         continue
+                    # Cek footer khusus (Jumlah/Total)
+                    if any(
+                        full_line_text.upper().startswith(k)
+                        for k in FOOTER_KEYWORDS
+                    ):
+                        continue
 
                 # Filter baris nomor kolom (hanya angka 1 s.d 8)
                 if re.fullmatch(r'[\d\s\.]+', full_line_text):
                     continue
 
-                tgl, bukti = "", ""
-                urai, kgt_raw, rek_raw = [], [], []
-                masuk, keluar, sld = 0, 0, 0
+                tanggal, nomor_bukti = "", ""
+                uraian_parts, kode_kegiatan_parts, kode_rekening_parts = [], [], []
+                penerimaan, pengeluaran, saldo = 0, 0, 0
 
                 # --- PARSING KOLOM (KOORDINAT DISESUAIKAN) ---
-                for w in line_words:
-                    x0, text = w[0], w[4].strip()
-                    if not text: continue
+                for word in words_in_row:
+                    x0, text = word[0], word[4].strip()
+                    if not text:
+                        continue
 
                     # Cek tanggal duluan sebelum cek koordinat
-                    if not tgl and date_pattern.search(text):
-                        tgl = text
+                    if not tanggal and date_pattern.search(text):
+                        tanggal = text
                         continue
-                    if x0 < 80: pass 
-                    elif 80 <= x0 < 132: kgt_raw.append(text)    # Kode Kegiatan
-                    elif 132 <= x0 < 195: rek_raw.append(text)   # Kode Rekening
+                    if 80 <= x0 < 132:
+                        kode_kegiatan_parts.append(text)  # Kode Kegiatan
+                    elif 132 <= x0 < 195:
+                        kode_rekening_parts.append(text)  # Kode Rekening
                     elif 195 <= x0 < 240:                        # Bukti / Awal Uraian
-                        if bpu_pattern.search(text): bukti = text
-                        else: urai.append(text)
-                    elif 240 <= x0 < 600: urai.append(text)      # Uraian
+                        if bpu_pattern.search(text):
+                            nomor_bukti = text
+                        else:
+                            uraian_parts.append(text)
+                    elif 240 <= x0 < 600:
+                        uraian_parts.append(text)  # Uraian
                     elif 600 <= x0 < 675:                        # Penerimaan
-                        val = parse_amount(text)
-                        if val: masuk = val
+                        amount = parse_amount(text)
+                        if amount:
+                            penerimaan = amount
                     elif 675 <= x0 < 755:                        # Pengeluaran
-                        val = parse_amount(text)
-                        if val: keluar = val
+                        amount = parse_amount(text)
+                        if amount:
+                            pengeluaran = amount
                     elif x0 >= 755:                              # Saldo
-                        val = parse_amount(text)
-                        if val: sld = val
+                        amount = parse_amount(text)
+                        if amount:
+                            saldo = amount
 
-                uraian_final = " ".join(urai).strip()
+                uraian_final = " ".join(uraian_parts).strip()
                 
                 # --- LOGIKA VALIDASI BARIS ---
-                is_financial_row = (masuk > 0 or keluar > 0)
+                is_financial_row = (penerimaan > 0 or pengeluaran > 0)
                 # Baris dianggap konten jika punya Tanggal ATAU Bukti ATAU Kode Rekening
-                has_content = (tgl != "" or bukti != "" or len(rek_raw) > 0)
+                has_content = (
+                    tanggal != "" or nomor_bukti != "" or len(kode_rekening_parts) > 0
+                )
                 
                 # Header kolom (seperti "URAIAN", "NO BUKTI") biasanya tidak punya uang & tidak punya kode rekening valid
                 if not is_financial_row and not has_content:
@@ -1800,40 +1825,50 @@ async def extract_bku_data(pdf_content: bytes, db):
                         continue
 
                 # Pewarisan Tanggal
-                if tgl:
-                    last_valid_date = tgl
-                elif last_valid_date and (is_financial_row or bukti or len(uraian_final) > 3):
+                if tanggal:
+                    last_valid_date = tanggal
+                elif last_valid_date and (
+                    is_financial_row or nomor_bukti or len(uraian_final) > 3
+                ):
                     # Wariskan tanggal jika ini terlihat seperti lanjutan baris transaksi
-                    tgl = last_valid_date
+                    tanggal = last_valid_date
                 
-                if not tgl:
+                if not tanggal:
                     continue
 
                 # --- CLEANING KODE ---
-                full_rek_raw = "".join(rek_raw).replace(" ", "")
-                match_rek = re.search(r'(\d+(?:\.\d+)+)', full_rek_raw)
-                clean_rek = match_rek.group(1) if match_rek else full_rek_raw 
+                raw_kode_rekening = "".join(kode_rekening_parts).replace(" ", "")
+                match_rekening = re.search(r'(\d+(?:\.\d+)+)', raw_kode_rekening)
+                clean_rekening = (
+                    match_rekening.group(1) if match_rekening else raw_kode_rekening
+                )
 
-                full_kgt_raw = "".join(kgt_raw).replace(" ", "")
-                match_kgt = re.search(r'(\d{2}\.\d{2}\.\d{2}\.?)', full_kgt_raw)
-                clean_kgt = match_kgt.group(1) if match_kgt else full_kgt_raw
+                raw_kode_kegiatan = "".join(kode_kegiatan_parts).replace(" ", "")
+                match_kegiatan = re.search(
+                    r'(\d{2}\.\d{2}\.\d{2}\.?)', raw_kode_kegiatan
+                )
+                clean_kegiatan = (
+                    match_kegiatan.group(1) if match_kegiatan else raw_kode_kegiatan
+                )
 
                 nama_kegiatan = ""
-                if clean_kgt:
-                    search_kgt = clean_kgt.rstrip('.')
-                    nama_kegiatan = await get_nama_kegiatan_from_kode(search_kgt, db)
+                if clean_kegiatan:
+                    kode_kegiatan_lookup = clean_kegiatan.rstrip('.')
+                    nama_kegiatan = await get_nama_kegiatan_from_kode(
+                        kode_kegiatan_lookup, db
+                    )
 
                 transaksi_list.append(
                     TransaksiItem(
-                        tanggal=tgl or "",
-                        kode_kegiatan=clean_kgt or "",
-                        kode_rekening=clean_rek or "", 
-                        no_bukti=bukti or "",
+                        tanggal=tanggal or "",
+                        kode_kegiatan=clean_kegiatan or "",
+                        kode_rekening=clean_rekening or "",
+                        no_bukti=nomor_bukti or "",
                         uraian=uraian_final,
                         nama_kegiatan=nama_kegiatan,
-                        penerimaan=masuk,
-                        pengeluaran=keluar,
-                        saldo=sld,
+                        penerimaan=penerimaan,
+                        pengeluaran=pengeluaran,
+                        saldo=saldo,
                     )
                 )
 
@@ -1843,47 +1878,47 @@ async def extract_bku_data(pdf_content: bytes, db):
         return BKUData(transaksi=transaksi_list)
 
     finally:
-        doc.close()
+        pdf_document.close()
 
 @api_router.post("/extract-bku")
 async def extract_bku(
     files: List[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-
+    """Validasi PDF, gabungkan hasil ekstraksi, lalu kembalikan datanya."""
     all_transaksi = []
 
-    for idx, file in enumerate(files, start=1):
+    for uploaded_file in files:
         try:
-            if not file.filename.lower().endswith(".pdf"):
+            if not uploaded_file.filename.lower().endswith(".pdf"):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"File bukan PDF: {file.filename}"
+                    detail=f"File bukan PDF: {uploaded_file.filename}"
                 )
 
-            pdf_bytes = await file.read()
+            pdf_bytes = await uploaded_file.read()
 
             if not pdf_bytes:
                 raise ValueError("File PDF kosong")
 
 
-            bku = await extract_bku_data(pdf_bytes, db)
+            parsed_bku = await extract_bku_data(pdf_bytes, db)
 
-            if not bku or not hasattr(bku, "transaksi"):
+            if not parsed_bku or not hasattr(parsed_bku, "transaksi"):
                 raise ValueError("Hasil extract BKU tidak valid")
 
-            all_transaksi.extend(bku.transaksi)
+            all_transaksi.extend(parsed_bku.transaksi)
 
         except HTTPException:
             raise  # biarkan FastAPI tangani
 
         except Exception as e:
             logger.exception(
-                f"❌ Gagal memproses file {file.filename}"
+                f"❌ Gagal memproses file {uploaded_file.filename}"
             )
             raise HTTPException(
                 status_code=500,
-                detail=f"Gagal memproses file {file.filename}: {str(e)}"
+                detail=f"Gagal memproses file {uploaded_file.filename}: {str(e)}"
             )
 
     # logger.info(f"TOTAL transaksi gabungan: {len(all_transaksi)}")

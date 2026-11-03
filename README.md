@@ -1,68 +1,150 @@
-# APLIKASI SPJ BOSP
+# Aplikasi SPJ BOSP
 
 **Sistem Informasi Pertanggungjawaban Dana Bantuan Operasional Satuan Pendidikan**
 
-Aplikasi ini dirancang untuk membantu bendahara sekolah dan instansi pendidikan dalam mengelola data pendukung, mencetak bukti fisik, dan merekapitulasi penggunaan dana BOSP secara efisien.
+Aplikasi desktop untuk membantu sekolah mengelola data transaksi BOSP, menyiapkan dokumen pendukung SPJ, dan membuat rekap belanja.
 
-> ⚠️ **DISCLAIMER / PENTING:**
-> Aplikasi ini dikembangkan sebagai **alat bantu (pendamping)** untuk mempermudah pengelolaan pemberkasan internal sekolah. Aplikasi ini **BUKAN SEBAGAI PENGGANTI** aplikasi resmi **ARKAS** (Aplikasi Rencana Kegiatan dan Anggaran Sekolah) dari Kemendikdasmen. Harap tetap menggunakan ARKAS untuk pelaporan resmi yang legal dan sah.
+> **Penting:** Aplikasi ini merupakan alat bantu untuk pengelolaan dan pemberkasan internal. Aplikasi ini **bukan pengganti ARKAS** dan tidak menggantikan kewajiban pelaporan melalui sistem resmi yang berlaku.
 
----
+## Daftar Isi
 
-## ✨ Fitur Utama
+- [Fitur](#fitur)
+- [Panduan Pengguna](#panduan-pengguna)
+- [Panduan Pengembang](#panduan-pengembang)
+- [Struktur Proyek](#struktur-proyek)
+- [Lisensi](#lisensi)
 
-* **Manajemen Data Referensi**: Impor data referensi Kegiatan dan Rekening Belanja.
-* **Pencatatan Transaksi**: Input manual data pembelanjaan dari dana BOSP.
-* **Otomatisasi Dokumen**: Ekstrak data BKU menjadi dokumen SPJ BOSP siap cetak.
-* **Laporan & Rekapitulasi**: Rekapitulasi Belanja Pertahap dan Per Tahun.
-* **Foto AI**: Tersedia Pollinations (memerlukan secret key), Hugging Face, Google Gemini, OpenAI Images, dan endpoint gambar OpenAI-compatible kustom.
-* **Dukung Kami**: Pindai QR Saweria dari menu aplikasi untuk mendukung pengembangan.
+## Fitur
 
-## 🛠️ Teknologi
+- Impor data referensi kegiatan dan rekening belanja dari Excel.
+- Catat transaksi dan olah data BKU serta data BHP/BHM sesuai kebutuhan.
+- Lengkapi data dan bukti pendukung SPJ, termasuk foto.
+- Buat dokumen SPJ untuk diunduh atau dicetak.
+- Lihat dan unduh rekap belanja per tahap atau per tahun menggunakan template Excel.
+- Buat gambar pendukung dengan layanan AI yang tersedia di aplikasi.
 
-* **Backend**: Python (FastAPI, SQLAlchemy)
-* **Frontend**: HTML, CSS, JavaScript (Electron)
-* **Database**: SQLite
+## Panduan Pengguna
 
----
+### Instalasi
 
-## 🚀 Cara Instalasi & Menjalankan
+1. Buka halaman [Releases](https://github.com/rofiq2774/Aplikasi-SPJ-BOSP-v2/releases) dan unduh installer versi terbaru.
+2. Unduh juga file referensi dan template yang diperlukan dari [repository proyek](https://github.com/rofiq2774/Aplikasi-SPJ-BOSP-v2):
+   - `master_kegiatan.xlsx`
+   - `master_rekening.xlsx`
+   - `contoh_template_rekap_belanja.xlsx` (untuk melihat contoh template rekap)
+3. Jalankan installer dan ikuti petunjuk di layar sampai selesai.
+4. Buka aplikasi, lalu isi identitas satuan pendidikan, data pejabat, logo, dan kop surat.
 
-1.  **Download Installer**
-   Download installer rilis terbaru dari repository kami beserta perlengkapannya (master_kegiatan.xlsx dan master_rekening.xlsx)
-    ```bash
-    https://github.com/rofiq2774/Aplikasi-SPJ-BOSP-v2
-    ```
+> Installer rilis ditujukan untuk pengguna Windows. Pengguna tidak perlu memasang Python atau Node.js untuk menjalankan aplikasi yang sudah terinstal.
 
-3.  **Instalasi**
-    a. Klik 2 kali pada Installer_Aplikasi-SPJ_x64_vx.x.x.exe, lalu pilih all user kemudian pencet next sampai finish
-    b. Buka pada aplikasi yang telah terinstall, kemudian lengkapi mulai dari identitas satuan pendidikan sampai logo dan kop surat
+### Alur penggunaan
 
-4.  **Impor Data Referensi Kegiatan dan Referensi Rekening Belanja**
-    Silahkan impor file excel master_kegiatan.xlsx dan master_rekening.xlsx pada menu Referensi Kegiatan dan Rekening Belanja
+1. **Impor referensi.** Buka menu Referensi Kegiatan dan Rekening Belanja, lalu impor file master yang sesuai.
+2. **Unggah data.** Gunakan menu Upload BKU untuk memproses file Buku Kas Umum dari ARKAS. Unggah file realisasi BHP/BHM jika diperlukan untuk pekerjaan Anda.
+3. **Lengkapi SPJ.** Buka menu Daftar SPJ, pilih data yang akan dilengkapi, lalu isi informasi seperti nama kegiatan, tanggal nota, nama dan alamat toko, serta foto bukti.
+4. **Unduh dokumen.** Setelah data SPJ lengkap, gunakan tindakan unduh pada aplikasi untuk membuat dokumen SPJ.
+5. **Buat rekap belanja.** Pilih rekap per tahap atau per tahun, lalu unggah template Excel yang sesuai. `contoh_template_rekap_belanja.xlsx` dapat digunakan sebagai acuan format.
 
-5.  **Upload Data BKU dan BHP/BHM**
-    Ekstrak data BKU melalui menu Upload BKU, filenya dapat di download dari ARKAS terdiri dari file Buku Kas Umum, Rekapitulasi Realisasi Barang Habis Pakai,
-    dan Rekapitulasi Realisasi Barang Modal/Aset (sesuaikan dengan kebutuhan)
-    
-7. **Data SPJ**
-    Lengkapi data SPJ dari menu Daftar SPJ. Kelengkapannya terdiri dari nama kegiatan, tanggal nota, nama toko dan lain-lain sampai foto bukti.
+Format template rekap dapat disesuaikan dengan kebijakan pemerintah daerah. Jika template memerlukan kode, salin kode template yang tersedia di data rekap ke file Excel sebelum mengunggahnya.
 
-   Untuk membuat foto AI, gunakan tombol bot pada baris barang. Pada penggunaan pertama, pilih provider melalui popup. Pollinations memerlukan secret key berawalan `sk_`; App Key `pk_` tidak dapat digunakan langsung. Izin model dan budget key mengikuti akun Pollinations. Gemini memerlukan API key Google AI Studio dan ketersediaan kuotanya mengikuti akun Google. OpenAI Images memerlukan API key serta billing API tersendiri; langganan ChatGPT tidak mencakup saldo API. Provider lain mungkin mengenakan biaya. Pengaturan provider/API key dapat diubah dari tombol roda gigi. API key disimpan terenkripsi oleh penyimpanan aman sistem operasi pada komputer ini.
-   
-9. **Download SPJ**
-    Setelah data SPJ lengkap, maka Anda dapat mendownload dokumen SPJ untuk digunakan sebagai lampiran laporan BOSP
+### Gambar dengan AI
 
-10. **Rekap Belanja**
-    Setelah data SPJ lengkap, maka Anda dapat melihat Rekapitulasi Belanja yang berasal dari Data Referensi Rekening Belanja. Anda dapat mendownload
-    Rekapitulasi Belanja Dana BOSP pertahap maupun tahunan dalam bentuk excel dengan mengunggah file template seperti yang ada di contoh pada repository
-    kami.
-    Anda dapat menyesuaikan format template sesuai kebijakan pemerintah daerah masing-masing, **Kode Template** yang Anda copy dari data rekap dan dipastekan
-    pada file excel template rekap akan berubah menjadi angka setelah Anda mendownload rekap tersebut.
+Untuk membuat gambar pendukung, gunakan tombol bot pada baris barang. Pada penggunaan pertama, pilih penyedia layanan melalui jendela pengaturan.
 
----
+- Setiap penyedia dapat memiliki persyaratan akun, API key, kuota, dan biaya sendiri. Periksa ketentuan penyedia sebelum menggunakannya.
+- Pollinations memerlukan secret key berawalan `sk_`; App Key berawalan `pk_` tidak dapat langsung digunakan sebagai secret key.
+- Gemini memerlukan API key Google AI Studio. OpenAI Images memerlukan API key dan billing API; langganan ChatGPT tidak termasuk saldo API.
+- Pengaturan penyedia dan API key dapat diubah melalui tombol roda gigi.
+- API key disimpan menggunakan fasilitas penyimpanan aman sistem operasi pada komputer yang digunakan. Permintaan pembuatan gambar dikirim ke penyedia layanan yang dipilih.
 
-## 📄 LICENSE / LISENSI
+## Panduan Pengembang
+
+### Teknologi
+
+- **Aplikasi desktop:** Electron
+- **Antarmuka:** HTML, CSS, JavaScript, dan Vite
+- **Backend:** Python, FastAPI, dan SQLAlchemy
+- **Database:** SQLite
+- **Dokumen PDF:** pdfmake di sisi frontend
+
+### Persyaratan
+
+- Node.js dan npm
+- Python yang dapat dijalankan dengan perintah `python`, beserta pip
+- Python 3.10 64-bit untuk proses build installer sesuai skrip proyek
+
+### Menyiapkan lingkungan pengembangan
+
+Dari direktori utama repository, buat dan aktifkan virtual environment Python, pasang dependensi, lalu pasang dependensi Node.js untuk root dan frontend:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r backend\requirements.txt
+npm install
+npm install --prefix frontend
+```
+
+Jalankan aplikasi dalam mode pengembangan:
+
+```powershell
+npm start
+```
+
+Perintah tersebut menjalankan Vite dan Electron. Electron menjalankan backend Python sebagai proses anak; backend memilih port lokal secara dinamis. Karena itu, backend tidak menggunakan port tetap `8000`.
+
+### Build aplikasi
+
+Pada Windows, setelah persyaratan dan dependensi di atas tersedia, jalankan dari direktori utama:
+
+```powershell
+npm run build
+```
+
+Skrip build menjalankan PyInstaller untuk backend Python 3.10 64-bit, build frontend, lalu membuat paket Electron. Konfigurasi dan lokasi output ditentukan oleh skrip serta konfigurasi proyek.
+
+### Tes
+
+Tes PDF frontend dapat dijalankan dari folder `frontend`:
+
+```powershell
+Set-Location frontend
+node --test tests\spjPdf.font.test.mjs
+```
+
+Tes backend menggunakan `pytest` dan dependensi backend:
+
+```powershell
+python -m pytest backend\tests -q
+```
+
+Jika `pytest` belum tersedia di lingkungan pengembangan, pasang terlebih dahulu menggunakan pip.
+
+### Struktur proyek
+
+```text
+backend/
+  main.py             API FastAPI dan alur bisnis backend
+  database.py         Koneksi dan sesi database
+  models.py           Model tabel SQLAlchemy
+  alembic/            Migrasi skema database
+  tests/              Tes backend
+frontend/
+  index.js            Proses utama Electron
+  preload.js          Jembatan API aman antara Electron dan antarmuka
+  Index.html          Dokumen HTML aplikasi
+  src/
+    app.js            Antarmuka dan alur aplikasi
+    ui.js             Komponen antarmuka bersama
+    styles.css        Gaya aplikasi
+    spjConfig.js      Konfigurasi jenis belanja dan lampiran
+    pdf/spjPdf.js     Pembuatan dokumen PDF SPJ
+  tests/              Tes frontend
+```
+
+Untuk detail paket, skrip, dan konfigurasi build, lihat `package.json` di direktori utama dan `frontend/package.json`.
+
+## Lisensi
 
 Berikut adalah lisensi penggunaan perangkat lunak ini:
 
@@ -89,8 +171,6 @@ Pemilik (Muh. Rofiq) memberikan izin non-eksklusif dan tanpa biaya untuk menggun
 **Lisensi Alternatif:**
 Jika Anda memerlukan lisensi standar (mis. MIT, Apache 2.0) atau perjanjian tertulis, silakan hubungi pemilik proyek untuk pembahasan dan penyesuaian lisensi.
 
----
-
 ### LICENSE — SPJ BOSP APPLICATION
 
 **English (ENGLISH):**
@@ -115,5 +195,6 @@ A separate license agreement is required for commercial use, closed redistributi
 **Alternative Licensing:**
 If you require a standard open-source license (e.g., MIT, Apache 2.0) or a formal written agreement, please contact the project owner to discuss licensing options and customization.
 
+---
 
-![Total Downloads](https://img.shields.io/github/downloads/rofiq2774/Aplikasi-SPJ-BOSP-v2/total?style=for-the-badge&label=Pengguna%20&color=2ea44f)
+[![Total Downloads](https://img.shields.io/github/downloads/rofiq2774/Aplikasi-SPJ-BOSP-v2/total?style=for-the-badge&label=Pengguna%20&color=2ea44f)](https://github.com/rofiq2774/Aplikasi-SPJ-BOSP-v2/releases)

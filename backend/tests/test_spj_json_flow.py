@@ -241,8 +241,10 @@ def test_update_kwitansi_persists_purchase_type_and_dynamic_form_data(spj_client
         "no_bast": "BA/001",
         "tanggal_nota": "05-11-2026",
         "nama_toko": "Penyedia",
-        "npwp_toko": "",
-        "alamat_toko": "",
+        "npwp_toko": "01.111.222.3-444.000",
+        "alamat_toko": "Jl. Penyedia",
+        "no_telp_toko": "08123456789",
+        "no_nota": "NOTA-PENYEDIA",
         "jenis_belanja": "perjalanan_dinas",
         "data_lampiran": {
             "sppd_nomor": "SPPD/001",
@@ -276,6 +278,16 @@ def test_update_kwitansi_persists_purchase_type_and_dynamic_form_data(spj_client
     assert detail["data_lampiran"]["surat_tugas_petugas"] == "Nama yang ditugaskan"
     assert detail["data_lampiran"]["surat_tugas_tujuan"] == "Mengikuti kegiatan di Jember"
     assert detail["tanggal_nota"] == "2026-11-05"
+
+    bku_response = spj_client.get("/api/transaksi", params={"no_bukti": "BKT-001"})
+    assert bku_response.status_code == 200
+    bku_row = bku_response.json()["data"][0]
+    assert bku_row["nama_toko"] == "Penyedia"
+    assert bku_row["npwp_toko"] == "01.111.222.3-444.000"
+    assert bku_row["alamat_toko"] == "Jl. Penyedia"
+    assert bku_row["no_telp_toko"] == "08123456789"
+    assert bku_row["no_nota"] == "NOTA-PENYEDIA"
+    assert bku_row["tanggal_nota"] == "2026-11-05"
 
     invalid_date_payload = {**payload, "tanggal_nota": "tanggal-salah"}
     invalid_date = spj_client.post(

@@ -4495,11 +4495,11 @@ async def update_kwitansi_detail(kwitansi_id: int, payload: dict, db: AsyncSessi
     if tanggal_nota_value is not None:
         kw.tanggal_nota = tanggal_nota_value
     
-    kw.nama_toko = payload.get("nama_toko", "")
-    kw.npwp_toko = payload.get("npwp_toko", "")
-    kw.alamat_toko = payload.get("alamat_toko", "")
-    kw.no_telp_toko = payload.get("no_telp_toko", "")
-    kw.no_nota = payload.get("no_nota", "")
+    kw.nama_toko = payload.get("nama_toko", kw.nama_toko or "")
+    kw.npwp_toko = payload.get("npwp_toko", kw.npwp_toko or "")
+    kw.alamat_toko = payload.get("alamat_toko", kw.alamat_toko or "")
+    kw.no_telp_toko = payload.get("no_telp_toko", kw.no_telp_toko or "")
+    kw.no_nota = payload.get("no_nota", kw.no_nota or "")
     kw.jenis_belanja = jenis_belanja
     kw.data_lampiran = json.dumps(data_lampiran, ensure_ascii=False)
 
@@ -4522,6 +4522,16 @@ async def update_kwitansi_detail(kwitansi_id: int, payload: dict, db: AsyncSessi
             satuan=item.get("satuan") or "",
             harga_satuan=item.get("harga_satuan") or 0,
             kode_rekening=source.kode_rekening if source else old_transaksi[0].kode_rekening,
+            nama_toko=kw.nama_toko or "",
+            alamat_toko=kw.alamat_toko or "",
+            no_telp_toko=kw.no_telp_toko or "",
+            npwp_toko=kw.npwp_toko or "",
+            no_nota=kw.no_nota or "",
+            tanggal_nota=(
+                kw.tanggal_nota.isoformat()
+                if hasattr(kw.tanggal_nota, "isoformat")
+                else kw.tanggal_nota or ""
+            ),
             penerimaan=source.penerimaan if source else 0,
             pengeluaran=source.pengeluaran if source else 0,
             saldo=source.saldo if source else 0

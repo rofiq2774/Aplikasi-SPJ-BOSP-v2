@@ -476,6 +476,217 @@ async function uploadBKU() {
   }
 }
 
+function chooseArkasSyncMode(fiscalYear, transactionCount, sourceName) {
+  return new Promise((resolve) => {
+    document
+      .querySelectorAll(".ui-dialog-overlay")
+      .forEach((overlay) => overlay.remove());
+
+    const overlay = document.createElement("div");
+    overlay.className = "ui-dialog-overlay ui-dialog-kind-confirm";
+    const dialog = document.createElement("div");
+    dialog.className = "ui-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const header = document.createElement("div");
+    header.className = "ui-dialog-head";
+    const title = document.createElement("h3");
+    title.className = "ui-dialog-title";
+    title.textContent = "Pilih cara sinkron ARKAS";
+    header.appendChild(title);
+    const body = document.createElement("div");
+    body.className = "ui-dialog-body";
+    const message = document.createElement("p");
+    message.className = "ui-dialog-message";
+    message.textContent =
+      `Sumber: ${sourceName}. Ditemukan ${transactionCount} baris BPU ` +
+      `tahun anggaran ${fiscalYear}. ` +
+      "Penyesuaian data dilakukan berdasarkan nomor bukti. " +
+      "Hapus semua akan mengosongkan seluruh BKU lokal; pertahankan akan melewati " +
+      "nomor bukti yang sudah ada; perbarui akan mengganti rincian dengan nomor bukti sama.";
+    body.appendChild(message);
+    const footer = document.createElement("div");
+    footer.className = "ui-dialog-foot";
+    footer.style.flexWrap = "wrap";
+
+    const finish = (mode) => {
+      document.removeEventListener("keydown", handleKeydown, true);
+      overlay.remove();
+      resolve(mode);
+    };
+    const choices = [
+      {
+        mode: "replace_all",
+        label: "Hapus semua lalu impor",
+        className: "btn btn-danger",
+      },
+      {
+        mode: "keep",
+        label: "Pertahankan data lama",
+        className: "btn btn-outline-primary",
+      },
+      {
+        mode: "update",
+        label: "Perbarui nomor bukti yang sama",
+        className: "btn btn-success",
+      },
+    ];
+    choices.forEach(({ mode, label, className }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = className;
+      button.textContent = label;
+      button.addEventListener("click", () => finish(mode));
+      footer.appendChild(button);
+    });
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn btn-secondary";
+    cancel.textContent = "Batal";
+    cancel.addEventListener("click", () => finish(null));
+    footer.appendChild(cancel);
+
+    function handleKeydown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(null);
+      }
+    }
+
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(null);
+    });
+    dialog.append(header, body, footer);
+    overlay.appendChild(dialog);
+    document.addEventListener("keydown", handleKeydown, true);
+    document.body.appendChild(overlay);
+    footer.querySelector("button")?.focus();
+  });
+}
+
+async function loadArkasDatabaseInfo() {
+  if (typeof window.electronAPI?.getArkasDatabaseInfo !== "function") return;
+  const label = document.getElementById("arkas-database-label");
+  if (!label) return;
+  try {
+    const info = await window.electronAPI.getArkasDatabaseInfo();
+    label.textContent = !info.configured
+      ? "Database ARKAS belum dipilih"
+      : info.available
+        ? `Database ARKAS: ${info.sourceName}`
+        : `Database ARKAS tidak ditemukan: ${info.sourceName} (pilih ulang)`;
+  } catch (error) {
+    label.textContent = "Lokasi database ARKAS gagal dibaca";
+    showToast("Error!", error.message || "Gagal membaca pengaturan database ARKAS.");
+  }
+}
+
+async function changeArkasDatabase() {
+  if (typeof window.electronAPI?.selectArkasDatabase !== "function") {
+    showToast("Error!", "Pengaturan database ARKAS hanya tersedia di aplikasi desktop.");
+    return;
+  }
+  try {
+    const selected = await window.electronAPI.selectArkasDatabase();
+    if (selected.canceled) return;
+    await loadArkasDatabaseInfo();
+    showToast("Berhasil!", `Lokasi database ARKAS disimpan: ${selected.sourceName}.`);
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal menyimpan database ARKAS.");
+  }
+}
+
+async function syncArkas() {
+  if (
+    !window.electronAPI ||
+    typeof window.electronAPI.readArkasTransactions !== "function"
+  ) {
+    showToast("Error!", "Fitur Sinkron ARKAS hanya tersedia di aplikasi desktop.");
+    return;
+  }
+
+  showToast("Info!", "Membaca database ARKAS...");
+  try {
+    const imported = await window.electronAPI.readArkasTransactions();
+    if (imported.canceled) return;
+    await loadArkasDatabaseInfo();
+    if (!imported.transactions?.length) {
+      showToast(
+        "Warning!",
+        `Tidak ditemukan transaksi BPU untuk tahun anggaran ${imported.fiscalYear}.`,
+      );
+      return;
+    }
+
+    const mode = await chooseArkasSyncMode(
+      imported.fiscalYear,
+      imported.returned,
+      imported.sourceName,
+    );
+    if (!mode) return;
+
+    if (
+      mode === "replace_all" &&
+      !(await UI.confirm(
+        "Semua data BKU lokal akan dihapus sebelum data ARKAS diimpor. " +
+          "Ini termasuk data non-BPU dan input manual. Data kwitansi tidak dihapus. Lanjutkan?",
+        {
+          title: "Konfirmasi Hapus Semua Data BKU",
+          okText: "Hapus dan Impor",
+          danger: true,
+        },
+      ))
+    ) {
+      return;
+    }
+
+    const response = await apiFetch(`${API_BASE}/transaksi/import-arkas`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, transaksi: imported.transactions }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || "Gagal mengimpor data ARKAS.");
+    }
+
+    await loadDataBKU();
+    await loadKwitansiList();
+    const modeDescription = {
+      replace_all: "Data BKU lama dihapus",
+      keep: "Data dengan nomor bukti yang sudah ada dipertahankan",
+      update: "Data dengan nomor bukti yang sama diperbarui",
+    }[mode];
+    showToast(
+      "Berhasil!",
+      `${modeDescription}. ${result.saved_count} baris diimpor, ` +
+        `${result.deleted_count} baris diganti/dihapus, ` +
+        `${result.skipped_count} baris dilewati. ` +
+        `${result.synced_kwitansi_count} SPJ diperbarui dan ` +
+        `${result.created_kwitansi_count} SPJ dibuat.`,
+    );
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal membaca database ARKAS.");
+  }
+}
+
+function renderBkuShopIdentity(item) {
+  const name = String(item.nama_toko || "").trim();
+  const details = [
+    item.alamat_toko,
+    item.no_telp_toko,
+    item.npwp_toko ? `NPWP: ${item.npwp_toko}` : "",
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" | ");
+  return `<td title="${escapeSpjFormValue(details)}">${escapeSpjFormValue(name || "-")}${
+    details
+      ? `<small style="display:block;color:#64748b;font-size:11px;">${escapeSpjFormValue(details)}</small>`
+      : ""
+  }</td>`;
+}
+
 // Save data BKU
 async function saveTransaksi() {
   if (!bkuData || !bkuData.transaksi || bkuData.transaksi.length === 0) {
@@ -1688,7 +1899,7 @@ function renderBKUResult(filteredData = null, isExtractMode = false) {
 
   if (dataToRender.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="9" style="text-align:center; padding:20px;">Tidak ada data ditemukan.</td></tr>';
+      '<tr><td colspan="11" style="text-align:center; padding:20px;">Tidak ada data ditemukan.</td></tr>';
     if (btnArea) btnArea.style.display = "none";
     return;
   }
@@ -1704,16 +1915,18 @@ function renderBKUResult(filteredData = null, isExtractMode = false) {
   dataToRender.forEach((item) => {
     const row = `
             <tr>
-                <td>${item.no_bukti || "-"}</td>
-                <td>${item.tanggal || "-"}</td>
-                <td>${item.kode_kegiatan || "-"}</td>
-                <td>${item.uraian || "-"}</td>
-                <td>${item.volume || 0}</td>
-                <td>${item.satuan || ""}</td>
+                <td>${escapeSpjFormValue(item.no_bukti || "-")}</td>
+                <td>${escapeSpjFormValue(item.tanggal || "-")}</td>
+                <td>${escapeSpjFormValue(item.kode_kegiatan || "-")}</td>
+                <td>${escapeSpjFormValue(item.kode_rekening || "-")}</td>
+                <td>${escapeSpjFormValue(item.uraian || "-")}</td>
+                ${renderBkuShopIdentity(item)}
+                <td>${escapeSpjFormValue(item.volume || 0)}</td>
+                <td>${escapeSpjFormValue(item.satuan || "")}</td>
                 <td>${formatCurrencyLabel(item.harga_satuan || 0)}</td>
                 <td>${formatCurrencyLabel(item.pengeluaran || 0)}</td>
                 <td style="text-align:center">
-                    <button class="btn btn-danger btn-sm" onclick="deleteTransaksi('${item.no_bukti}')">Hapus</button>
+                    <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))})`)}">Hapus</button>
                 </td>
             </tr>
         `;
@@ -1788,7 +2001,7 @@ function renderKwitansiList(list) {
   let html = `
         <style>
             .table-responsive { width: 100%; overflow-x: auto; margin-top: 10px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-            .main-table { width: 100%; border-collapse: collapse; min-width: 900px; background: white; }
+            .main-table { width: 100%; border-collapse: collapse; min-width: 1050px; background: white; }
             .main-table th { background: #f8f9fa; padding: 15px 10px; border-bottom: 2px solid #dee2e6; text-align: left; color: #495057; }
             .main-table td { padding: 12px 10px; border-bottom: 1px solid #eee; vertical-align: middle; }
             .btn-sm { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 12px; font-size: 12px; font-weight: 500; cursor: pointer; border-radius: 4px; border: 1px solid transparent; transition: 0.2s; vertical-align: middle; white-space: nowrap; line-height: 1.4; box-sizing: border-box; }
@@ -1827,6 +2040,7 @@ function renderKwitansiList(list) {
                         <th style="width:120px">Tanggal</th>
                         <th style="width:180px">No Kwitansi</th>
                         <th>Kegiatan</th>
+                        <th style="width:200px">Toko/Penerima</th>
                         <th style="width:140px">Jumlah</th>
                         <th style="width:110px; text-align:center">Status</th>
                         <th style="width:160px; text-align:center">Aksi</th>
@@ -1836,7 +2050,7 @@ function renderKwitansiList(list) {
     `;
 
   if (list.length === 0) {
-    html += `<tr><td colspan="6" style="text-align:center; padding: 40px; color: #999;">Belum ada data SPJ</td></tr>`;
+    html += `<tr><td colspan="7" style="text-align:center; padding: 40px; color: #999;">Belum ada data SPJ</td></tr>`;
   } else {
     list.forEach((k) => {
       const isBlank = (val) => !val || val.toString().trim() === "";
@@ -1853,7 +2067,11 @@ function renderKwitansiList(list) {
         <tr>
             <td>${formatTanggalID(k.tanggal)}</td>
             <td>${k.nomor_kwitansi || "<span style='color:orange'>DRAFT</span>"}</td>
-            <td>${k.nama_kegiatan}</td>
+            <td>${escapeSpjFormValue(k.nama_kegiatan)}</td>
+            <td>
+                <strong>${escapeSpjFormValue(k.nama_toko)}</strong>
+                <small style="display:block;color:#666;">${escapeSpjFormValue(k.no_telp_toko || k.npwp_toko)}</small>
+            </td>
             <td>Rp ${Number(k.jumlah).toLocaleString("id-ID")}</td>
             <td style="text-align:center; vertical-align:middle; white-space:nowrap;">
                 <button class="btn-sm ${needsUpdate ? "btn-danger" : "btn-success"}" 
@@ -2389,6 +2607,16 @@ function escapeSpjFormValue(value) {
   })[char]);
 }
 
+function dateInputValue(value) {
+  const text = String(value ?? "").trim();
+  const isoDate = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDate) return text;
+  const localDate = text.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+  return localDate
+    ? `${localDate[3]}-${localDate[2]}-${localDate[1]}`
+    : "";
+}
+
 function renderTandaTerimaRecipientRows(data = {}, jenisBelanja) {
   const isSewa = jenisBelanja === "sewa";
   const taxField = isSewa ? "pph23" : "pph21";
@@ -2731,7 +2959,7 @@ function openUpdateDetailPopup(kwitansiId) {
                                 </div>
                                 <div class="form-group">
                                     <label>Tanggal Nota</label>
-                                    <input type="date" id="edit-tanggal-nota" class="form-control" value="${kw.tanggal_nota || ""}">
+                                    <input type="date" id="edit-tanggal-nota" class="form-control" value="${dateInputValue(kw.tanggal_nota)}">
                                 </div>
                             </div>
                         </div>
@@ -2744,17 +2972,25 @@ function openUpdateDetailPopup(kwitansiId) {
                             <span class="form-section-title">Data Toko / Penerima</span>
                             <div class="form-group">
                                 <label>Nama Toko / Penerima</label>
-                                <input id="edit-nama-toko" class="form-control" value="${kw.nama_toko || ""}">
+                                <input id="edit-nama-toko" class="form-control" value="${escapeSpjFormValue(kw.nama_toko)}">
                             </div>
 
                             <div class="modern-grid">
                                 <div class="form-group">
                                     <label>NPWP / NIK</label>
-                                    <input id="edit-npwp-toko" class="form-control" value="${kw.npwp_toko || ""}">
+                                    <input id="edit-npwp-toko" class="form-control" value="${escapeSpjFormValue(kw.npwp_toko)}">
                                 </div>
                                 <div class="form-group">
                                     <label>Alamat Toko</label>
-                                    <input id="edit-alamat-toko" class="form-control" value="${kw.alamat_toko || ""}">
+                                    <input id="edit-alamat-toko" class="form-control" value="${escapeSpjFormValue(kw.alamat_toko)}">
+                                </div>
+                                <div class="form-group">
+                                    <label>No. Telepon</label>
+                                    <input id="edit-no-telp-toko" class="form-control" value="${escapeSpjFormValue(kw.no_telp_toko)}">
+                                </div>
+                                <div class="form-group">
+                                    <label>No. Nota</label>
+                                    <input id="edit-no-nota" class="form-control" value="${escapeSpjFormValue(kw.no_nota)}">
                                 </div>
                             </div>
                         </div>
@@ -2972,7 +3208,7 @@ function openUpdateDetailPopup(kwitansiId) {
 
 // --- Manual BKU Form ---
 async function openManualBKUForm() {
-  // 1. Ensure refs loaded (LOGIKA TIDAK DIUBAH)
+  // Alur: muat referensi master, tampilkan formulir dengan pola popup SPJ, lalu siapkan baris dan foto.
   if (!Array.isArray(masterKegiatan) || masterKegiatan.length === 0)
     await loadMasterKegiatan();
   if (
@@ -2984,13 +3220,13 @@ async function openManualBKUForm() {
   const kegiatanOptionsDatalist = (masterKegiatan || [])
     .map(
       (k) =>
-        `<option value="${k.kode_kegiatan} - ${k.nama_kegiatan}"></option>`,
+        `<option value="${escapeSpjFormValue(k.kode_kegiatan)} - ${escapeSpjFormValue(k.nama_kegiatan)}"></option>`,
     )
     .join("");
   const rekeningOptionsDatalist = (masterRekeningBelanja || [])
     .map(
       (r) =>
-        `<option value="${r.kode_rekening_belanja} - ${r.nama_rekening_belanja}"></option>`,
+        `<option value="${escapeSpjFormValue(r.kode_rekening_belanja)} - ${escapeSpjFormValue(r.nama_rekening_belanja)}"></option>`,
     )
     .join("");
 
@@ -2998,129 +3234,129 @@ async function openManualBKUForm() {
   window._manualMasterKegiatan = masterKegiatan || [];
   window._manualMasterRekening = masterRekeningBelanja || [];
 
-  // -------------------------------
-  // STYLE CSS INJECTION (Agar fitur Copy-Paste & Tampilan konsisten)
-  // -------------------------------
   const customStyle = `
         <style>
-            /* Upload Area Styles */
-            .upload-area { border: 2px dashed #cbd5e0; border-radius: 8px; padding: 20px; text-align: center; background: #fffcf5; transition: 0.2s; position: relative; }
-            .upload-area:hover { border-color: #4a69bd; background: #f0f7ff; }
-            .upload-area.highlight-paste { border-color: #2ecc71; background: #e8f8f5; } /* Visual cue saat paste */
-
-            .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; margin-top: 15px; }
-            
-            /* Tombol Hapus pada Preview (jika renderManualBKUPreview menggunakannya) */
-            .foto-item { position: relative; }
-            .foto-delete-btn {
-                position: absolute; top: -5px; right: -5px; width: 20px; height: 20px;
-                border-radius: 50%; background: red; color: white; border: none;
-                cursor: pointer; display: flex; align-items: center; justify-content: center;
+            .manual-popup { width: min(1200px, 96vw); max-width: 96vw; }
+            .manual-popup.popup-modern { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #333; }
+            .manual-popup .popup-header-modern { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding: 16px 0; margin: 0 22px 4px; }
+            .manual-popup .popup-header-modern h3 { margin: 0; font-size: 1.25rem; color: #2c3e50; }
+            .manual-popup .popup-body { padding: 18px 22px; }
+            .manual-popup .form-section { margin-bottom: 15px; }
+            .manual-popup .form-section-title { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px; color: #888; margin-bottom: 10px; font-weight: 700; display: block; }
+            .manual-popup .form-group { margin-bottom: 12px; }
+            .manual-popup .form-group label { display: block; margin-bottom: 5px; font-weight: 500; font-size: 0.9rem; }
+            .manual-popup .form-control { padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
+            .manual-popup .upload-area { border: 2px dashed #cbd5e0; border-radius: 8px; padding: 20px; text-align: center; background: #fff; transition: 0.2s; position: relative; }
+            .manual-popup .upload-area:hover { border-color: #4a69bd; background: #f8fbff; }
+            .manual-popup .upload-area.highlight-paste { border-color: #2ecc71; background: #e8f8f5; }
+            .manual-popup .foto-delete-btn { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; border: none; background: rgba(220, 53, 69, 0.9); color: #fff; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
+            @media (max-width: 700px) {
+                .manual-popup .modern-grid { grid-template-columns: 1fr; }
+                .manual-popup .popup-body { padding: 14px; }
+                .manual-popup .popup-header-modern { margin: 0 14px 4px; }
             }
         </style>
     `;
 
-  // 2. Form HTML (TAMPILAN DIPERBAIKI)
   const formHtml = `
         ${customStyle}
-        <div class="popup-content" style="max-height:85vh; overflow-y:auto; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,0.18);">
-            <div style="padding:28px; max-width:1200px; width:94%; box-sizing:border-box; background: #fff; font-size:14px;">
-                
-                <div style="border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; margin-bottom: 20px;">
-                    <h3 style="margin:0; color:#333; font-weight:600;">Tambah Data BKU Manual</h3>
-                    <small style="color:#666;">Isi formulir di bawah ini dengan lengkap.</small>
+        <div class="popup-content popup-modern manual-popup">
+            <div class="popup-header-modern">
+                <div>
+                    <h3>Tambah Data BKU Manual</h3>
+                    <small style="color:#888;">Lengkapi informasi transaksi dan rincian belanja.</small>
                 </div>
+                <span class="badge-ref">BKU Manual</span>
+            </div>
 
-                <h5 style="color:#007bff; margin-bottom:10px; border-left: 4px solid #007bff; padding-left: 8px;">A. Informasi Transaksi</h5>
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:15px; margin-bottom: 20px;">
+            <div class="popup-body">
+                <div class="form-section">
+                    <span class="form-section-title">Informasi Transaksi</span>
+                    <div class="modern-grid">
                     <div class="form-group">
-                        <label style="font-weight:500; font-size:0.9em;">No Bukti <span style="color:red">*</span></label>
-                        <input id="manual-no-bukti" class="form-control" required style="border:1px solid #ddd;">
+                        <label>No Bukti <span style="color:#dc3545">*</span></label>
+                        <input id="manual-no-bukti" class="form-control" required>
                     </div>
                     <div class="form-group">
-                        <label style="font-weight:500; font-size:0.9em;">Tanggal Kwitansi</label>
-                        <input id="manual-tanggal" type="date" class="form-control" style="border:1px solid #ddd;">
+                        <label>Tanggal Kwitansi</label>
+                        <input id="manual-tanggal" type="date" class="form-control">
                     </div>
                     <div class="form-group">
-                        <label style="font-weight:500; font-size:0.9em;">Tanggal Nota</label>
-                        <input id="manual-tanggal-nota" type="date" class="form-control" style="border:1px solid #ddd;">
+                        <label>Tanggal Nota</label>
+                        <input id="manual-tanggal-nota" type="date" class="form-control">
                     </div>
                     <div class="form-group">
-                        <label style="font-weight:500; font-size:0.9em;">No BAST</label>
-                        <input id="manual-no-bast" class="form-control" style="border:1px solid #ddd;">
+                        <label>No BAST</label>
+                        <input id="manual-no-bast" class="form-control">
                     </div>
-                </div>
-
-                <div style="display:grid; grid-template-columns: 1fr; gap:15px; margin-bottom: 20px;">
                     <div class="form-group">
-                        <label style="font-weight:500; font-size:0.9em;">Nama Kegiatan</label>
-                        <input id="manual-kode-kegiatan" class="form-control" style="border:1px solid #ddd;" placeholder="Ketik kode atau nama..." list="manual-kegiatan-list" autocomplete="off">
+                        <label>Nama Kegiatan</label>
+                        <input id="manual-kode-kegiatan" class="form-control" placeholder="Ketik kode atau nama..." list="manual-kegiatan-list" autocomplete="off">
                         <datalist id="manual-kegiatan-list">
                             <option value="">-- Pilih Kegiatan --</option>
                             ${kegiatanOptionsDatalist}
                         </datalist>
                     </div>
-                    <div class="form-group">
-                        <label style="font-weight:500; font-size:0.9em;">Rekening Belanja</label>
-                        <input id="manual-kode-rekening" class="form-control" style="border:1px solid #ddd;" placeholder="Ketik kode atau nama..." list="manual-rekening-list" autocomplete="off">
-                        <datalist id="manual-rekening-list">
-                            <option value="">-- Pilih Rekening --</option>
-                            ${rekeningOptionsDatalist}
-                        </datalist>
-                    </div> 
+                    </div>
                 </div>
 
-                <h5 style="color:#007bff; margin-bottom:10px; border-left: 4px solid #007bff; padding-left: 8px; margin-top:25px;">B. Data Penyedia / Toko</h5>
-                <div style="background: #f9f9f9; padding: 15px; border-radius: 6px; border: 1px solid #eee;">
-                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:15px;">
+                <div class="form-section">
+                    <span class="form-section-title">Data Penyedia / Toko</span>
+                    <div class="modern-grid">
                         <div class="form-group">
-                            <label style="font-weight:500; font-size:0.9em;">Nama Toko</label>
+                            <label>Nama Toko</label>
                             <input id="manual-nama-toko" class="form-control">
                         </div>
                         <div class="form-group">
-                            <label style="font-weight:500; font-size:0.9em;">NPWP</label>
+                            <label>NPWP</label>
                             <input id="manual-npwp" class="form-control">
                         </div>
-                        <div class="form-group" style="grid-column: 1 / -1;">
-                            <label style="font-weight:500; font-size:0.9em;">Alamat</label>
+                        <div class="form-group" style="grid-column:1 / -1;">
+                            <label>Alamat</label>
                             <input id="manual-alamat" class="form-control">
                         </div>
                     </div>
                 </div>
 
-                <div style="margin-top:25px; display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <h5 style="color:#007bff; margin:0; border-left: 4px solid #007bff; padding-left: 8px;">C. Rincian Belanja</h5>
-                    <button class="btn btn-sm btn-primary" onclick="addManualUraianRow()" style="border-radius:20px; padding: 5px 15px;">
-                        <i class="fa fa-plus"></i> ＋ Tambah Baris
-                    </button>
-                </div>
-
-                <div style="max-height:420px; overflow:auto; border:1px solid #e6e6e6; border-radius:8px; box-shadow: inset 0 1px 6px rgba(0,0,0,0.06);">
-                    <table style="width:100%; border-collapse:collapse; font-size:0.9em;" id="manual-uraian-table" class="table table-striped">
-                        <thead style="background:#f1f1f1; position:sticky; top:0; z-index:1;">
+                <div class="form-section">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px;">
+                        <span class="form-section-title" style="margin:0;">Rincian Belanja</span>
+                        <button type="button" class="btn btn-secondary" onclick="addManualUraianRow()" style="padding:6px 12px;">
+                            ＋ Tambah Baris
+                        </button>
+                    </div>
+                    <small style="display:block; color:#667085; margin-bottom:10px;">Kode rekening dapat ditentukan secara terpisah untuk setiap baris belanja.</small>
+                    <datalist id="manual-rekening-list">
+                        <option value="">-- Pilih Rekening --</option>
+                        ${rekeningOptionsDatalist}
+                    </datalist>
+                    <div class="table-wrapper" style="max-height:420px; overflow:auto;">
+                    <table id="manual-uraian-table" class="modern-table">
+                        <thead style="position:sticky; top:0; z-index:1;">
                             <tr>
-                                <th style="width:50%; min-width:380px; padding:10px; border-bottom:2px solid #ddd;">Nama Barang</th>
-                                <th style="width:8%; min-width:80px; padding:10px; border-bottom:2px solid #ddd; text-align:center;">Volume</th>
-                                <th style="width:8%; min-width:80px; padding:10px; border-bottom:2px solid #ddd; text-align:center;">Satuan</th>
-                                <th style="width:16%; min-width:120px; padding:10px; border-bottom:2px solid #ddd; text-align:right;">Harga</th>
-                                <th style="width:16%; min-width:140px; padding:10px; border-bottom:2px solid #ddd; text-align:right;">Total</th>
-                                <th style="width:50px; min-width:50px; padding:10px; border-bottom:2px solid #ddd; text-align:center;">#</th>
+                                <th style="min-width:220px;">Nama Barang</th>
+                                <th style="min-width:160px;">Kode Rekening Belanja</th>
+                                <th style="min-width:80px; text-align:center;">Volume</th>
+                                <th style="min-width:80px; text-align:center;">Satuan</th>
+                                <th style="min-width:120px; text-align:right;">Harga</th>
+                                <th style="min-width:140px; text-align:right;">Total</th>
+                                <th style="min-width:50px; text-align:center;">#</th>
                             </tr>
                         </thead>
-                        <tbody style="background: white;">
-                            </tbody>
+                        <tbody></tbody>
                     </table>
-                </div>
+                    </div>
 
                 <div style="display:flex; justify-content:flex-end; margin-top:8px; margin-bottom:6px;">
                     <div style="font-weight:700; font-size:1rem;">
                         Sub Total: <span id="manual-uraian-subtotal">Rp 0</span>
                     </div>
                 </div>
+                </div>
 
-                <h5 style="color:#007bff; margin-bottom:10px; border-left: 4px solid #007bff; padding-left: 8px; margin-top:25px;">D. Dokumentasi & Bukti</h5>
-                
-                <div class="upload-area" id="manual-drop-area">
+                <div class="form-section">
+                    <span class="form-section-title">Dokumentasi &amp; Bukti</span>
+                    <div class="upload-area" id="manual-drop-area">
                     <label style="font-weight:600; display:block; margin-bottom:5px;">
                         ${iconSvg("camera", 15)} Foto Bukti / Dokumentasi
                     </label>
@@ -3151,21 +3387,22 @@ async function openManualBKUForm() {
                     <div id="manual-bku-counter" style="font-size:11px; color:#888; margin-top:4px; font-style:italic; display:none;">Maksimal 15 foto.</div>
                     
                     <div id="manual-bku-preview" class="preview-grid"></div>
+                    </div>
                 </div>
+            </div>
 
-                <div style="margin-top:30px; padding-top:15px; border-top:1px solid #eee; display:flex; gap:10px; justify-content:flex-end;">
-                    <button class="btn btn-secondary" onclick="closePopup()" style="padding: 8px 20px;">Batal</button>
-                    <button class="btn btn-success" onclick="saveManualBKU()" style="padding: 8px 25px; font-weight:bold;">
-                        ${iconSvg("save", 15)} Simpan Data
-                    </button>
-                </div>
+            <div class="popup-footer">
+                <button class="btn btn-secondary" onclick="closePopup()">Batal</button>
+                <button class="btn btn-success" onclick="saveManualBKU()">
+                    ${iconSvg("save", 15)} Simpan Data
+                </button>
             </div>
         </div>
     `;
 
   showPopup(formHtml);
 
-  // 3. Initialize Logic (TIDAK DIUBAH)
+  // Reset draft foto dan buat satu baris rincian awal.
   window.manualBKUFiles = [];
   // Reset jika sebelumnya ada sisa
   if (window.renderManualBKUPreview) window.renderManualBKUPreview();
@@ -3239,10 +3476,9 @@ async function openManualBKUForm() {
       window.addEventListener("paste", pasteHandler, { once: false });
     }
 
-    // Setup resolver listeners for searchable inputs
+    // Normalisasi kode kegiatan dan kode rekening pada tiap baris setelah input selesai.
     try {
       const kegInput = document.getElementById("manual-kode-kegiatan");
-      const rekInput = document.getElementById("manual-kode-rekening");
       if (kegInput) {
         kegInput.addEventListener(
           "blur",
@@ -3256,21 +3492,8 @@ async function openManualBKUForm() {
               window.resolveManualKegiatanInput();
         });
       }
-      if (rekInput) {
-        rekInput.addEventListener(
-          "blur",
-          () =>
-            window.resolveManualRekeningInput &&
-            window.resolveManualRekeningInput(),
-        );
-        rekInput.addEventListener("keydown", (e) => {
-          if (e.key === "Enter")
-            window.resolveManualRekeningInput &&
-              window.resolveManualRekeningInput();
-        });
-      }
     } catch (e) {
-      /* ignore */
+      showToast("Error!", `Gagal menyiapkan validasi kode: ${e.message}`);
     }
   }, 100);
 
@@ -3279,6 +3502,7 @@ async function openManualBKUForm() {
 }
 
 function addManualUraianRow() {
+  // Alur: buat input rincian, pasang datalist rekening, lalu hitung total awal baris.
   const tbody = document.querySelector("#manual-uraian-table tbody");
   if (!tbody) return;
 
@@ -3298,6 +3522,13 @@ function addManualUraianRow() {
         <td style="padding: 8px 5px;">
             <input class="form-control manual-uraian-nama" 
                    placeholder="Nama barang / uraian" 
+                   style="${inputStyle}">
+        </td>
+        <td style="padding: 8px 5px;">
+            <input class="form-control manual-uraian-kode-rekening"
+                   placeholder="Ketik kode atau nama..."
+                   list="manual-rekening-list"
+                   autocomplete="off"
                    style="${inputStyle}">
         </td>
         <td style="padding: 8px 5px;">
@@ -3335,6 +3566,16 @@ function addManualUraianRow() {
     `;
 
   tbody.appendChild(row);
+  const accountCodeInput = row.querySelector(".manual-uraian-kode-rekening");
+  accountCodeInput.addEventListener("blur", () =>
+    resolveManualRekeningRowInput(accountCodeInput),
+  );
+  accountCodeInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      resolveManualRekeningRowInput(accountCodeInput);
+    }
+  });
 
   // Inisialisasi hitungan (agar 0 atau 1 langsung terformat)
   try {
@@ -3405,41 +3646,52 @@ function parseManualKode(inputId, listArray) {
     if (!inputId || !listArray || !Array.isArray(listArray)) return "";
     const el = document.getElementById(inputId);
     if (!el) return "";
-    const v = (el.value || "").trim();
-    if (!v) return "";
-    // If typed as "CODE - Name", return the code part
-    if (v.includes(" - ")) return v.split(" - ")[0].trim();
-    const lower = v.toLowerCase();
-    const kodeKey =
-      listArray[0] && listArray[0].kode_kegiatan
-        ? "kode_kegiatan"
-        : "kode_rekening_belanja";
-    const nameKey =
-      listArray[0] && listArray[0].nama_kegiatan
-        ? "nama_kegiatan"
-        : "nama_rekening_belanja";
-    // exact code match
-    let found = listArray.find(
-      (i) => (i[kodeKey] || "").toLowerCase() === lower,
-    );
-    if (found) return found[kodeKey];
-    // exact name match
-    found = listArray.find((i) => (i[nameKey] || "").toLowerCase() === lower);
-    if (found) return found[kodeKey];
-    // partial match: code contains or name contains
-    found = listArray.find(
-      (i) =>
-        (i[kodeKey] || "").toLowerCase().includes(lower) ||
-        (i[nameKey] || "").toLowerCase().includes(lower),
-    );
-    return found ? found[kodeKey] : "";
+    return parseManualKodeValue(el.value, listArray);
   } catch (e) {
     return "";
   }
 }
 
+function parseManualKodeValue(value, listArray) {
+  // Alur: tentukan kolom master, lalu cocokkan kode/nama persis atau parsial.
+  if (!Array.isArray(listArray)) return "";
+  const normalizedValue = String(value || "").trim();
+  if (!normalizedValue) return "";
+  const kodeKey =
+    listArray[0] && listArray[0].kode_kegiatan
+      ? "kode_kegiatan"
+      : "kode_rekening_belanja";
+  const nameKey =
+    listArray[0] && listArray[0].nama_kegiatan
+      ? "nama_kegiatan"
+      : "nama_rekening_belanja";
+  const lowerValue = normalizedValue.toLowerCase();
+  if (normalizedValue.includes(" - ")) {
+    const enteredCode = normalizedValue.split(" - ")[0].trim();
+    const exactCode = listArray.find(
+      (item) => String(item[kodeKey] || "").toLowerCase() === enteredCode.toLowerCase(),
+    );
+    return exactCode ? exactCode[kodeKey] : "";
+  }
+  const exactCode = listArray.find(
+    (item) => String(item[kodeKey] || "").toLowerCase() === lowerValue,
+  );
+  if (exactCode) return exactCode[kodeKey];
+  const exactName = listArray.find(
+    (item) => String(item[nameKey] || "").toLowerCase() === lowerValue,
+  );
+  if (exactName) return exactName[kodeKey];
+  const partialMatch = listArray.find(
+    (item) =>
+      String(item[kodeKey] || "").toLowerCase().includes(lowerValue) ||
+      String(item[nameKey] || "").toLowerCase().includes(lowerValue),
+  );
+  return partialMatch ? partialMatch[kodeKey] : "";
+}
+
 // Auto-resolve and normalize input to "CODE - Name" when possible
 window.resolveManualKegiatanInput = function () {
+  // Alur: cocokkan input kegiatan ke master, lalu tampilkan kembali kode beserta nama resminya.
   const el = document.getElementById("manual-kode-kegiatan");
   if (!el) return;
   const kode = parseManualKode(
@@ -3453,25 +3705,26 @@ window.resolveManualKegiatanInput = function () {
   if (found) el.value = `${found.kode_kegiatan} - ${found.nama_kegiatan}`;
 };
 
-window.resolveManualRekeningInput = function () {
-  const el = document.getElementById("manual-kode-rekening");
-  if (!el) return;
-  const kode = parseManualKode(
-    "manual-kode-rekening",
+function resolveManualRekeningRowInput(accountCodeInput) {
+  // Alur: cocokkan kode/nama dengan master, lalu simpan label standar agar mudah diverifikasi.
+  if (!accountCodeInput) return;
+  const accountCode = parseManualKodeValue(
+    accountCodeInput.value,
     window._manualMasterRekening,
   );
-  if (!kode) return;
-  const found = (window._manualMasterRekening || []).find(
-    (r) => r.kode_rekening_belanja === kode,
+  const matchingAccount = (window._manualMasterRekening || []).find(
+    (rekening) => rekening.kode_rekening_belanja === accountCode,
   );
-  if (found)
-    el.value = `${found.kode_rekening_belanja} - ${found.nama_rekening_belanja}`;
-};
+  if (matchingAccount) {
+    accountCodeInput.value = `${matchingAccount.kode_rekening_belanja} - ${matchingAccount.nama_rekening_belanja}`;
+  }
+}
 
 async function saveManualBKU() {
+  // Alur: validasi header dan setiap kode rekening, susun payload rincian, kirim multipart, lalu refresh tampilan.
   try {
-    const no_bukti = document.getElementById("manual-no-bukti").value.trim();
-    if (!no_bukti) {
+    const receiptNumber = document.getElementById("manual-no-bukti").value.trim();
+    if (!receiptNumber) {
       showToast("Error!", "No Bukti wajib diisi");
       return;
     }
@@ -3479,10 +3732,6 @@ async function saveManualBKU() {
     const kode_kegiatan = parseManualKode(
       "manual-kode-kegiatan",
       window._manualMasterKegiatan,
-    );
-    const kode_rekening = parseManualKode(
-      "manual-kode-rekening",
-      window._manualMasterRekening,
     );
     const tanggal = document.getElementById("manual-tanggal").value || "";
     const tanggal_nota =
@@ -3494,10 +3743,16 @@ async function saveManualBKU() {
     const jenis_foto =
       document.getElementById("manual-jenis-foto").value || "barang";
 
-    const rows = Array.from(document.querySelectorAll(".manual-uraian-row"));
-    const uraian = rows
+    const detailRows = Array.from(document.querySelectorAll(".manual-uraian-row"));
+    const parsedDetails = detailRows
       .map((r) => {
         const nama = r.querySelector(".manual-uraian-nama").value || "";
+        const accountCodeInput = r.querySelector(".manual-uraian-kode-rekening");
+        const accountCodeText = accountCodeInput.value.trim();
+        const accountCode = parseManualKodeValue(
+          accountCodeText,
+          window._manualMasterRekening,
+        );
         const vol =
           parseFloat(r.querySelector(".manual-uraian-volume").value) || 0;
         const satuan = r.querySelector(".manual-uraian-satuan").value || "";
@@ -3514,24 +3769,41 @@ async function saveManualBKU() {
               .replace(/,/g, "."),
           ) || 0;
         return {
-          nama_barang: nama,
-          volume: vol,
-          satuan: satuan,
-          harga_satuan: harga,
-          pengeluaran: pengeluaran,
+          detail: {
+            nama_barang: nama,
+            kode_rekening: accountCode,
+            volume: vol,
+            satuan: satuan,
+            harga_satuan: harga,
+            pengeluaran: pengeluaran,
+          },
+          isAccountCodeInvalid: Boolean(accountCodeText && !accountCode),
         };
       })
-      .filter((i) => i.nama_barang || i.pengeluaran > 0);
+      .filter(
+        ({ detail }) => detail.nama_barang || detail.pengeluaran > 0,
+      );
 
+    const rowWithInvalidAccountCode = parsedDetails.find(
+      (item) => item.isAccountCodeInvalid,
+    );
+    if (rowWithInvalidAccountCode) {
+      showToast(
+        "Error!",
+        "Kode rekening pada rincian belanja tidak ditemukan di master. Pilih kode atau nama rekening dari daftar.",
+      );
+      return;
+    }
+
+    const uraian = parsedDetails.map(({ detail }) => detail);
     if (uraian.length === 0) {
       showToast("Error!", "Tambahkan minimal satu uraian belanja");
       return;
     }
 
     const formData = new FormData();
-    formData.append("no_bukti", no_bukti);
+    formData.append("no_bukti", receiptNumber);
     formData.append("kode_kegiatan", kode_kegiatan);
-    formData.append("kode_rekening", kode_rekening);
     formData.append("tanggal", tanggal);
     formData.append("tanggal_nota", tanggal_nota);
     formData.append("no_bast", no_bast);
@@ -3795,6 +4067,8 @@ async function saveUpdateDetail(kwitansiId) {
       nama_toko: document.getElementById("edit-nama-toko").value,
       npwp_toko: document.getElementById("edit-npwp-toko").value,
       alamat_toko: document.getElementById("edit-alamat-toko").value,
+      no_telp_toko: document.getElementById("edit-no-telp-toko").value,
+      no_nota: document.getElementById("edit-no-nota").value,
       uraian: uraianData,
       jenis_belanja: jenisBelanja,
       data_lampiran: dataLampiran,
@@ -3915,7 +4189,7 @@ async function loadDataBKU() {
   if (!tbody) return;
 
   tbody.innerHTML =
-    '<tr><td colspan="9" style="text-align:center;">Memuat data...</td></tr>';
+    '<tr><td colspan="11" style="text-align:center;">Memuat data...</td></tr>';
 
   try {
     const response = await apiFetch(`${API_BASE}/transaksi`);
@@ -3933,7 +4207,7 @@ async function loadDataBKU() {
 
     if (transactions.length === 0) {
       tbody.innerHTML =
-        '<tr><td colspan="9" style="text-align:center;">Tidak ada data BKU ditemukan.</td></tr>';
+        '<tr><td colspan="11" style="text-align:center;">Tidak ada data BKU ditemukan.</td></tr>';
       return;
     }
 
@@ -3942,16 +4216,18 @@ async function loadDataBKU() {
     transactions.forEach((item) => {
       const row = `
         <tr>
-            <td>${item.no_bukti || "-"}</td>
-            <td>${item.tanggal || "-"}</td>
-            <td>${item.kode_kegiatan || "-"}</td>
-            <td>${item.uraian || "-"}</td>
-            <td>${item.volume || 0}</td>
-            <td>${item.satuan || ""}</td>
+            <td>${escapeSpjFormValue(item.no_bukti || "-")}</td>
+            <td>${escapeSpjFormValue(item.tanggal || "-")}</td>
+            <td>${escapeSpjFormValue(item.kode_kegiatan || "-")}</td>
+            <td>${escapeSpjFormValue(item.kode_rekening || "-")}</td>
+            <td>${escapeSpjFormValue(item.uraian || "-")}</td>
+            ${renderBkuShopIdentity(item)}
+            <td>${escapeSpjFormValue(item.volume || 0)}</td>
+            <td>${escapeSpjFormValue(item.satuan || "")}</td>
             <td>${formatCurrencyLabel(item.harga_satuan || 0)}</td>
             <td>${formatCurrencyLabel(item.pengeluaran || 0)}</td>
             <td style="text-align:center">
-                <button class="btn btn-danger btn-sm" onclick="deleteTransaksi('${item.no_bukti}')">Hapus</button>
+                <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))})`)}">Hapus</button>
             </td>
         </tr>
     `;
@@ -3960,7 +4236,7 @@ async function loadDataBKU() {
   } catch (error) {
     showToast("Gagal!", error);
     tbody.innerHTML =
-      '<tr><td colspan="9" style="text-align:center; color:red;">Gagal terhubung ke database.</td></tr>';
+      '<tr><td colspan="11" style="text-align:center; color:red;">Gagal terhubung ke database.</td></tr>';
   }
 }
 
@@ -4924,6 +5200,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // data dimuat. (Sebelumnya `await ensureBackendReady()` mendahului
   // initApp(): saat backend lambat siap, halaman tampak kosong.)
   initApp();
+  loadArkasDatabaseInfo();
 
   await ensureBackendReady();
   loadPengaturan();
@@ -4990,6 +5267,11 @@ function handleGlobalSearch(e) {
         const filteredBKU = filterData(bkuData.transaksi, keyword, [
           "tanggal",
           "kode_rekening",
+          "nama_toko",
+          "alamat_toko",
+          "no_telp_toko",
+          "npwp_toko",
+          "no_nota",
           "satuan",
           "volume",
           "uraian",
@@ -5179,9 +5461,12 @@ function initApp() {
             <h3>${iconSvg("barChart", 17)} Data BKU</h3>
                 <div style="display:flex; gap:10px; align-items:center;">
                     <button class="btn btn-primary" onclick="loadDataBKU()">${iconSvg("refreshCw", 15)} Segarkan Data</button>
+                    <button class="btn btn-success" onclick="syncArkas()" title="Impor transaksi BPU dari database ARKAS">Sinkron ARKAS</button>
+                    <button class="btn btn-outline-primary" onclick="changeArkasDatabase()" title="Pilih atau ubah lokasi database ARKAS">Ubah Database</button>
                     <button class="btn btn-outline-primary" onclick="openManualBKUForm()" title="Tambah data BKU manual">＋ Tambah Manual</button>
                 </div>
         </div>
+        <small id="arkas-database-label" style="display:block;color:#666;margin:-8px 0 12px 0;">Memeriksa lokasi database ARKAS...</small>
                 <div class="table-scroll">
                     <table id="table-bku" style="width:100%; border-collapse:collapse;">
                         <thead>
@@ -5189,7 +5474,9 @@ function initApp() {
                                 <th>No. Bukti</th>
                                 <th>Tanggal</th>
                                 <th>Kode Kegiatan</th>
+                                <th>Kode Rekening</th>
                                 <th>Nama Barang/Jasa</th>
+                                <th>Toko/Penerima</th>
                                 <th>Volume</th>
                                 <th>Satuan</th>
                                 <th>Harga Satuan</th>
@@ -5567,6 +5854,7 @@ function initApp() {
 window.switchTab = switchTab;
 window.savePengaturan = savePengaturan;
 window.uploadBKU = uploadBKU;
+window.syncArkas = syncArkas;
 window.saveTransaksi = saveTransaksi;
 window.generateKwitansi = generateKwitansi;
 window.downloadKwitansi = downloadKwitansi;

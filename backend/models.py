@@ -19,6 +19,12 @@ class Transaksi(Base):
     volume = Column(Float, nullable=False, default=0)
     satuan = Column(String, nullable=False, default="")
     harga_satuan = Column(Float, nullable=False, default=0)
+    nama_toko = Column(String, nullable=False, default="")
+    alamat_toko = Column(String, nullable=False, default="")
+    no_telp_toko = Column(String, nullable=False, default="")
+    npwp_toko = Column(String, nullable=False, default="")
+    no_nota = Column(String, nullable=False, default="")
+    tanggal_nota = Column(String, nullable=False, default="")
     penerimaan = Column(Float, default=0)
     pengeluaran = Column(Float, default=0)
     saldo = Column(Float, default=0)
@@ -129,6 +135,8 @@ class Kwitansi(Base):
     nama_toko = Column(String, default="")
     npwp_toko = Column(String, default="")
     alamat_toko = Column(String, default="")
+    no_telp_toko = Column(String, default="")
+    no_nota = Column(String, default="")
     foto_bukti = Column(
         Text,
         default="[]",

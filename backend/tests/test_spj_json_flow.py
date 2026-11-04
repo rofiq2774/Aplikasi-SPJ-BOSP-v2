@@ -57,7 +57,13 @@ def spj_client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "run_migrations", lambda force=False: None)
 
     from database import Base
-    from models import IdentitasPeriode, Kwitansi, MasterKegiatan, Transaksi
+    from models import (
+        IdentitasPeriode,
+        Kwitansi,
+        MasterKegiatan,
+        MasterRekeningBelanja,
+        Transaksi,
+    )
 
     async def setup():
         async with engine.begin() as conn:
@@ -97,6 +103,16 @@ def spj_client(tmp_path, monkeypatch):
                 nip_pengurus_barang="345678",
             ))
             s.add(MasterKegiatan(kode_kegiatan="K-01", nama_kegiatan="Belanja ATK"))
+            s.add_all([
+                MasterRekeningBelanja(
+                    kode_rekening_belanja="5.2.1.01.01",
+                    nama_rekening_belanja="Belanja Alat Tulis",
+                ),
+                MasterRekeningBelanja(
+                    kode_rekening_belanja="5.2.1.02.01",
+                    nama_rekening_belanja="Belanja Bahan",
+                ),
+            ])
             s.add(Transaksi(
                 tanggal="2026-11-01",
                 kode_kegiatan="K-01",
@@ -121,9 +137,82 @@ def spj_client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
     with TestClient(main.app) as c:
+        c.test_session_maker = maker
         yield c
 
     main.app.dependency_overrides.clear()
+
+
+def test_manual_kwitansi_supports_account_code_per_detail_row(spj_client):
+    payload = {
+        "no_bukti": "BKT-MANUAL",
+        "kode_kegiatan": "K-01",
+        "tanggal": "2026-11-06",
+        "uraian_json": json.dumps([
+            {
+                "nama_barang": "Pulpen",
+                "kode_rekening": "5.2.1.01.01",
+                "volume": 2,
+                "satuan": "buah",
+                "harga_satuan": 1000,
+                "pengeluaran": 2000,
+            },
+            {
+                "nama_barang": "Kertas",
+                "kode_rekening": "5.2.1.02.01",
+                "volume": 1,
+                "satuan": "rim",
+                "harga_satuan": 5000,
+                "pengeluaran": 5000,
+            },
+        ]),
+    }
+
+    response = spj_client.post("/api/kwitansi/manual", data=payload)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "success"
+
+    from sqlalchemy import select
+    from models import Transaksi
+
+    async def get_saved_account_codes():
+        async with spj_client.test_session_maker() as session:
+            result = await session.execute(
+                select(Transaksi.kode_rekening)
+                .where(Transaksi.no_bukti == "BKT-MANUAL")
+                .order_by(Transaksi.uraian)
+            )
+            return result.scalars().all()
+
+    loop = asyncio.new_event_loop()
+    try:
+        saved_account_codes = loop.run_until_complete(get_saved_account_codes())
+    finally:
+        loop.close()
+
+    assert saved_account_codes == ["5.2.1.02.01", "5.2.1.01.01"]
+
+
+def test_manual_kwitansi_rejects_unknown_detail_account_code(spj_client):
+    response = spj_client.post(
+        "/api/kwitansi/manual",
+        data={
+            "no_bukti": "BKT-INVALID",
+            "uraian_json": json.dumps([
+                {
+                    "nama_barang": "Pulpen",
+                    "kode_rekening": "5.9.9.99.99",
+                    "volume": 1,
+                    "harga_satuan": 1000,
+                    "pengeluaran": 1000,
+                },
+            ]),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Kode rekening tidak ditemukan" in response.json()["detail"]
 
 
 def test_spj_data_returns_json_and_valid_payload(spj_client):
@@ -875,3 +964,333 @@ def test_generated_at_from_production_endpoint(spj_client):
     ts = data["document"]["generated_at"]
     dt = datetime.fromisoformat(ts)
     assert dt.utcoffset() == timedelta(hours=7)
+
+
+def test_arkas_import_keeps_existing_receipts_and_vendor_identity(spj_client):
+    payload = {
+        "mode": "keep",
+        "transaksi": [
+            {
+                "tanggal": "05-11-2026",
+                "kode_kegiatan": "02.03.01",
+                "kode_rekening": "5.1.02.01",
+                "no_bukti": "BPU-001",
+                "uraian": "Belanja ATK",
+                "volume": 5,
+                "satuan": "paket",
+                "harga_satuan": 25000,
+                "pengeluaran": 125000,
+                "nama_toko": "Toko Contoh",
+                "alamat_toko": "Jl. Contoh",
+                "no_telp_toko": "08123456789",
+                "npwp_toko": "01.234.567.8-901.000",
+                "no_nota": "NOTA-001",
+                "tanggal_nota": "04-11-2026",
+            }
+        ]
+    }
+
+    first = spj_client.post("/api/transaksi/import-arkas", json=payload)
+    second = spj_client.post("/api/transaksi/import-arkas", json=payload)
+
+    assert first.status_code == 200
+    assert first.json()["saved_count"] == 1
+    assert second.status_code == 200
+    assert second.json()["saved_count"] == 0
+    assert second.json()["skipped_count"] == 1
+
+    async def read_transactions():
+        from sqlalchemy import select
+        from models import Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            result = await session.execute(select(Transaksi))
+            return result.scalars().all()
+
+    transactions = asyncio.run(read_transactions())
+    assert len(transactions) == 2
+    assert {item.no_bukti for item in transactions} == {"BKT-001", "BPU-001"}
+    imported = next(item for item in transactions if item.no_bukti == "BPU-001")
+    assert imported.kode_kegiatan == "02.03.01"
+    assert imported.volume == 5
+    assert imported.nama_toko == "Toko Contoh"
+    assert imported.alamat_toko == "Jl. Contoh"
+    assert imported.no_telp_toko == "08123456789"
+    assert imported.npwp_toko == "01.234.567.8-901.000"
+    assert imported.no_nota == "NOTA-001"
+    response_rows = spj_client.get("/api/transaksi").json()["data"]
+    imported_response = next(
+        item for item in response_rows if item["no_bukti"] == "BPU-001"
+    )
+    assert imported_response["nama_toko"] == "Toko Contoh"
+    assert imported_response["alamat_toko"] == "Jl. Contoh"
+
+
+def test_arkas_import_syncs_spj_vendor_and_preserves_manual_fields(spj_client):
+    async def add_existing_spj():
+        from models import Kwitansi, Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            session.add(
+                Transaksi(
+                    tanggal="01-11-2026",
+                    no_bukti="BPU-EXIST",
+                    uraian="Data BKU yang dipertahankan",
+                )
+            )
+            session.add(
+                Kwitansi(
+                    nomor_kwitansi="BPU-EXIST/02.03.01/THP II/2026",
+                    no_bukti="BPU-EXIST",
+                    kode_kegiatan="02.03.01",
+                    nama_kegiatan="Nama lama",
+                    tanggal="01-11-2026",
+                    no_bast="BAST-MANUAL",
+                    nama_toko="Nama lama",
+                    foto_bukti='[{"path":"uploads/keep.png","jenis":"barang"}]',
+                    data_lampiran='{"catatan":"tetap"}',
+                )
+            )
+            await session.commit()
+
+    asyncio.run(add_existing_spj())
+    response = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "keep",
+            "transaksi": [
+                {
+                    "tanggal": "05-11-2026",
+                    "kode_kegiatan": "02.03.01",
+                    "nama_kegiatan": "Kegiatan ARKAS",
+                    "no_bukti": "BPU-EXIST",
+                    "uraian": "Belanja ARKAS",
+                    "pengeluaran": 125000,
+                    "nama_toko": "Toko ARKAS",
+                    "alamat_toko": "Jl. ARKAS",
+                    "no_telp_toko": "08123456789",
+                    "npwp_toko": "01.234.567.8-901.000",
+                    "no_nota": "NOTA-ARKAS",
+                    "tanggal_nota": "04-11-2026",
+                },
+                {
+                    "tanggal": "06-11-2026",
+                    "kode_kegiatan": "02.03.02",
+                    "no_bukti": "BPU-NEW",
+                    "uraian": "Rincian lain untuk bukti yang sama",
+                    "pengeluaran": 50000,
+                },
+                {
+                    "tanggal": "06-11-2026",
+                    "kode_kegiatan": "02.03.03",
+                    "nama_kegiatan": "Kegiatan Baru",
+                    "no_bukti": "BPU-NEW",
+                    "uraian": "Rincian tambahan",
+                    "pengeluaran": 25000,
+                    "nama_toko": "Toko Baru",
+                    "alamat_toko": "Jl. Toko Baru",
+                    "no_telp_toko": "08123456789",
+                    "npwp_toko": "02.345.678.9-012.000",
+                    "no_nota": "NOTA-BARU",
+                    "tanggal_nota": "05-11-2026",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["skipped_count"] == 1
+    assert response.json()["synced_kwitansi_count"] == 1
+    assert response.json()["created_kwitansi_count"] == 1
+
+    async def read_spj():
+        from sqlalchemy import select
+        from models import Kwitansi
+
+        async with spj_client.test_session_maker() as session:
+            result = await session.execute(select(Kwitansi))
+            return result.scalars().all()
+
+    kwitansi = asyncio.run(read_spj())
+    existing = next(row for row in kwitansi if row.no_bukti == "BPU-EXIST")
+    created = next(row for row in kwitansi if row.no_bukti == "BPU-NEW")
+    assert sum(row.no_bukti == "BPU-NEW" for row in kwitansi) == 1
+    assert existing.nama_toko == "Toko ARKAS"
+    assert existing.alamat_toko == "Jl. ARKAS"
+    assert existing.no_telp_toko == "08123456789"
+    assert existing.npwp_toko == "01.234.567.8-901.000"
+    assert existing.no_nota == "NOTA-ARKAS"
+    assert existing.tanggal_nota == "04-11-2026"
+    assert existing.no_bast == "BAST-MANUAL"
+    assert existing.foto_bukti == '[{"path":"uploads/keep.png","jenis":"barang"}]'
+    assert existing.data_lampiran == '{"catatan":"tetap"}'
+    assert created.nama_toko == "Toko Baru"
+    assert created.kode_kegiatan == "02.03.02"
+    assert created.alamat_toko == "Jl. Toko Baru"
+    assert created.no_telp_toko == "08123456789"
+    assert created.npwp_toko == "02.345.678.9-012.000"
+    assert created.no_nota == "NOTA-BARU"
+    assert created.jumlah == 75000
+
+    spj_rows = spj_client.get("/api/kwitansi").json()["data"]
+    synced_row = next(row for row in spj_rows if row["no_bukti"] == "BPU-EXIST")
+    assert synced_row["no_telp_toko"] == "08123456789"
+    assert synced_row["no_nota"] == "NOTA-ARKAS"
+    detail = spj_client.get(f"/api/kwitansi/{created.id}").json()["data"]
+    assert detail["nama_toko"] == "Toko Baru"
+    assert detail["no_telp_toko"] == "08123456789"
+    assert detail["no_nota"] == "NOTA-BARU"
+
+
+def test_generate_spj_groups_same_receipt_and_copies_arkas_vendor(spj_client):
+    async def add_transactions():
+        from models import Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            session.add_all(
+                [
+                    Transaksi(
+                        tanggal="05-11-2026",
+                        kode_kegiatan="02.03.01",
+                        no_bukti="BPU-GROUP",
+                        uraian="Barang pertama",
+                        pengeluaran=100000,
+                        nama_toko="Toko Sama",
+                        alamat_toko="Jl. Sama",
+                        no_telp_toko="08123456789",
+                        npwp_toko="01.234.567.8-901.000",
+                        no_nota="NOTA-GROUP",
+                        tanggal_nota="04-11-2026",
+                    ),
+                    Transaksi(
+                        tanggal="05-11-2026",
+                        kode_kegiatan="02.03.02",
+                        no_bukti="BPU-GROUP",
+                        uraian="Barang kedua",
+                        pengeluaran=50000,
+                        nama_toko="Toko Sama",
+                        alamat_toko="Jl. Sama",
+                        no_telp_toko="08123456789",
+                        npwp_toko="01.234.567.8-901.000",
+                        no_nota="NOTA-GROUP",
+                        tanggal_nota="04-11-2026",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(add_transactions())
+    response = spj_client.post("/api/kwitansi/generate")
+
+    assert response.status_code == 200
+    rows = spj_client.get("/api/kwitansi").json()["data"]
+    grouped_rows = [row for row in rows if row["no_bukti"] == "BPU-GROUP"]
+    assert len(grouped_rows) == 1
+    assert grouped_rows[0]["jumlah"] == 150000
+    assert grouped_rows[0]["nama_toko"] == "Toko Sama"
+    assert grouped_rows[0]["alamat_toko"] == "Jl. Sama"
+    assert grouped_rows[0]["no_telp_toko"] == "08123456789"
+    assert grouped_rows[0]["npwp_toko"] == "01.234.567.8-901.000"
+    assert grouped_rows[0]["no_nota"] == "NOTA-GROUP"
+
+
+def test_arkas_import_update_replaces_rows_by_receipt_number(spj_client):
+    async def add_existing_rows():
+        from models import Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            session.add_all(
+                [
+                    Transaksi(
+                        tanggal="01-11-2026",
+                        no_bukti="BPU-UPDATE",
+                        uraian="Data lama 1",
+                    ),
+                    Transaksi(
+                        tanggal="01-11-2026",
+                        no_bukti="BPU-UPDATE",
+                        uraian="Data lama 2",
+                    ),
+                    Transaksi(
+                        tanggal="01-11-2026",
+                        no_bukti="BPU-KEEP",
+                        uraian="Jangan diubah",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(add_existing_rows())
+    response = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "update",
+            "transaksi": [
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-UPDATE",
+                    "uraian": "Data ARKAS 1",
+                    "volume": 1,
+                    "pengeluaran": 100,
+                },
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-UPDATE",
+                    "uraian": "Data ARKAS 2",
+                    "volume": 2,
+                    "pengeluaran": 200,
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["deleted_count"] == 2
+    assert response.json()["saved_count"] == 2
+
+    async def read_rows():
+        from sqlalchemy import select
+        from models import Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            result = await session.execute(select(Transaksi))
+            return result.scalars().all()
+
+    rows = asyncio.run(read_rows())
+    assert sorted(row.uraian for row in rows) == [
+        "Data ARKAS 1",
+        "Data ARKAS 2",
+        "Jangan diubah",
+        "Pulpen 1 lusin",
+    ]
+
+
+def test_arkas_import_replace_all_removes_existing_transactions(spj_client):
+    response = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "replace_all",
+            "transaksi": [
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-REPLACE",
+                    "uraian": "Data pengganti",
+                    "pengeluaran": 500,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["deleted_count"] == 1
+    assert response.json()["saved_count"] == 1
+
+    async def read_rows():
+        from sqlalchemy import select
+        from models import Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            result = await session.execute(select(Transaksi))
+            return result.scalars().all()
+
+    rows = asyncio.run(read_rows())
+    assert len(rows) == 1
+    assert rows[0].no_bukti == "BPU-REPLACE"

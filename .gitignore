@@ -30,6 +30,7 @@ frontend/dist/
 backend/build/
 backend/dist/
 backend/__pycache__/
+tes/
 *.pyc
 
 # ========================

@@ -10,6 +10,7 @@
     "package": "electron-builder"
   },
   "dependencies": {
+    "@7mind.io/sqlcipher-wasm": "^1.4.0",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.7.3",
     "pdfjs-dist": "4.10.38",
@@ -37,6 +38,7 @@
     "files": [
       "dist/**/*",
       "index.js",
+      "arkasReader.cjs",
       "preload.js",
       "assets/**/*"
     ],

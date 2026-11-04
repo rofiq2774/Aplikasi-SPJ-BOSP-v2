@@ -350,11 +350,22 @@ class TransaksiItem(BaseModel):
     volume: float = 0
     satuan: Optional[str] = ""
     harga_satuan: float = 0.0
+    nama_toko: Optional[str] = ""
+    alamat_toko: Optional[str] = ""
+    no_telp_toko: Optional[str] = ""
+    npwp_toko: Optional[str] = ""
+    no_nota: Optional[str] = ""
+    tanggal_nota: Optional[str] = ""
 
 
 class BKUData(BaseModel):
     no_bukti: Optional[str] = ""
     transaksi: List[TransaksiItem] = []
+
+
+class ArkasImportRequest(BaseModel):
+    mode: str = "keep"
+    transaksi: List[TransaksiItem]
 
 
 class KwitansiRequest(BaseModel):
@@ -1336,6 +1347,8 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
         "nama_toko": kw.nama_toko or "",
         "npwp_toko": kw.npwp_toko or "",
         "alamat_toko": kw.alamat_toko or "",
+        "no_telp_toko": kw.no_telp_toko or "",
+        "no_nota": kw.no_nota or "",
         "thp": kw.thp or "",
         "tahun": kw.tahun or "",
         "kode_kegiatan": kw.kode_kegiatan or "",
@@ -2382,6 +2395,241 @@ async def save_transaksi(
         logger.error(f"Error saat regenerate transaksi: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Gagal memproses data: {str(e)}")
 
+@api_router.post("/transaksi/import-arkas")
+async def import_arkas_transactions(
+    data: ArkasImportRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Synchronize ARKAS BPU rows by receipt number."""
+    valid_modes = {"replace_all", "keep", "update"}
+    if data.mode not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail="Mode sinkron tidak valid. Pilih replace_all, keep, atau update.",
+        )
+
+    transactions = data.transaksi
+    if not transactions:
+        raise HTTPException(
+            status_code=400,
+            detail="Tidak ada transaksi ARKAS untuk disinkronkan.",
+        )
+    if any(
+        not normalize_no_bukti_backend(item.no_bukti).startswith("bpu")
+        for item in transactions
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Sinkron ARKAS hanya menerima transaksi dengan no bukti BPU.",
+        )
+
+    try:
+        current_result = await db.execute(select(Transaksi))
+        current_rows = current_result.scalars().all()
+        incoming_receipts = {
+            normalize_no_bukti_backend(item.no_bukti) for item in transactions
+        }
+        deleted_count = 0
+        skipped_count = 0
+
+        if data.mode == "replace_all":
+            deleted_count = len(current_rows)
+            if deleted_count:
+                await db.execute(delete(Transaksi))
+        elif data.mode == "keep":
+            existing_receipts = {
+                normalize_no_bukti_backend(item.no_bukti)
+                for item in current_rows
+                if item.no_bukti
+            }
+            kept_receipts = incoming_receipts & existing_receipts
+            transactions = [
+                item
+                for item in transactions
+                if normalize_no_bukti_backend(item.no_bukti) not in kept_receipts
+            ]
+            skipped_count = len(data.transaksi) - len(transactions)
+        else:
+            rows_to_update = [
+                item
+                for item in current_rows
+                if normalize_no_bukti_backend(item.no_bukti) in incoming_receipts
+            ]
+            if rows_to_update:
+                await db.execute(
+                    delete(Transaksi).where(
+                        Transaksi.id.in_([item.id for item in rows_to_update])
+                    )
+                )
+                deleted_count = len(rows_to_update)
+
+        for item in transactions:
+            db.add(
+                Transaksi(
+                    tanggal=normalize_date_backend(item.tanggal) or item.tanggal,
+                    kode_kegiatan=item.kode_kegiatan or "",
+                    kode_rekening=item.kode_rekening or "",
+                    no_bukti=item.no_bukti,
+                    uraian=item.uraian or "",
+                    volume=float(item.volume or 0),
+                    satuan=item.satuan or "",
+                    harga_satuan=float(item.harga_satuan or 0),
+                    nama_toko=item.nama_toko or "",
+                    alamat_toko=item.alamat_toko or "",
+                    no_telp_toko=item.no_telp_toko or "",
+                    npwp_toko=item.npwp_toko or "",
+                    no_nota=item.no_nota or "",
+                    tanggal_nota=(
+                        normalize_date_backend(item.tanggal_nota)
+                        or item.tanggal_nota
+                        or ""
+                    ),
+                    penerimaan=float(item.penerimaan or 0),
+                    pengeluaran=float(item.pengeluaran or 0),
+                    saldo=float(item.saldo or 0),
+                )
+            )
+
+        source_groups = defaultdict(list)
+        for item in data.transaksi:
+            receipt_key = normalize_no_bukti_backend(item.no_bukti)
+            source_groups[receipt_key].append(item)
+
+        kwitansi_result = await db.execute(select(Kwitansi))
+        existing_kwitansi = kwitansi_result.scalars().all()
+        kwitansi_by_receipt = defaultdict(list)
+        for kwitansi in existing_kwitansi:
+            receipt_key = normalize_no_bukti_backend(kwitansi.no_bukti)
+            if receipt_key in source_groups:
+                kwitansi_by_receipt[receipt_key].append(kwitansi)
+
+        synced_kwitansi_count = 0
+        created_kwitansi_count = 0
+        identity_by_receipt = {}
+        for receipt_key, items in source_groups.items():
+            source = items[0]
+            identity_fields = {
+                "nama_toko": next((item.nama_toko for item in items if item.nama_toko), ""),
+                "alamat_toko": next((item.alamat_toko for item in items if item.alamat_toko), ""),
+                "no_telp_toko": next((item.no_telp_toko for item in items if item.no_telp_toko), ""),
+                "npwp_toko": next((item.npwp_toko for item in items if item.npwp_toko), ""),
+                "no_nota": next((item.no_nota for item in items if item.no_nota), ""),
+                "tanggal_nota": next(
+                    (
+                        normalize_date_backend(item.tanggal_nota)
+                        or item.tanggal_nota
+                        for item in items
+                        if item.tanggal_nota
+                    ),
+                    "",
+                ),
+            }
+            identity_by_receipt[receipt_key] = identity_fields
+            for kwitansi in kwitansi_by_receipt[receipt_key]:
+                for field, value in identity_fields.items():
+                    if value and value.strip():
+                        setattr(kwitansi, field, value.strip())
+                synced_kwitansi_count += 1
+
+        for receipt_key, items in source_groups.items():
+            source = items[0]
+            code = next(
+                (item.kode_kegiatan.strip() for item in items if item.kode_kegiatan),
+                "",
+            )
+            nama_kegiatan = next(
+                (item.nama_kegiatan.strip() for item in items if item.nama_kegiatan),
+                "",
+            )
+            receipt_kwitansi = kwitansi_by_receipt[receipt_key]
+            kwitansi = receipt_kwitansi[0] if receipt_kwitansi else None
+            if kwitansi is None:
+                identity_fields = identity_by_receipt[receipt_key]
+                tanggal = normalize_date_backend(source.tanggal) or source.tanggal or ""
+                parsed_date = None
+                if tanggal:
+                    try:
+                        parsed_date = parse_date(tanggal, dayfirst=True)
+                    except (TypeError, ValueError, OverflowError):
+                        parsed_date = None
+                thp = ""
+                tahun = ""
+                nomor_kwitansi = source.no_bukti
+                if parsed_date:
+                    thp = "THP I" if parsed_date.month <= 6 else "THP II"
+                    tahun = str(parsed_date.year)
+                    nomor_kwitansi = (
+                        f"{source.no_bukti}/{code or '-'} /{thp}/{tahun}"
+                    )
+
+                existing_numbers = {
+                    row.nomor_kwitansi for row in existing_kwitansi
+                }
+                base_nomor_kwitansi = nomor_kwitansi
+                suffix = 1
+                while nomor_kwitansi in existing_numbers:
+                    nomor_kwitansi = (
+                        f"{base_nomor_kwitansi}/{code or 'ARKAS'}-{suffix}"
+                    )
+                    suffix += 1
+                kwitansi = Kwitansi(
+                    nomor_kwitansi=nomor_kwitansi,
+                    no_bukti=source.no_bukti,
+                    kode_kegiatan=code,
+                    nama_kegiatan=nama_kegiatan or "",
+                    tanggal=tanggal,
+                    thp=thp,
+                    tahun=tahun,
+                    jumlah=sum(float(item.pengeluaran or 0) for item in items),
+                    tanggal_nota=identity_fields["tanggal_nota"],
+                    nama_toko=identity_fields["nama_toko"],
+                    alamat_toko=identity_fields["alamat_toko"],
+                    no_telp_toko=identity_fields["no_telp_toko"],
+                    npwp_toko=identity_fields["npwp_toko"],
+                    no_nota=identity_fields["no_nota"],
+                )
+                db.add(kwitansi)
+                receipt_kwitansi.append(kwitansi)
+                existing_kwitansi.append(kwitansi)
+                created_kwitansi_count += 1
+            else:
+                if code:
+                    kwitansi.kode_kegiatan = code
+                if nama_kegiatan:
+                    kwitansi.nama_kegiatan = nama_kegiatan
+
+        saved_count = len(transactions)
+        if (
+            saved_count
+            or deleted_count
+            or synced_kwitansi_count
+            or created_kwitansi_count
+        ):
+            await db.commit()
+        logger.info(
+            "Sinkron ARKAS mode %s selesai: %s transaksi disimpan, %s transaksi dihapus, %s baris dilewati.",
+            data.mode,
+            saved_count,
+            deleted_count,
+            skipped_count,
+        )
+        return {
+            "status": "success",
+            "mode": data.mode,
+            "saved_count": saved_count,
+            "deleted_count": deleted_count,
+            "skipped_count": skipped_count,
+            "synced_kwitansi_count": synced_kwitansi_count,
+            "created_kwitansi_count": created_kwitansi_count,
+        }
+    except Exception as e:
+        await db.rollback()
+        logger.exception("Gagal mengimpor transaksi ARKAS.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal mengimpor transaksi ARKAS: {str(e)}",
+        )
+
 def terbilang(n: float) -> str:
     satuan = ["", "satu", "dua", "tiga", "empat", "lima", "enam", "tujuh", "delapan", "sembilan", "sepuluh", "sebelas"]
     n = int(n)
@@ -3263,6 +3511,8 @@ async def get_kwitansi_final(db: AsyncSession = Depends(get_db)):
                 "nama_toko": k.nama_toko,
                 "npwp_toko": k.npwp_toko,
                 "alamat_toko": k.alamat_toko,
+                "no_telp_toko": k.no_telp_toko or "",
+                "no_nota": k.no_nota or "",
                 "jenis_belanja": getattr(k, "jenis_belanja", None) or "umum",
                 "data_lampiran": _data_lampiran_dict(k),
                 "jenis_foto_tersedia": _jenis_foto_tersedia(k),
@@ -3288,70 +3538,85 @@ async def generate_kwitansi_final(db: AsyncSession = Depends(get_db)):
         await db.execute(delete(Kwitansi))
         await db.commit()
 
-        # Ambil transaksi yang memiliki pengeluaran > 0
         stmt = (
-            select(
-                Transaksi.no_bukti,
-                Transaksi.kode_kegiatan,
-                MasterKegiatan.nama_kegiatan.label("nama_kegiatan_master"),
-                func.sum(Transaksi.pengeluaran).label("jumlah"),
-                func.min(Transaksi.tanggal).label("tanggal")
-            )
-            .join(
-                MasterKegiatan,
-                Transaksi.kode_kegiatan == MasterKegiatan.kode_kegiatan,
-                isouter=True
-            )
+            select(Transaksi)
             .where(
                 Transaksi.no_bukti.isnot(None),
                 func.length(func.trim(Transaksi.no_bukti)) > 0,
-                Transaksi.pengeluaran > 0
+                Transaksi.pengeluaran > 0,
             )
-            .group_by(
-                Transaksi.no_bukti,
-                Transaksi.kode_kegiatan,
-                MasterKegiatan.nama_kegiatan
-            )
-            .order_by(
-                func.min(Transaksi.tanggal).asc(),
-                Transaksi.no_bukti.asc()
-            )
+            .order_by(Transaksi.tanggal.asc(), Transaksi.id.asc())
         )
-
         result = await db.execute(stmt)
-        rows = result.all()
+        transaction_rows = result.scalars().all()
+        kegiatan_result = await db.execute(select(MasterKegiatan))
+        kegiatan_names = {
+            item.kode_kegiatan: item.nama_kegiatan
+            for item in kegiatan_result.scalars().all()
+        }
+        groups = {}
+        for transaction in transaction_rows:
+            group = groups.setdefault(
+                transaction.no_bukti,
+                {
+                    "items": [],
+                    "jumlah": 0.0,
+                    "tanggal": transaction.tanggal,
+                    "kode_kegiatan": transaction.kode_kegiatan or "",
+                    "identity": {},
+                },
+            )
+            group["items"].append(transaction)
+            group["jumlah"] += float(transaction.pengeluaran or 0)
+            if not group["kode_kegiatan"] and transaction.kode_kegiatan:
+                group["kode_kegiatan"] = transaction.kode_kegiatan
+            for field in (
+                "nama_toko",
+                "alamat_toko",
+                "no_telp_toko",
+                "npwp_toko",
+                "no_nota",
+                "tanggal_nota",
+            ):
+                if not group["identity"].get(field) and getattr(transaction, field, ""):
+                    group["identity"][field] = getattr(transaction, field)
+
         generated = 0
 
-        for row in rows:
-            if not row.tanggal or not row.jumlah:
+        for no_bukti, group in groups.items():
+            if not group["tanggal"] or not group["jumlah"]:
                 continue
 
-            # Parse tanggal otomatis, format fleksibel
             try:
-                tgl = parse_date(row.tanggal, dayfirst=True)
-            except Exception:
-                continue  # lewati jika tidak bisa diparse
+                tgl = parse_date(group["tanggal"], dayfirst=True)
+            except (TypeError, ValueError, OverflowError):
+                continue
 
             bulan = tgl.month
             tahun = tgl.year
             thp = "THP I" if bulan <= 6 else "THP II"
+            kode_kegiatan = group["kode_kegiatan"]
 
-            nomor_kwitansi = f"{row.no_bukti}/{row.kode_kegiatan or '-'} /{thp}/{tahun}"
+            nomor_kwitansi = f"{no_bukti}/{kode_kegiatan or '-'} /{thp}/{tahun}"
 
             kw = Kwitansi(
                 nomor_kwitansi=nomor_kwitansi,
-                no_bukti=row.no_bukti,
-                kode_kegiatan=row.kode_kegiatan or "",
-                nama_kegiatan=row.nama_kegiatan_master or "Tanpa Nama Kegiatan",
-                tanggal=row.tanggal,
+                no_bukti=no_bukti,
+                kode_kegiatan=kode_kegiatan,
+                nama_kegiatan=kegiatan_names.get(
+                    kode_kegiatan, "Tanpa Nama Kegiatan"
+                ),
+                tanggal=group["tanggal"],
                 thp=thp,
                 tahun=str(tahun),
-                jumlah=row.jumlah,
-                tanggal_nota="",   # default kosong
-                no_bast="",        # default kosong
-                nama_toko="",      # default kosong
-                npwp_toko="",      # default kosong
-                alamat_toko=""     # default kosong
+                jumlah=group["jumlah"],
+                tanggal_nota=group["identity"].get("tanggal_nota", ""),
+                no_bast="",
+                nama_toko=group["identity"].get("nama_toko", ""),
+                npwp_toko=group["identity"].get("npwp_toko", ""),
+                alamat_toko=group["identity"].get("alamat_toko", ""),
+                no_telp_toko=group["identity"].get("no_telp_toko", ""),
+                no_nota=group["identity"].get("no_nota", ""),
             )
 
             db.add(kw)
@@ -4071,6 +4336,8 @@ async def get_kwitansi_detail(
             "nama_toko": kw.nama_toko,
             "npwp_toko": kw.npwp_toko,
             "alamat_toko": kw.alamat_toko,
+            "no_telp_toko": kw.no_telp_toko or "",
+            "no_nota": kw.no_nota or "",
             "jenis_belanja": getattr(kw, "jenis_belanja", None) or "umum",
             "data_lampiran": _data_lampiran_dict(kw),
 
@@ -4231,6 +4498,8 @@ async def update_kwitansi_detail(kwitansi_id: int, payload: dict, db: AsyncSessi
     kw.nama_toko = payload.get("nama_toko", "")
     kw.npwp_toko = payload.get("npwp_toko", "")
     kw.alamat_toko = payload.get("alamat_toko", "")
+    kw.no_telp_toko = payload.get("no_telp_toko", "")
+    kw.no_nota = payload.get("no_nota", "")
     kw.jenis_belanja = jenis_belanja
     kw.data_lampiran = json.dumps(data_lampiran, ensure_ascii=False)
 
@@ -4999,16 +5268,19 @@ async def create_manual_kwitansi(
     nama_toko: str = Form(""),
     npwp_toko: str = Form(""),
     alamat_toko: str = Form(""),
+    no_telp_toko: str = Form(""),
+    no_nota: str = Form(""),
     uraian_json: str = Form(...),
     files: List[UploadFile] = File(None),
     jenis_foto: str = Form("barang"),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a kwitansi + transaksi from manual input. Accepts multipart form: uraian_json (JSON array) and optional files (foto).
-    uraian_json example: [{"nama_barang":"...","volume":1,"satuan":"...","harga_satuan":1000,"pengeluaran":1000}, ...]
+    """Validate form data, create one transaksi per detail row, then save the kwitansi and photos.
+
+    Each detail may include its own kode_rekening. The top-level kode_rekening remains
+    available as a fallback for older clients that send a single account code.
     """
     try:
-        # Basic validation
         if not no_bukti or not no_bukti.strip():
             raise HTTPException(status_code=400, detail="no_bukti is required")
 
@@ -5019,16 +5291,34 @@ async def create_manual_kwitansi(
         except Exception:
             raise HTTPException(status_code=400, detail="uraian_json harus berupa JSON array yang valid dan tidak kosong")
 
-        # Ensure kode_rekening maps to a master (optional)
-        master_rek = None
-        if kode_rekening:
-            res = await db.execute(select(MasterRekeningBelanja).where(MasterRekeningBelanja.kode_rekening_belanja == kode_rekening))
-            master_rek = res.scalar_one_or_none()
+        if any(not isinstance(item, dict) for item in uraian):
+            raise HTTPException(status_code=400, detail="Setiap rincian belanja harus berupa objek yang valid")
 
-        # Insert transaksi rows
+        # Validate all row codes together so mixed account codes are supported.
+        detail_account_codes = [
+            str(item.get("kode_rekening") or "").strip()
+            or str(kode_rekening or "").strip()
+            for item in uraian
+        ]
+        requested_account_codes = {code for code in detail_account_codes if code}
+        if requested_account_codes:
+            result = await db.execute(
+                select(MasterRekeningBelanja.kode_rekening_belanja).where(
+                    MasterRekeningBelanja.kode_rekening_belanja.in_(requested_account_codes)
+                )
+            )
+            known_account_codes = set(result.scalars().all())
+            unknown_account_codes = requested_account_codes - known_account_codes
+            if unknown_account_codes:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Kode rekening tidak ditemukan di master: "
+                    + ", ".join(sorted(unknown_account_codes)),
+                )
+
         total_pengeluaran = 0.0
         transaksi_objs = []
-        for item in uraian:
+        for item, detail_account_code in zip(uraian, detail_account_codes):
             nama_barang = item.get("nama_barang") or item.get("uraian") or ""
             volume = float(item.get("volume") or 0)
             satuan = item.get("satuan") or ""
@@ -5038,7 +5328,7 @@ async def create_manual_kwitansi(
             t = Transaksi(
                 tanggal=tanggal or (item.get("tanggal") or ""),
                 kode_kegiatan=kode_kegiatan or "",
-                kode_rekening=kode_rekening or "",
+                kode_rekening=detail_account_code,
                 no_bukti=no_bukti,
                 uraian=nama_barang,
                 volume=volume,
@@ -5051,7 +5341,6 @@ async def create_manual_kwitansi(
             transaksi_objs.append(t)
             total_pengeluaran += pengeluaran
 
-        # Commit transactions to get their insertion timestamps
         await db.commit()
 
         # Determine tanggal/thp/tahun for kwitansi
@@ -5101,6 +5390,8 @@ async def create_manual_kwitansi(
             nama_toko=nama_toko or "",
             npwp_toko=npwp_toko or "",
             alamat_toko=alamat_toko or "",
+            no_telp_toko=no_telp_toko or "",
+            no_nota=no_nota or "",
             foto_bukti=json.dumps([]),
         )
 
@@ -5143,6 +5434,9 @@ async def create_manual_kwitansi(
 
         return {"status": "success", "message": "Kwitansi & transaksi berhasil dibuat", "kwitansi_id": kw.id, "nomor_kwitansi": kw.nomor_kwitansi}
 
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
         logger.error(f"Error creating manual kwitansi: {str(e)}")

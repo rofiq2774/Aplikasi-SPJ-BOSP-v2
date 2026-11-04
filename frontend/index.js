@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, safeStorage } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -6,6 +6,7 @@ const { spawn, exec } = require("child_process");
 const http = require("http");
 const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
+const { readArkasTransactions } = require("./arkasReader.cjs");
 
 // ===================== SATU FILE LOG: app.log (WAJIB) =====================
 // Semua kejadian frontend (main process Electron + renderer) dan backend
@@ -517,6 +518,110 @@ ipcMain.handle("is-dev", () => !app.isPackaged);
 // BUGFIX: renderer tidak boleh lagi hardcode port 8000. Main process yang
 // memiliki informasi child_process, jadi expose base URL backend via IPC.
 ipcMain.handle("get-backend-url", () => getBackendBaseUrl());
+
+const arkasDatabaseSettingsPath = () =>
+  path.join(app.getPath("userData"), "arkas-database.json");
+
+function readArkasDatabaseSettings() {
+  const settingsPath = arkasDatabaseSettingsPath();
+  if (!fs.existsSync(settingsPath)) return null;
+  const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  if (!settings || typeof settings.path !== "string" || !path.isAbsolute(settings.path)) {
+    throw new Error("Pengaturan lokasi database ARKAS tidak valid.");
+  }
+  return settings;
+}
+
+function saveArkasDatabasePath(databasePath) {
+  const settingsPath = arkasDatabaseSettingsPath();
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(
+    settingsPath,
+    JSON.stringify({ path: path.resolve(databasePath) }, null, 2),
+    "utf8",
+  );
+}
+
+async function selectArkasDatabase(currentPath) {
+  const selection = await dialog.showOpenDialog(mainWindow, {
+    title: "Pilih database ARKAS",
+    ...(currentPath ? { defaultPath: currentPath } : {}),
+    properties: ["openFile"],
+    filters: [
+      { name: "Database SQLite", extensions: ["db", "sqlite", "sqlite3"] },
+      { name: "Semua file", extensions: ["*"] },
+    ],
+  });
+  return selection.canceled ? null : selection.filePaths[0] || null;
+}
+
+async function readAndRememberArkasDatabase(databasePath) {
+  const result = await readArkasTransactions(
+    databasePath,
+    new Date().getFullYear(),
+  );
+  saveArkasDatabasePath(databasePath);
+  writeAppLog(
+    "info",
+    "frontend-main",
+    `Database ARKAS dibaca dalam mode read-only; ditemukan ${result.returned} transaksi BPU.`,
+  );
+  return {
+    canceled: false,
+    sourceName: path.basename(databasePath),
+    ...result,
+  };
+}
+
+ipcMain.handle("get-arkas-database-info", (event) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  if (!settings) {
+    return { configured: false, available: false, sourceName: "" };
+  }
+  return {
+    configured: true,
+    available: fs.existsSync(settings.path),
+    sourceName: path.basename(settings.path),
+  };
+});
+
+ipcMain.handle("select-arkas-database", async (event) => {
+  assertTrustedRenderer(event);
+  const selectedPath = await selectArkasDatabase();
+  if (!selectedPath) return { canceled: true };
+
+  const stats = fs.statSync(selectedPath);
+  if (!stats.isFile()) {
+    throw new Error("Path yang dipilih bukan file database ARKAS.");
+  }
+  await readArkasTransactions(selectedPath, new Date().getFullYear());
+  saveArkasDatabasePath(selectedPath);
+  writeAppLog(
+    "info",
+    "frontend-main",
+    `Lokasi database ARKAS disimpan: ${path.basename(selectedPath)}.`,
+  );
+  return {
+    canceled: false,
+    configured: true,
+    available: true,
+    sourceName: path.basename(selectedPath),
+  };
+});
+
+ipcMain.handle("read-arkas-transactions", async (event) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  let databasePath = settings?.path;
+  if (!databasePath || !fs.existsSync(databasePath)) {
+    databasePath = await selectArkasDatabase(databasePath);
+  }
+  if (!databasePath) {
+    return { canceled: true, transactions: [], returned: 0 };
+  }
+  return readAndRememberArkasDatabase(databasePath);
+});
 
 const aiImageSettingsPath = () =>
   path.join(app.getPath("userData"), "ai-image-settings.dat");

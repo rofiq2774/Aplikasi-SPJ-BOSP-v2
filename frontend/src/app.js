@@ -5855,6 +5855,7 @@ window.switchTab = switchTab;
 window.savePengaturan = savePengaturan;
 window.uploadBKU = uploadBKU;
 window.syncArkas = syncArkas;
+window.changeArkasDatabase = changeArkasDatabase;
 window.saveTransaksi = saveTransaksi;
 window.generateKwitansi = generateKwitansi;
 window.downloadKwitansi = downloadKwitansi;

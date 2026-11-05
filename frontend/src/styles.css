@@ -2186,3 +2186,296 @@ tbody tr:hover td {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Windows desktop form controls for BKU and SPJ entry dialogs. */
+#popup-overlay .popup-modern {
+  color: #242424;
+  font-family:
+    "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont,
+    sans-serif;
+  font-size: 13px;
+}
+
+#popup-overlay .popup-modern .popup-header-modern {
+  border-bottom-color: #e1e1e1;
+}
+
+#popup-overlay .popup-modern .popup-header-modern h3 {
+  color: #242424;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+#popup-overlay .popup-modern .badge-ref {
+  border: 1px solid #d5d5d5;
+  border-radius: 4px;
+  background: #f5f5f5;
+  color: #4a4a4a;
+  font-size: 12px;
+}
+
+#popup-overlay .popup-modern .form-section {
+  padding: 14px;
+  border: 1px solid #e1e1e1;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+#popup-overlay .popup-modern .form-section-title {
+  color: #333;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#popup-overlay .popup-modern .form-group label,
+#popup-overlay .popup-modern label {
+  color: #424242;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#popup-overlay .popup-modern input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+#popup-overlay .popup-modern select,
+#popup-overlay .popup-modern textarea,
+#popup-overlay .popup-modern .modern-table input {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  background-color: #fff;
+  color: #242424;
+  font: 13px/1.35 "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: none;
+}
+
+#popup-overlay .popup-modern textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+#popup-overlay .popup-modern input[readonly],
+#popup-overlay .popup-modern input:disabled,
+#popup-overlay .popup-modern select:disabled,
+#popup-overlay .popup-modern textarea:disabled {
+  border-color: #dedede;
+  background-color: #f3f3f3;
+  color: #666;
+}
+
+#popup-overlay .popup-modern input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover,
+#popup-overlay .popup-modern select:hover,
+#popup-overlay .popup-modern textarea:hover,
+#popup-overlay .popup-modern .modern-table input:hover {
+  border-color: #8a8a8a;
+}
+
+#popup-overlay .popup-modern input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+#popup-overlay .popup-modern select:focus,
+#popup-overlay .popup-modern textarea:focus,
+#popup-overlay .popup-modern .modern-table input:focus {
+  border-color: #0067c0;
+  outline: 1px solid #0067c0;
+  outline-offset: -1px;
+  box-shadow: none;
+}
+
+#popup-overlay .popup-modern input[type="file"] {
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 3px;
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  font: 13px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+#popup-overlay .popup-modern input[type="file"]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 3px 10px;
+  border: 1px solid #c8c8c8;
+  border-radius: 3px;
+  background: #f5f5f5;
+  color: #242424;
+  font: inherit;
+}
+
+#popup-overlay .popup-modern input[type="file"]::file-selector-button:hover {
+  background: #eaeaea;
+}
+
+#popup-overlay .popup-modern .table-wrapper {
+  border: 1px solid #d8d8d8;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: none;
+}
+
+#popup-overlay .popup-modern .modern-table {
+  font-size: 12px;
+}
+
+#popup-overlay .popup-modern .modern-table th {
+  padding: 9px 10px;
+  border-bottom: 1px solid #d8d8d8;
+  background: #f3f3f3;
+  color: #3a3a3a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#popup-overlay .popup-modern .modern-table td {
+  padding: 6px;
+  border-bottom-color: #e9e9e9;
+}
+
+#popup-overlay .popup-modern .modern-table input {
+  width: 100%;
+}
+
+#popup-overlay .popup-modern .upload-area {
+  border: 1px dashed #a9a9a9;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+#popup-overlay .popup-modern .upload-area:hover {
+  border-color: #0067c0;
+  background: #f5f9fd;
+}
+
+#popup-overlay .popup-modern .btn:not(.btn-sm) {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  background: #f7f7f7;
+  color: #242424;
+  font: 600 13px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: none;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+
+#popup-overlay .popup-modern .btn:not(.btn-sm):hover:not(:disabled) {
+  border-color: #b0b0b0;
+  background: #ededed;
+  filter: none;
+}
+
+#popup-overlay .popup-modern .btn-primary:not(.btn-sm),
+#popup-overlay .popup-modern .btn-success:not(.btn-sm) {
+  border-color: #005a9e;
+  background: #0067c0;
+  color: #fff;
+}
+
+#popup-overlay .popup-modern .btn-primary:not(.btn-sm):hover:not(:disabled),
+#popup-overlay .popup-modern .btn-success:not(.btn-sm):hover:not(:disabled) {
+  border-color: #004e8a;
+  background: #005a9e;
+}
+
+#popup-overlay .popup-modern .btn-danger:not(.btn-sm) {
+  border-color: #b42318;
+  background: #b42318;
+  color: #fff;
+}
+
+#popup-overlay .popup-modern .btn-danger:not(.btn-sm):hover:not(:disabled) {
+  border-color: #912018;
+  background: #912018;
+}
+
+#popup-overlay .popup-modern .btn-sm {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  background: #f7f7f7;
+  color: #242424;
+  font: 12px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: none;
+}
+
+#popup-overlay .popup-modern .btn-sm:hover:not(:disabled) {
+  border-color: #b0b0b0;
+  background: #ededed;
+  filter: none;
+}
+
+#popup-overlay .popup-modern .btn-sm.btn-danger {
+  border-color: #d7aaa6;
+  background: #fff;
+  color: #a4262c;
+}
+
+#popup-overlay .popup-modern .btn-sm.btn-danger:hover:not(:disabled) {
+  border-color: #a4262c;
+  background: #fdf2f2;
+}
+
+#popup-overlay .popup-modern .btn:focus-visible {
+  outline: 2px solid #0067c0;
+  outline-offset: 2px;
+}
+
+#popup-overlay .popup-modern .popup-footer {
+  border-top-color: #e1e1e1;
+}
+
+#popup-overlay .popup-modern .popup-footer .btn {
+  display: inline-flex;
+  min-width: 96px;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid #c8c8c8;
+  border-radius: 4px;
+  background: #f7f7f7;
+  color: #242424;
+  font: 600 13px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: none;
+}
+
+#popup-overlay .popup-modern .popup-footer .btn:hover {
+  border-color: #b0b0b0;
+  background: #ededed;
+  filter: none;
+}
+
+#popup-overlay .popup-modern .popup-footer .btn-success {
+  border-color: #005a9e;
+  background: #0067c0;
+  color: #fff;
+}
+
+#popup-overlay .popup-modern .popup-footer .btn-success:hover {
+  border-color: #004e8a;
+  background: #005a9e;
+}
+
+#popup-overlay .popup-modern .popup-footer .btn:focus-visible {
+  outline: 2px solid #0067c0;
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  #popup-overlay .popup-modern .modern-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #popup-overlay .popup-modern .popup-footer {
+    flex-wrap: wrap;
+  }
+}

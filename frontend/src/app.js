@@ -3930,52 +3930,37 @@ function addManualUraianRow() {
   const row = document.createElement("tr");
   row.className = "manual-uraian-row";
 
-  // Style standar untuk input dalam tabel agar rapi
-  const inputStyle =
-    "width:100%; box-sizing:border-box; padding:6px 8px; font-size:13px; border:1px solid #ddd; border-radius:4px;";
-
-  // Style khusus Readonly (Total)
-  const readonlyStyle =
-    inputStyle +
-    " background-color:#f9f9f9; border-color:#eee; font-weight:600; color:#333;";
-
   row.innerHTML = `
         <td style="padding: 8px 5px;">
             <input class="form-control manual-uraian-nama" 
-                   placeholder="Nama barang / uraian" 
-                   style="${inputStyle}">
+                   placeholder="Nama barang / uraian">
         </td>
         <td style="padding: 8px 5px;">
             <input class="form-control manual-uraian-kode-rekening"
                    placeholder="Ketik kode atau nama..."
                    list="manual-rekening-list"
-                   autocomplete="off"
-                   style="${inputStyle}">
+                   autocomplete="off">
         </td>
         <td style="padding: 8px 5px;">
             <input type="number" 
                    class="form-control manual-uraian-volume" 
                    value="1" 
-                   oninput="updateManualUraianTotal(this)" 
-                   style="${inputStyle} text-align:center;">
+                   oninput="updateManualUraianTotal(this)">
         </td>
         <td style="padding: 8px 5px;">
             <input class="form-control manual-uraian-satuan" 
-                   placeholder="satuan" 
-                   style="${inputStyle} text-align:center;">
+                   placeholder="satuan">
         </td>
         <td style="padding: 8px 5px;">
             <input class="form-control manual-uraian-harga" 
                    placeholder="0" 
-                   oninput="formatCurrencyID(this); updateManualUraianTotal(this)" 
-                   style="${inputStyle} text-align:right;">
+                   oninput="formatCurrencyID(this); updateManualUraianTotal(this)">
         </td>
         <td style="padding: 8px 5px;">
             <input class="form-control manual-uraian-pengeluaran" 
                    placeholder="0" 
                    readonly 
-                   data-db-value="0" 
-                   style="${readonlyStyle} text-align:right;">
+                   data-db-value="0">
         </td>
         <td style="padding: 8px 5px; text-align:center; vertical-align: middle;">
             <button class="btn btn-sm btn-outline-danger" 

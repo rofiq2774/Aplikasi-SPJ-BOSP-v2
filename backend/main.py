@@ -51,7 +51,7 @@ from starlette.middleware.cors import CORSMiddleware
 # 3. Local Application Imports
 from database import BASE_DIR, AsyncSessionLocal, Base, engine, get_db
 from models import (
-    IdentitasPeriode, Kwitansi, MasterKegiatan,
+    IdentitasPeriode, Kwitansi, MasterKegiatan, MasterKegiatanArkas,
     MasterRekeningBelanja, Pengaturan, Transaksi
 )
 _migrated = False
@@ -356,6 +356,11 @@ class TransaksiItem(BaseModel):
     npwp_toko: Optional[str] = ""
     no_nota: Optional[str] = ""
     tanggal_nota: Optional[str] = ""
+    fiscal_year: Optional[int] = None
+    source_fund_id: Optional[str] = None
+    source_fund_name: Optional[str] = None
+    budget_id: Optional[str] = None
+    budget_name: Optional[str] = None
 
 
 class BKUData(BaseModel):
@@ -366,6 +371,18 @@ class BKUData(BaseModel):
 class ArkasImportRequest(BaseModel):
     mode: str = "keep"
     transaksi: List[TransaksiItem]
+
+
+class MasterKegiatanArkasItem(BaseModel):
+    kode_kegiatan: str
+    nama_kegiatan: str
+    fiscal_year: int
+    source_fund_id: str
+    source_fund_name: str = ""
+
+
+class MasterKegiatanArkasBulkRequest(BaseModel):
+    data: List[MasterKegiatanArkasItem]
 
 
 class KwitansiRequest(BaseModel):
@@ -440,6 +457,9 @@ class IdentitasPeriodeRequest(BaseModel):
 class MasterKegiatanRequest(BaseModel):
     kode_kegiatan: str
     nama_kegiatan: str
+    fiscal_year: Optional[int] = None
+    source_fund_id: Optional[str] = None
+    source_fund_name: Optional[str] = None
 
 
 class MasterKegiatanBulkRequest(BaseModel):
@@ -1311,7 +1331,10 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     # ---------- Bagian KWITANSI (wajib) ----------
     uraian_rab_text = " | ".join(
         [t.uraian for t in (await db.execute(
-            select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti)
+            select(Transaksi).where(
+                Transaksi.no_bukti == kw.no_bukti,
+                fiscal_scope_conditions(Transaksi, kw),
+            )
         )).scalars().all() if t.uraian]
     ) or (kw.nama_kegiatan or "")
     def _kop_bersama():
@@ -1353,6 +1376,11 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
         "tahun": kw.tahun or "",
         "kode_kegiatan": kw.kode_kegiatan or "",
         "nama_kegiatan": kw.nama_kegiatan or "",
+        "fiscal_year": kw.fiscal_year,
+        "source_fund_id": kw.source_fund_id,
+        "source_fund_name": kw.source_fund_name,
+        "budget_id": kw.budget_id,
+        "budget_name": kw.budget_name,
         "kota_tempat_surat": ident.get("tempat_surat") or "Jember",
         # ATURAN PRODUK: KWITANSI TANPA KOP. Field "kop" sengaja TIDAK dikirim
         # pada bagian kwitansi (renderer frontend juga memfilter, lihat
@@ -1364,7 +1392,12 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     bast_total_num = 0.0
     if perlu_bast and kw.no_bukti:
         trx_rows = (await db.execute(
-            select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti).order_by(Transaksi.id)
+            select(Transaksi)
+            .where(
+                Transaksi.no_bukti == kw.no_bukti,
+                fiscal_scope_conditions(Transaksi, kw),
+            )
+            .order_by(Transaksi.id)
         )).scalars().all()
         for idx, t in enumerate(trx_rows, start=1):
             vol = _to_float(t.volume)
@@ -1419,9 +1452,20 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
     # ---------- Bagian RAB (opsional: butuh kode_kegiatan + thp) ----------
     kegiatan_data = None
     if kw.kode_kegiatan:
-        kegiatan_data = (await db.execute(
-            select(MasterKegiatan).where(MasterKegiatan.kode_kegiatan == kw.kode_kegiatan)
-        )).scalar_one_or_none()
+        if kw.fiscal_year is not None and kw.source_fund_id:
+            kegiatan_data = (await db.execute(
+                select(MasterKegiatanArkas).where(
+                    MasterKegiatanArkas.kode_kegiatan == kw.kode_kegiatan,
+                    MasterKegiatanArkas.fiscal_year == kw.fiscal_year,
+                    MasterKegiatanArkas.source_fund_id == kw.source_fund_id,
+                )
+            )).scalar_one_or_none()
+        if kegiatan_data is None:
+            kegiatan_data = (await db.execute(
+                select(MasterKegiatan).where(
+                    MasterKegiatan.kode_kegiatan == kw.kode_kegiatan
+                )
+            )).scalar_one_or_none()
 
     if perlu_rab and kegiatan_data and kw.thp:
         rab_raw = (await db.execute(
@@ -1432,8 +1476,10 @@ async def kumpulkan_data_spj(db: AsyncSession, kwitansi_id: int) -> dict:
                   isouter=True)
             .where(and_(
                 Transaksi.kode_kegiatan == kw.kode_kegiatan,
+                Kwitansi.id == kw.id,
                 Kwitansi.thp == kw.thp,
                 Transaksi.pengeluaran > 0,
+                fiscal_scope_conditions(Transaksi, kw),
             ))
             .order_by(Transaksi.tanggal, Transaksi.id)
         )).all()
@@ -2400,7 +2446,7 @@ async def import_arkas_transactions(
     data: ArkasImportRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Synchronize ARKAS BPU rows by receipt number."""
+    """Synchronize ARKAS BPU rows within one fiscal scope."""
     valid_modes = {"replace_all", "keep", "update"}
     if data.mode not in valid_modes:
         raise HTTPException(
@@ -2423,22 +2469,67 @@ async def import_arkas_transactions(
             detail="Sinkron ARKAS hanya menerima transaksi dengan no bukti BPU.",
         )
 
+    def item_scope(item):
+        return (
+            item.fiscal_year,
+            (item.source_fund_id or "").strip() or None,
+            (item.budget_id or "").strip() or None,
+        )
+
+    def record_scope(item):
+        return (
+            item.fiscal_year,
+            (item.source_fund_id or "").strip() or None,
+            (item.budget_id or "").strip() or None,
+        )
+
+    scopes = {item_scope(item) for item in transactions}
+    if len(scopes) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Satu proses sinkron hanya boleh memproses satu tahun, sumber dana, dan anggaran.",
+        )
+    scope = scopes.pop()
+
+    def scope_conditions(model):
+        year, source_id, budget_id = scope
+        conditions = [
+            model.fiscal_year.is_(None)
+            if year is None
+            else model.fiscal_year == year,
+            model.source_fund_id.is_(None)
+            if source_id is None
+            else model.source_fund_id == source_id,
+            model.budget_id.is_(None)
+            if budget_id is None
+            else model.budget_id == budget_id,
+        ]
+        return and_(*conditions)
+
+    def receipt_key(item):
+        return (normalize_no_bukti_backend(item.no_bukti), *record_scope(item))
+
     try:
-        current_result = await db.execute(select(Transaksi))
+        current_result = await db.execute(
+            select(Transaksi).where(scope_conditions(Transaksi))
+        )
         current_rows = current_result.scalars().all()
-        incoming_receipts = {
-            normalize_no_bukti_backend(item.no_bukti) for item in transactions
-        }
+        incoming_receipts = {receipt_key(item) for item in transactions}
         deleted_count = 0
         skipped_count = 0
 
         if data.mode == "replace_all":
             deleted_count = len(current_rows)
             if deleted_count:
-                await db.execute(delete(Transaksi))
+                await db.execute(
+                    delete(Transaksi).where(scope_conditions(Transaksi))
+                )
+            await db.execute(
+                delete(Kwitansi).where(scope_conditions(Kwitansi))
+            )
         elif data.mode == "keep":
             existing_receipts = {
-                normalize_no_bukti_backend(item.no_bukti)
+                receipt_key(item)
                 for item in current_rows
                 if item.no_bukti
             }
@@ -2446,14 +2537,14 @@ async def import_arkas_transactions(
             transactions = [
                 item
                 for item in transactions
-                if normalize_no_bukti_backend(item.no_bukti) not in kept_receipts
+                if receipt_key(item) not in kept_receipts
             ]
             skipped_count = len(data.transaksi) - len(transactions)
         else:
             rows_to_update = [
                 item
                 for item in current_rows
-                if normalize_no_bukti_backend(item.no_bukti) in incoming_receipts
+                if receipt_key(item) in incoming_receipts
             ]
             if rows_to_update:
                 await db.execute(
@@ -2484,6 +2575,11 @@ async def import_arkas_transactions(
                         or item.tanggal_nota
                         or ""
                     ),
+                    fiscal_year=item.fiscal_year,
+                    source_fund_id=item.source_fund_id or None,
+                    source_fund_name=item.source_fund_name or None,
+                    budget_id=item.budget_id or None,
+                    budget_name=item.budget_name or None,
                     penerimaan=float(item.penerimaan or 0),
                     pengeluaran=float(item.pengeluaran or 0),
                     saldo=float(item.saldo or 0),
@@ -2492,21 +2588,27 @@ async def import_arkas_transactions(
 
         source_groups = defaultdict(list)
         for item in data.transaksi:
-            receipt_key = normalize_no_bukti_backend(item.no_bukti)
-            source_groups[receipt_key].append(item)
+            source_groups[receipt_key(item)].append(item)
 
-        kwitansi_result = await db.execute(select(Kwitansi))
+        kwitansi_result = await db.execute(
+            select(Kwitansi).where(scope_conditions(Kwitansi))
+        )
         existing_kwitansi = kwitansi_result.scalars().all()
+        all_kwitansi_numbers = set(
+            (await db.execute(select(Kwitansi.nomor_kwitansi)))
+            .scalars()
+            .all()
+        )
         kwitansi_by_receipt = defaultdict(list)
         for kwitansi in existing_kwitansi:
-            receipt_key = normalize_no_bukti_backend(kwitansi.no_bukti)
-            if receipt_key in source_groups:
-                kwitansi_by_receipt[receipt_key].append(kwitansi)
+            key = receipt_key(kwitansi)
+            if key in source_groups:
+                kwitansi_by_receipt[key].append(kwitansi)
 
         synced_kwitansi_count = 0
         created_kwitansi_count = 0
         identity_by_receipt = {}
-        for receipt_key, items in source_groups.items():
+        for key, items in source_groups.items():
             source = items[0]
             identity_fields = {
                 "nama_toko": next((item.nama_toko for item in items if item.nama_toko), ""),
@@ -2524,14 +2626,14 @@ async def import_arkas_transactions(
                     "",
                 ),
             }
-            identity_by_receipt[receipt_key] = identity_fields
-            for kwitansi in kwitansi_by_receipt[receipt_key]:
+            identity_by_receipt[key] = identity_fields
+            for kwitansi in kwitansi_by_receipt[key]:
                 for field, value in identity_fields.items():
                     if value and value.strip():
                         setattr(kwitansi, field, value.strip())
                 synced_kwitansi_count += 1
 
-        for receipt_key, items in source_groups.items():
+        for key, items in source_groups.items():
             source = items[0]
             code = next(
                 (item.kode_kegiatan.strip() for item in items if item.kode_kegiatan),
@@ -2541,10 +2643,10 @@ async def import_arkas_transactions(
                 (item.nama_kegiatan.strip() for item in items if item.nama_kegiatan),
                 "",
             )
-            receipt_kwitansi = kwitansi_by_receipt[receipt_key]
+            receipt_kwitansi = kwitansi_by_receipt[key]
             kwitansi = receipt_kwitansi[0] if receipt_kwitansi else None
             if kwitansi is None:
-                identity_fields = identity_by_receipt[receipt_key]
+                identity_fields = identity_by_receipt[key]
                 tanggal = normalize_date_backend(source.tanggal) or source.tanggal or ""
                 parsed_date = None
                 if tanggal:
@@ -2561,17 +2663,14 @@ async def import_arkas_transactions(
                     nomor_kwitansi = (
                         f"{source.no_bukti}/{code or '-'} /{thp}/{tahun}"
                     )
-
-                existing_numbers = {
-                    row.nomor_kwitansi for row in existing_kwitansi
-                }
                 base_nomor_kwitansi = nomor_kwitansi
                 suffix = 1
-                while nomor_kwitansi in existing_numbers:
+                while nomor_kwitansi in all_kwitansi_numbers:
                     nomor_kwitansi = (
                         f"{base_nomor_kwitansi}/{code or 'ARKAS'}-{suffix}"
                     )
                     suffix += 1
+                all_kwitansi_numbers.add(nomor_kwitansi)
                 kwitansi = Kwitansi(
                     nomor_kwitansi=nomor_kwitansi,
                     no_bukti=source.no_bukti,
@@ -2587,6 +2686,11 @@ async def import_arkas_transactions(
                     no_telp_toko=identity_fields["no_telp_toko"],
                     npwp_toko=identity_fields["npwp_toko"],
                     no_nota=identity_fields["no_nota"],
+                    fiscal_year=source.fiscal_year,
+                    source_fund_id=source.source_fund_id or None,
+                    source_fund_name=source.source_fund_name or None,
+                    budget_id=source.budget_id or None,
+                    budget_name=source.budget_name or None,
                 )
                 db.add(kwitansi)
                 receipt_kwitansi.append(kwitansi)
@@ -2597,6 +2701,11 @@ async def import_arkas_transactions(
                     kwitansi.kode_kegiatan = code
                 if nama_kegiatan:
                     kwitansi.nama_kegiatan = nama_kegiatan
+                kwitansi.fiscal_year = source.fiscal_year
+                kwitansi.source_fund_id = source.source_fund_id or None
+                kwitansi.source_fund_name = source.source_fund_name or None
+                kwitansi.budget_id = source.budget_id or None
+                kwitansi.budget_name = source.budget_name or None
 
         saved_count = len(transactions)
         if (
@@ -3404,7 +3513,10 @@ def generate_kwitansi_pdf_v2(kwitansi, pengaturan):
 @api_router.get("/transaksi")
 async def get_transaksi(
     db: AsyncSession = Depends(get_db),
-    no_bukti: Optional[str] = None
+    no_bukti: Optional[str] = None,
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
+    budget_id: Optional[str] = None,
 ):
     try:
         if no_bukti:
@@ -3423,13 +3535,112 @@ async def get_transaksi(
                 # 2. Urutkan secara alfabetis untuk nomor dengan jumlah karakter yang sama
                 Transaksi.no_bukti.asc()
             )
+        stmt = apply_fiscal_scope_filters(
+            stmt, Transaksi, fiscal_year, source_fund_id, budget_id
+        )
         
         result = await db.execute(stmt)
         transaksi_list = result.scalars().all()
         
         return {"status": "success", "data": transaksi_list}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting transaksi: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def apply_fiscal_scope_filters(
+    stmt,
+    model,
+    fiscal_year: Optional[str],
+    source_fund_id: Optional[str],
+    budget_id: Optional[str],
+):
+    """Apply optional scope filters; 'unspecified' selects legacy null metadata."""
+    for parameter, column in (
+        (fiscal_year, model.fiscal_year),
+        (source_fund_id, model.source_fund_id),
+        (budget_id, model.budget_id),
+    ):
+        if parameter is None or parameter == "" or parameter == "all":
+            continue
+        if parameter == "unspecified":
+            stmt = stmt.where(or_(column.is_(None), column == ""))
+        elif column.key == "fiscal_year":
+            try:
+                stmt = stmt.where(column == int(parameter))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="Filter tahun anggaran tidak valid.")
+        else:
+            stmt = stmt.where(column == parameter)
+    return stmt
+
+
+def fiscal_scope_conditions(model, record):
+    conditions = []
+    for column_name in ("fiscal_year", "source_fund_id", "budget_id"):
+        column = getattr(model, column_name)
+        value = getattr(record, column_name, None)
+        if value is None or value == "":
+            conditions.append(or_(column.is_(None), column == ""))
+        else:
+            conditions.append(column == value)
+    return and_(*conditions)
+
+
+@api_router.get("/fiscal-contexts")
+async def get_fiscal_contexts(db: AsyncSession = Depends(get_db)):
+    """Return locally stored scopes for BKU, SPJ, and scoped activity references."""
+    try:
+        contexts = set()
+        for model in (Transaksi, Kwitansi, MasterKegiatanArkas):
+            result = await db.execute(
+                select(
+                    model.fiscal_year,
+                    model.source_fund_id,
+                    model.source_fund_name,
+                    model.budget_id,
+                    model.budget_name,
+                )
+                .where(
+                    or_(
+                        model.fiscal_year.isnot(None),
+                        model.source_fund_id.isnot(None),
+                        model.budget_id.isnot(None),
+                    )
+                )
+                .distinct()
+            )
+            for year, source_id, source_name, budget_id, budget_name in result.all():
+                contexts.add((
+                    year,
+                    source_id or "",
+                    source_name or "",
+                    budget_id or "",
+                    budget_name or "",
+                ))
+        serialized = [
+            {
+                "fiscal_year": year,
+                "source_fund_id": source_id,
+                "source_fund_name": source_name,
+                "budget_id": budget_id,
+                "budget_name": budget_name,
+            }
+            for year, source_id, source_name, budget_id, budget_name in contexts
+        ]
+        serialized.sort(
+            key=lambda item: (
+                item["fiscal_year"] or 0,
+                item["source_fund_name"],
+                item["budget_id"],
+            ),
+            reverse=True,
+        )
+        return {"status": "success", "data": serialized}
+    except Exception as e:
+        logger.exception("Gagal memuat pilihan konteks fiskal.")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/transaksi/sumif/{no_bukti}")
@@ -3463,34 +3674,107 @@ async def calculate_sumif_no_bukti(no_bukti: str, db: AsyncSession) -> float:
 # from models import Transaksi, Kwitansi 
 
 @api_router.delete("/transaksi/{no_bukti}")
-async def delete_transaksi(no_bukti: str, db: AsyncSession = Depends(get_db)):
+async def delete_transaksi(
+    no_bukti: str,
+    db: AsyncSession = Depends(get_db),
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
+    budget_id: Optional[str] = None,
+):
     # 1. Decode no_bukti (jaga-jaga karakter spesial)
     clean_no_bukti = unquote(no_bukti)
     
     # 2. Hapus data dari Tabel Transaksi
-    stmt_transaksi = delete(Transaksi).where(Transaksi.no_bukti == clean_no_bukti)
-    await db.execute(stmt_transaksi)
+    transaction_stmt = apply_fiscal_scope_filters(
+        select(Transaksi).where(Transaksi.no_bukti == clean_no_bukti),
+        Transaksi,
+        fiscal_year,
+        source_fund_id,
+        budget_id,
+    )
+    transaction_result = await db.execute(transaction_stmt)
+    transactions = transaction_result.scalars().all()
+    scopes = {
+        (
+            item.fiscal_year,
+            item.source_fund_id or None,
+            item.budget_id or None,
+        )
+        for item in transactions
+    }
+    if len(scopes) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Nomor bukti ditemukan di beberapa konteks. Pilih tahun, sumber dana, dan anggaran sebelum menghapus.",
+        )
 
-    # 3. Hapus data dari Tabel Kwitansi (TAMBAHAN BARU)
-    # Ini akan menghapus baris di tabel kwitansi yang punya no_bukti sama
-    stmt_kwitansi = delete(Kwitansi).where(Kwitansi.no_bukti == clean_no_bukti)
-    await db.execute(stmt_kwitansi)
+    transaction_delete = delete(Transaksi).where(
+        Transaksi.id.in_([item.id for item in transactions])
+    )
+    await db.execute(transaction_delete)
+    kwitansi_delete = delete(Kwitansi).where(Kwitansi.no_bukti == clean_no_bukti)
+    if scopes:
+        year, source_id, budget = next(iter(scopes))
+        kwitansi_delete = kwitansi_delete.where(
+            and_(
+                Kwitansi.fiscal_year.is_(None)
+                if year is None
+                else Kwitansi.fiscal_year == year,
+                Kwitansi.source_fund_id.is_(None)
+                if source_id is None
+                else Kwitansi.source_fund_id == source_id,
+                Kwitansi.budget_id.is_(None)
+                if budget is None
+                else Kwitansi.budget_id == budget,
+            )
+        )
+    elif any((fiscal_year, source_fund_id, budget_id)):
+        kwitansi_delete = apply_fiscal_scope_filters(
+            kwitansi_delete, Kwitansi, fiscal_year, source_fund_id, budget_id
+        )
+    if scopes or any((fiscal_year, source_fund_id, budget_id)):
+        await db.execute(kwitansi_delete)
 
     # 4. Commit perubahan (Simpan kedua penghapusan sekaligus)
     await db.commit()
     
     return {
         "status": "success", 
-        "message": f"Data Transaksi dan Kwitansi untuk no bukti '{clean_no_bukti}' berhasil dihapus"
+        "message": f"Data Transaksi dan Kwitansi untuk no bukti '{clean_no_bukti}' berhasil dihapus",
+        "deleted_count": len(transactions),
     }
 
 @api_router.get("/kwitansi")
-async def get_kwitansi_final(db: AsyncSession = Depends(get_db)):
+async def get_kwitansi_final(
+    db: AsyncSession = Depends(get_db),
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
+    budget_id: Optional[str] = None,
+    thp: str = "all",
+    month: Optional[int] = Query(None, ge=1, le=12),
+):
     """
     Menampilkan semua kwitansi lengkap, termasuk tanggal_nota, no_bast, nama_toko, npwp_toko, alamat_toko.
     """
     try:
         stmt = select(Kwitansi).order_by(Kwitansi.tanggal.asc(), Kwitansi.no_bukti.asc())
+        stmt = apply_fiscal_scope_filters(
+            stmt, Kwitansi, fiscal_year, source_fund_id, budget_id
+        )
+        thp_values = {
+            "1": ("THP I", "TAHAP I", "TAHAP 1", "1"),
+            "2": ("THP II", "TAHAP II", "TAHAP 2", "2"),
+        }.get(str(thp).strip())
+        if thp_values:
+            stmt = stmt.where(func.upper(func.trim(Kwitansi.thp)).in_(thp_values))
+        if month is not None:
+            month_text = f"{month:02d}"
+            stmt = stmt.where(
+                or_(
+                    func.substr(func.trim(Kwitansi.tanggal), 6, 2) == month_text,
+                    func.substr(func.trim(Kwitansi.tanggal), 4, 2) == month_text,
+                )
+            )
         result = await db.execute(stmt)
         kwitansi_list = result.scalars().all()
 
@@ -3513,6 +3797,11 @@ async def get_kwitansi_final(db: AsyncSession = Depends(get_db)):
                 "alamat_toko": k.alamat_toko,
                 "no_telp_toko": k.no_telp_toko or "",
                 "no_nota": k.no_nota or "",
+                "fiscal_year": k.fiscal_year,
+                "source_fund_id": k.source_fund_id,
+                "source_fund_name": k.source_fund_name,
+                "budget_id": k.budget_id,
+                "budget_name": k.budget_name,
                 "jenis_belanja": getattr(k, "jenis_belanja", None) or "umum",
                 "data_lampiran": _data_lampiran_dict(k),
                 "jenis_foto_tersedia": _jenis_foto_tersedia(k),
@@ -3522,31 +3811,43 @@ async def get_kwitansi_final(db: AsyncSession = Depends(get_db)):
 
         return {"status": "success", "data": data}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting kwitansi: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/kwitansi/generate")
-async def generate_kwitansi_final(db: AsyncSession = Depends(get_db)):
+async def generate_kwitansi_final(
+    db: AsyncSession = Depends(get_db),
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
+    budget_id: Optional[str] = None,
+):
     """
     Generate kwitansi berdasarkan transaksi.
     Data tambahan seperti tanggal_nota, no_bast, nama_toko, npwp_toko, alamat_toko diisi kosong.
     Format tanggal otomatis dikenali.
     """
     try:
-        # Hapus semua kwitansi lama
-        await db.execute(delete(Kwitansi))
-        await db.commit()
+        kwitansi_delete = apply_fiscal_scope_filters(
+            delete(Kwitansi), Kwitansi, fiscal_year, source_fund_id, budget_id
+        )
+        await db.execute(kwitansi_delete)
 
-        stmt = (
+        stmt = apply_fiscal_scope_filters(
             select(Transaksi)
             .where(
                 Transaksi.no_bukti.isnot(None),
                 func.length(func.trim(Transaksi.no_bukti)) > 0,
                 Transaksi.pengeluaran > 0,
-            )
-            .order_by(Transaksi.tanggal.asc(), Transaksi.id.asc())
+            ),
+            Transaksi,
+            fiscal_year,
+            source_fund_id,
+            budget_id,
         )
+        stmt = stmt.order_by(Transaksi.tanggal.asc(), Transaksi.id.asc())
         result = await db.execute(stmt)
         transaction_rows = result.scalars().all()
         kegiatan_result = await db.execute(select(MasterKegiatan))
@@ -3554,16 +3855,36 @@ async def generate_kwitansi_final(db: AsyncSession = Depends(get_db)):
             item.kode_kegiatan: item.nama_kegiatan
             for item in kegiatan_result.scalars().all()
         }
+        scoped_kegiatan_result = await db.execute(select(MasterKegiatanArkas))
+        scoped_kegiatan_names = {
+            (
+                item.fiscal_year,
+                item.source_fund_id,
+                item.kode_kegiatan,
+            ): item.nama_kegiatan
+            for item in scoped_kegiatan_result.scalars().all()
+        }
         groups = {}
         for transaction in transaction_rows:
-            group = groups.setdefault(
+            group_key = (
                 transaction.no_bukti,
+                transaction.fiscal_year,
+                transaction.source_fund_id or "",
+                transaction.budget_id or "",
+            )
+            group = groups.setdefault(
+                group_key,
                 {
                     "items": [],
                     "jumlah": 0.0,
                     "tanggal": transaction.tanggal,
                     "kode_kegiatan": transaction.kode_kegiatan or "",
                     "identity": {},
+                    "fiscal_year": transaction.fiscal_year,
+                    "source_fund_id": transaction.source_fund_id,
+                    "source_fund_name": transaction.source_fund_name,
+                    "budget_id": transaction.budget_id,
+                    "budget_name": transaction.budget_name,
                 },
             )
             group["items"].append(transaction)
@@ -3583,7 +3904,12 @@ async def generate_kwitansi_final(db: AsyncSession = Depends(get_db)):
 
         generated = 0
 
-        for no_bukti, group in groups.items():
+        existing_kwitansi_result = await db.execute(select(Kwitansi))
+        existing_kwitansi_numbers = {
+            item.nomor_kwitansi for item in existing_kwitansi_result.scalars().all()
+        }
+        for group_key, group in groups.items():
+            no_bukti = group_key[0]
             if not group["tanggal"] or not group["jumlah"]:
                 continue
 
@@ -3598,13 +3924,24 @@ async def generate_kwitansi_final(db: AsyncSession = Depends(get_db)):
             kode_kegiatan = group["kode_kegiatan"]
 
             nomor_kwitansi = f"{no_bukti}/{kode_kegiatan or '-'} /{thp}/{tahun}"
+            base_nomor_kwitansi = nomor_kwitansi
+            suffix = 1
+            while nomor_kwitansi in existing_kwitansi_numbers:
+                nomor_kwitansi = f"{base_nomor_kwitansi}/{suffix}"
+                suffix += 1
+            existing_kwitansi_numbers.add(nomor_kwitansi)
 
             kw = Kwitansi(
                 nomor_kwitansi=nomor_kwitansi,
                 no_bukti=no_bukti,
                 kode_kegiatan=kode_kegiatan,
-                nama_kegiatan=kegiatan_names.get(
-                    kode_kegiatan, "Tanpa Nama Kegiatan"
+                nama_kegiatan=scoped_kegiatan_names.get(
+                    (
+                        group["fiscal_year"],
+                        group["source_fund_id"] or "",
+                        kode_kegiatan,
+                    ),
+                    kegiatan_names.get(kode_kegiatan, "Tanpa Nama Kegiatan"),
                 ),
                 tanggal=group["tanggal"],
                 thp=thp,
@@ -3617,6 +3954,11 @@ async def generate_kwitansi_final(db: AsyncSession = Depends(get_db)):
                 alamat_toko=group["identity"].get("alamat_toko", ""),
                 no_telp_toko=group["identity"].get("no_telp_toko", ""),
                 no_nota=group["identity"].get("no_nota", ""),
+                fiscal_year=group["fiscal_year"],
+                source_fund_id=group["source_fund_id"],
+                source_fund_name=group["source_fund_name"],
+                budget_id=group["budget_id"],
+                budget_name=group["budget_name"],
             )
 
             db.add(kw)
@@ -3887,15 +4229,48 @@ async def save_pengaturan(
 # Master Kegiatan Routes
 @api_router.get("/master-kegiatan")
 async def get_master_kegiatan(
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
 ):
     """Get all master kegiatan"""
     try:
         stmt = select(MasterKegiatan).order_by(MasterKegiatan.kode_kegiatan)
         result = await db.execute(stmt)
-        kegiatan_list = result.scalars().all()
-        
+        kegiatan_list = [
+            {
+                "id": item.id,
+                "kode_kegiatan": item.kode_kegiatan,
+                "nama_kegiatan": item.nama_kegiatan,
+                "fiscal_year": None,
+                "source_fund_id": None,
+                "source_fund_name": None,
+            }
+            for item in result.scalars().all()
+        ]
+        scoped_stmt = select(MasterKegiatanArkas).order_by(
+            MasterKegiatanArkas.fiscal_year.desc(),
+            MasterKegiatanArkas.source_fund_name,
+            MasterKegiatanArkas.kode_kegiatan,
+        )
+        scoped_stmt = apply_fiscal_scope_filters(
+            scoped_stmt, MasterKegiatanArkas, fiscal_year, source_fund_id, None
+        )
+        scoped_result = await db.execute(scoped_stmt)
+        kegiatan_list.extend(
+            {
+                "id": item.id,
+                "kode_kegiatan": item.kode_kegiatan,
+                "nama_kegiatan": item.nama_kegiatan,
+                "fiscal_year": item.fiscal_year,
+                "source_fund_id": item.source_fund_id,
+                "source_fund_name": item.source_fund_name,
+            }
+            for item in scoped_result.scalars().all()
+        )
         return {"status": "success", "data": kegiatan_list}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting master kegiatan: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting master kegiatan: {str(e)}")
@@ -3927,6 +4302,140 @@ async def save_master_kegiatan(
         await db.rollback()
         logger.error(f"Error saving master kegiatan: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error saving master kegiatan: {str(e)}")
+
+
+@api_router.post("/master-kegiatan/sync-arkas")
+async def sync_master_kegiatan_arkas(
+    request: MasterKegiatanBulkRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Upsert ARKAS activity codes without deleting local-only references."""
+    scoped_items = [
+        item
+        for item in request.data
+        if item.fiscal_year is not None and item.source_fund_id
+    ]
+    if scoped_items:
+        scope_keys = {
+            (item.fiscal_year, item.source_fund_id.strip())
+            for item in scoped_items
+        }
+        if len(scope_keys) != 1 or len(scoped_items) != len(request.data):
+            raise HTTPException(
+                status_code=400,
+                detail="Sinkron referensi kegiatan harus berisi satu tahun dan satu sumber dana.",
+            )
+        fiscal_year, source_fund_id = next(iter(scope_keys))
+        incoming = {
+            item.kode_kegiatan.strip(): (
+                item.nama_kegiatan.strip(),
+                item.source_fund_name.strip(),
+            )
+            for item in scoped_items
+            if item.kode_kegiatan.strip() and item.nama_kegiatan.strip()
+        }
+        if not incoming:
+            raise HTTPException(
+                status_code=400,
+                detail="Tidak ada referensi kegiatan ARKAS yang valid untuk disinkronkan.",
+            )
+        try:
+            result = await db.execute(
+                select(MasterKegiatanArkas).where(
+                    MasterKegiatanArkas.fiscal_year == fiscal_year,
+                    MasterKegiatanArkas.source_fund_id == source_fund_id,
+                    MasterKegiatanArkas.kode_kegiatan.in_(incoming.keys()),
+                )
+            )
+            existing = {item.kode_kegiatan: item for item in result.scalars().all()}
+            created_count = updated_count = unchanged_count = 0
+            for code, (name, source_name) in incoming.items():
+                activity = existing.get(code)
+                if activity is None:
+                    db.add(
+                        MasterKegiatanArkas(
+                            fiscal_year=fiscal_year,
+                            source_fund_id=source_fund_id,
+                            source_fund_name=source_name,
+                            kode_kegiatan=code,
+                            nama_kegiatan=name,
+                        )
+                    )
+                    created_count += 1
+                elif (
+                    activity.nama_kegiatan != name
+                    or activity.source_fund_name != source_name
+                ):
+                    activity.nama_kegiatan = name
+                    activity.source_fund_name = source_name
+                    updated_count += 1
+                else:
+                    unchanged_count += 1
+            await db.commit()
+            return {
+                "status": "success",
+                "created_count": created_count,
+                "updated_count": updated_count,
+                "unchanged_count": unchanged_count,
+                "total": len(incoming),
+                "fiscal_year": fiscal_year,
+                "source_fund_id": source_fund_id,
+            }
+        except Exception as e:
+            await db.rollback()
+            logger.exception("Gagal sinkron referensi kegiatan ARKAS.")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Gagal sinkron referensi kegiatan ARKAS: {str(e)}",
+            )
+
+    incoming = {}
+    for item in request.data:
+        code = item.kode_kegiatan.strip()
+        name = item.nama_kegiatan.strip()
+        if code and name:
+            incoming[code] = name
+    if not incoming:
+        raise HTTPException(
+            status_code=400,
+            detail="Tidak ada referensi kegiatan ARKAS yang valid untuk disinkronkan.",
+        )
+
+    try:
+        result = await db.execute(
+            select(MasterKegiatan).where(
+                MasterKegiatan.kode_kegiatan.in_(incoming.keys())
+            )
+        )
+        existing = {item.kode_kegiatan: item for item in result.scalars().all()}
+        created_count = 0
+        updated_count = 0
+        unchanged_count = 0
+        for code, name in incoming.items():
+            kegiatan = existing.get(code)
+            if kegiatan is None:
+                db.add(MasterKegiatan(kode_kegiatan=code, nama_kegiatan=name))
+                created_count += 1
+            elif kegiatan.nama_kegiatan != name:
+                kegiatan.nama_kegiatan = name
+                updated_count += 1
+            else:
+                unchanged_count += 1
+        await db.commit()
+        return {
+            "status": "success",
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "unchanged_count": unchanged_count,
+            "total": len(incoming),
+        }
+    except Exception as e:
+        await db.rollback()
+        logger.exception("Gagal sinkron referensi kegiatan ARKAS.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal sinkron referensi kegiatan ARKAS: {str(e)}",
+        )
 
 @api_router.post("/master-kegiatan/bulk")
 async def save_master_kegiatan_bulk(
@@ -4059,6 +4568,8 @@ async def delete_master_rekening(id: int, db: AsyncSession = Depends(get_db)):
 async def get_rekap_transaksi(
     details: int = 0,
     thp: str = "all",
+    fiscal_year: Optional[int] = None,
+    source_fund_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Generate rekap:
@@ -4077,6 +4588,11 @@ async def get_rekap_transaksi(
             MasterRekeningBelanja,
             MasterRekeningBelanja.kode_rekening_belanja == Transaksi.kode_rekening
         ).where(Transaksi.kode_rekening != None).where(Transaksi.kode_rekening != "").where(Transaksi.no_bukti != None).where(Transaksi.no_bukti != "")
+
+        if fiscal_year is not None:
+            base_stmt = base_stmt.where(Transaksi.fiscal_year == fiscal_year)
+        if source_fund_id is not None:
+            base_stmt = base_stmt.where(Transaksi.source_fund_id == source_fund_id)
 
         # If thp filter is specified (1 or 2), join Kwitansi and filter by its `thp` column
         if str(thp).strip() in ("1", "2"):
@@ -4152,6 +4668,8 @@ def generate_placeholder_code(text: str) -> str:
 async def generate_rekap_excel(
     file: UploadFile = File(...),
     thp: str = Form("all"),
+    fiscal_year: Optional[int] = Form(None),
+    source_fund_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db)
 ):
     try:
@@ -4165,6 +4683,11 @@ async def generate_rekap_excel(
             Transaksi.no_bukti != None, 
             Transaksi.no_bukti != ""
         )
+
+        if fiscal_year is not None:
+            base_stmt = base_stmt.where(Transaksi.fiscal_year == fiscal_year)
+        if source_fund_id is not None:
+            base_stmt = base_stmt.where(Transaksi.source_fund_id == source_fund_id)
 
         if str(thp).strip() in ("1", "2"):
             thp_map = {"1": "THP I", "2": "THP II"}
@@ -4251,6 +4774,22 @@ async def delete_master_kegiatan(
         logger.error(f"Error deleting master kegiatan: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deleting master kegiatan: {str(e)}")
 
+
+@api_router.delete("/master-kegiatan/arkas/{activity_id}")
+async def delete_master_kegiatan_arkas(
+    activity_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(MasterKegiatanArkas).where(MasterKegiatanArkas.id == activity_id)
+    )
+    activity = result.scalar_one_or_none()
+    if activity is None:
+        raise HTTPException(status_code=404, detail="Referensi kegiatan ARKAS tidak ditemukan.")
+    await db.delete(activity)
+    await db.commit()
+    return {"status": "success", "message": "Referensi kegiatan ARKAS berhasil dihapus."}
+
 # --- GET detail kwitansi ---
 @api_router.get("/kwitansi/{kwitansi_id}")
 async def get_kwitansi_detail(
@@ -4274,7 +4813,10 @@ async def get_kwitansi_detail(
     transaksi_list = []
     if kw.no_bukti:
         transaksi_result = await db.execute(
-            select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti)
+            select(Transaksi).where(
+                Transaksi.no_bukti == kw.no_bukti,
+                fiscal_scope_conditions(Transaksi, kw),
+            )
         )
         transaksi_list = transaksi_result.scalars().all()
 
@@ -4338,6 +4880,11 @@ async def get_kwitansi_detail(
             "alamat_toko": kw.alamat_toko,
             "no_telp_toko": kw.no_telp_toko or "",
             "no_nota": kw.no_nota or "",
+            "fiscal_year": kw.fiscal_year,
+            "source_fund_id": kw.source_fund_id,
+            "source_fund_name": kw.source_fund_name,
+            "budget_id": kw.budget_id,
+            "budget_name": kw.budget_name,
             "jenis_belanja": getattr(kw, "jenis_belanja", None) or "umum",
             "data_lampiran": _data_lampiran_dict(kw),
 
@@ -4442,7 +4989,12 @@ async def update_kwitansi_detail(kwitansi_id: int, payload: dict, db: AsyncSessi
 
     # 2. Ambil semua transaksi asli untuk backup data keuangan per baris
     trans_res = await db.execute(
-        select(Transaksi).where(Transaksi.no_bukti == kw.no_bukti).order_by(Transaksi.id.asc())
+        select(Transaksi)
+        .where(
+            Transaksi.no_bukti == kw.no_bukti,
+            fiscal_scope_conditions(Transaksi, kw),
+        )
+        .order_by(Transaksi.id.asc())
     )
     old_transaksi = trans_res.scalars().all()
     
@@ -4507,7 +5059,12 @@ async def update_kwitansi_detail(kwitansi_id: int, payload: dict, db: AsyncSessi
     new_uraian_list = payload.get("uraian") or []
 
     # Hapus transaksi lama tapi backup di memori
-    await db.execute(delete(Transaksi).where(Transaksi.no_bukti == kw.no_bukti))
+    await db.execute(
+        delete(Transaksi).where(
+            Transaksi.no_bukti == kw.no_bukti,
+            fiscal_scope_conditions(Transaksi, kw),
+        )
+    )
     
     for i, item in enumerate(new_uraian_list):
         source = old_transaksi[i] if i < len(old_transaksi) else None
@@ -4532,6 +5089,15 @@ async def update_kwitansi_detail(kwitansi_id: int, payload: dict, db: AsyncSessi
                 if hasattr(kw.tanggal_nota, "isoformat")
                 else kw.tanggal_nota or ""
             ),
+            fiscal_year=source.fiscal_year if source else kw.fiscal_year,
+            source_fund_id=(
+                source.source_fund_id if source else kw.source_fund_id
+            ),
+            source_fund_name=(
+                source.source_fund_name if source else kw.source_fund_name
+            ),
+            budget_id=source.budget_id if source else kw.budget_id,
+            budget_name=source.budget_name if source else kw.budget_name,
             penerimaan=source.penerimaan if source else 0,
             pengeluaran=source.pengeluaran if source else 0,
             saldo=source.saldo if source else 0

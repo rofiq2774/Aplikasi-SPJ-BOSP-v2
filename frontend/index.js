@@ -6,7 +6,11 @@ const { spawn, exec } = require("child_process");
 const http = require("http");
 const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
-const { readArkasTransactions } = require("./arkasReader.cjs");
+const {
+  readArkasActivities,
+  readArkasContexts,
+  readArkasTransactions,
+} = require("./arkasReader.cjs");
 
 // ===================== SATU FILE LOG: app.log (WAJIB) =====================
 // Semua kejadian frontend (main process Electron + renderer) dan backend
@@ -555,10 +559,10 @@ async function selectArkasDatabase(currentPath) {
   return selection.canceled ? null : selection.filePaths[0] || null;
 }
 
-async function readAndRememberArkasDatabase(databasePath) {
+async function readAndRememberArkasDatabase(databasePath, filters) {
   const result = await readArkasTransactions(
     databasePath,
-    new Date().getFullYear(),
+    filters || new Date().getFullYear(),
   );
   saveArkasDatabasePath(databasePath);
   writeAppLog(
@@ -610,7 +614,7 @@ ipcMain.handle("select-arkas-database", async (event) => {
   };
 });
 
-ipcMain.handle("read-arkas-transactions", async (event) => {
+ipcMain.handle("read-arkas-transactions", async (event, filters) => {
   assertTrustedRenderer(event);
   const settings = readArkasDatabaseSettings();
   let databasePath = settings?.path;
@@ -620,7 +624,47 @@ ipcMain.handle("read-arkas-transactions", async (event) => {
   if (!databasePath) {
     return { canceled: true, transactions: [], returned: 0 };
   }
-  return readAndRememberArkasDatabase(databasePath);
+  return readAndRememberArkasDatabase(databasePath, filters);
+});
+
+ipcMain.handle("read-arkas-activities", async (event, filters) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  let databasePath = settings?.path;
+  if (!databasePath || !fs.existsSync(databasePath)) {
+    databasePath = await selectArkasDatabase(databasePath);
+  }
+  if (!databasePath) return { canceled: true, activities: [], returned: 0 };
+
+  const result = await readArkasActivities(databasePath, filters || new Date().getFullYear());
+  saveArkasDatabasePath(databasePath);
+  writeAppLog(
+    "info",
+    "frontend-main",
+    `Referensi kegiatan ARKAS tahun ${result.fiscalYear} dibaca; ditemukan ${result.returned} kegiatan.`,
+  );
+  return {
+    canceled: false,
+    sourceName: path.basename(databasePath),
+    ...result,
+  };
+});
+
+ipcMain.handle("read-arkas-contexts", async (event) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  let databasePath = settings?.path;
+  if (!databasePath || !fs.existsSync(databasePath)) {
+    databasePath = await selectArkasDatabase(databasePath);
+  }
+  if (!databasePath) return { canceled: true, contexts: [] };
+  const result = await readArkasContexts(databasePath);
+  saveArkasDatabasePath(databasePath);
+  return {
+    canceled: false,
+    sourceName: path.basename(databasePath),
+    ...result,
+  };
 });
 
 const aiImageSettingsPath = () =>

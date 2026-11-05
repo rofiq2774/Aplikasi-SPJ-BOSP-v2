@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, UniqueConstraint
 
 from database import Base
 
@@ -25,6 +25,11 @@ class Transaksi(Base):
     npwp_toko = Column(String, nullable=False, default="")
     no_nota = Column(String, nullable=False, default="")
     tanggal_nota = Column(String, nullable=False, default="")
+    fiscal_year = Column(Integer, nullable=True)
+    source_fund_id = Column(String, nullable=True)
+    source_fund_name = Column(String, nullable=True)
+    budget_id = Column(String, nullable=True)
+    budget_name = Column(String, nullable=True)
     penerimaan = Column(Float, default=0)
     pengeluaran = Column(Float, default=0)
     saldo = Column(Float, default=0)
@@ -102,6 +107,31 @@ class MasterKegiatan(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MasterKegiatanArkas(Base):
+    """Kode kegiatan ARKAS yang berlaku pada tahun dan sumber dana tertentu."""
+
+    __tablename__ = "master_kegiatan_arkas"
+    __table_args__ = (
+        UniqueConstraint(
+            "fiscal_year",
+            "source_fund_id",
+            "kode_kegiatan",
+            name="uq_master_kegiatan_arkas_scope_code",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    fiscal_year = Column(Integer, nullable=False)
+    source_fund_id = Column(String, nullable=False, default="")
+    source_fund_name = Column(String, nullable=False, default="")
+    budget_id = Column(String, nullable=True)
+    budget_name = Column(String, nullable=True)
+    kode_kegiatan = Column(String, nullable=False)
+    nama_kegiatan = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class MasterRekeningBelanja(Base):
     """Master kode rekening dan atribut pengelompokan belanja."""
 
@@ -137,6 +167,11 @@ class Kwitansi(Base):
     alamat_toko = Column(String, default="")
     no_telp_toko = Column(String, default="")
     no_nota = Column(String, default="")
+    fiscal_year = Column(Integer, nullable=True)
+    source_fund_id = Column(String, nullable=True)
+    source_fund_name = Column(String, nullable=True)
+    budget_id = Column(String, nullable=True)
+    budget_name = Column(String, nullable=True)
     foto_bukti = Column(
         Text,
         default="[]",

@@ -16,7 +16,9 @@ Aplikasi desktop untuk membantu sekolah mengelola data transaksi BOSP, menyiapka
 
 ## Fitur
 
-- Impor data referensi kegiatan dan rekening belanja dari Excel.
+- Sinkronisasi referensi kegiatan dan transaksi BPU langsung dari database ARKAS.
+- Kelola data BKU, referensi kegiatan, dan SPJ dengan konteks tahun anggaran, sumber dana, dan anggaran.
+- Impor referensi rekening belanja dari Excel.
 - Catat transaksi dan olah data BKU serta data BHP/BHM sesuai kebutuhan.
 - Lengkapi data dan bukti pendukung SPJ, termasuk foto.
 - Buat dokumen SPJ untuk diunduh atau dicetak.
@@ -29,7 +31,6 @@ Aplikasi desktop untuk membantu sekolah mengelola data transaksi BOSP, menyiapka
 
 1. Buka halaman [Releases](https://github.com/rofiq2774/Aplikasi-SPJ-BOSP-v2/releases) dan unduh installer versi terbaru.
 2. Unduh juga file referensi dan template yang diperlukan dari [repository proyek](https://github.com/rofiq2774/Aplikasi-SPJ-BOSP-v2):
-   - `master_kegiatan.xlsx`
    - `master_rekening.xlsx`
    - `contoh_template_rekap_belanja.xlsx` (untuk melihat contoh template rekap)
 3. Jalankan installer dan ikuti petunjuk di layar sampai selesai.
@@ -39,11 +40,12 @@ Aplikasi desktop untuk membantu sekolah mengelola data transaksi BOSP, menyiapka
 
 ### Alur penggunaan
 
-1. **Impor referensi.** Buka menu Referensi Kegiatan dan Rekening Belanja, lalu impor file master yang sesuai.
-2. **Unggah data.** Gunakan menu Upload BKU untuk memproses file Buku Kas Umum dari ARKAS. Unggah file realisasi BHP/BHM jika diperlukan untuk pekerjaan Anda.
-3. **Lengkapi SPJ.** Buka menu Daftar SPJ, pilih data yang akan dilengkapi, lalu isi informasi seperti nama kegiatan, tanggal nota, nama dan alamat toko, serta foto bukti.
-4. **Unduh dokumen.** Setelah data SPJ lengkap, gunakan tindakan unduh pada aplikasi untuk membuat dokumen SPJ.
-5. **Buat rekap belanja.** Pilih rekap per tahap atau per tahun, lalu unggah template Excel yang sesuai. `contoh_template_rekap_belanja.xlsx` dapat digunakan sebagai acuan format.
+1. **Hubungkan ARKAS.** Pada Data BKU atau Referensi Kegiatan, pilih database ARKAS saat diminta. Lokasinya disimpan dan dapat diubah melalui tombol **Ubah Database**.
+2. **Sinkronkan konteks.** Pilih tahun anggaran, sumber dana, dan anggaran yang ingin disinkronkan. Pilihan sinkron BKU dapat mempertahankan, memperbarui, atau mengganti data pada konteks tersebut; konteks lain tidak ikut diubah.
+3. **Filter data.** Gunakan filter tahun/sumber dana/anggaran pada Data BKU dan Daftar SPJ, serta filter tahun/sumber dana pada Referensi Kegiatan. Data lama yang belum memiliki metadata tetap tersedia pada pilihan **Belum ditentukan**.
+4. **Lengkapi SPJ.** Buka menu Daftar SPJ, pilih data yang akan dilengkapi, lalu isi informasi dan bukti pendukung yang belum tersedia.
+5. **Unduh dokumen.** Setelah data SPJ lengkap, gunakan tindakan unduh pada aplikasi untuk membuat dokumen SPJ.
+6. **Buat rekap belanja.** Pilih rekap per tahap atau per tahun, lalu unggah template Excel yang sesuai. `contoh_template_rekap_belanja.xlsx` dapat digunakan sebagai acuan format.
 
 Format template rekap dapat disesuaikan dengan kebijakan pemerintah daerah. Jika template memerlukan kode, salin kode template yang tersedia di data rekap ke file Excel sebelum mengunggahnya.
 

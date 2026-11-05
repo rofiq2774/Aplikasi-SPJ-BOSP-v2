@@ -978,6 +978,144 @@ def test_generated_at_from_production_endpoint(spj_client):
     assert dt.utcoffset() == timedelta(hours=7)
 
 
+def test_arkas_activity_sync_updates_and_preserves_local_references(spj_client):
+    async def add_local_only_activity():
+        from models import MasterKegiatan
+
+        async with spj_client.test_session_maker() as session:
+            session.add(
+                MasterKegiatan(
+                    kode_kegiatan="LOCAL-ONLY",
+                    nama_kegiatan="Kegiatan lokal",
+                )
+            )
+            await session.commit()
+
+    asyncio.run(add_local_only_activity())
+    response = spj_client.post(
+        "/api/master-kegiatan/sync-arkas",
+        json={
+            "data": [
+                {"kode_kegiatan": "K-01", "nama_kegiatan": "Kegiatan ARKAS terbaru"},
+                {"kode_kegiatan": "K-02", "nama_kegiatan": "Kegiatan baru"},
+                {"kode_kegiatan": "K-02", "nama_kegiatan": "Kegiatan baru"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["created_count"] == 1
+    assert response.json()["updated_count"] == 1
+    assert response.json()["total"] == 2
+    rows = spj_client.get("/api/master-kegiatan").json()["data"]
+    activities = {item["kode_kegiatan"]: item["nama_kegiatan"] for item in rows}
+    assert activities["K-01"] == "Kegiatan ARKAS terbaru"
+    assert activities["K-02"] == "Kegiatan baru"
+    assert activities["LOCAL-ONLY"] == "Kegiatan lokal"
+
+
+def test_rekap_transaksi_filters_by_fiscal_year_and_source_fund(spj_client):
+    from models import Transaksi
+
+    async def add_scoped_transactions():
+        async with spj_client.test_session_maker() as session:
+            session.add_all([
+                Transaksi(
+                    tanggal="2025-11-01",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BKT-2025-BOS",
+                    fiscal_year=2025,
+                    source_fund_id="BOS",
+                    pengeluaran=110,
+                ),
+                Transaksi(
+                    tanggal="2025-11-01",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BKT-2025-DAK",
+                    fiscal_year=2025,
+                    source_fund_id="DAK",
+                    pengeluaran=220,
+                ),
+            ])
+            await session.commit()
+
+    asyncio.run(add_scoped_transactions())
+    response = spj_client.get(
+        "/api/rekap-transaksi?fiscal_year=2025&source_fund_id=BOS&details=1"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert sum(group["total_pengeluaran"] for group in data) == 110
+    assert [
+        item["no_bukti"]
+        for group in data
+        for item in group["items"]
+    ] == ["BKT-2025-BOS"]
+
+
+def test_kwitansi_list_filters_by_thp(spj_client):
+    from models import Kwitansi
+
+    async def add_stage_two_draft():
+        async with spj_client.test_session_maker() as session:
+            session.add_all([
+                Kwitansi(
+                    nomor_kwitansi="002/KW/SPJ/XI/2026",
+                    no_bukti="BKT-002",
+                    kode_kegiatan="K-01",
+                    nama_kegiatan="Belanja ATK",
+                    tanggal="2026-11-06",
+                    thp="THP II",
+                    tahun="2026",
+                    jumlah=250000,
+                    foto_bukti="[]",
+                ),
+                Kwitansi(
+                    nomor_kwitansi="003/KW/SPJ/X/2026",
+                    no_bukti="BKT-003",
+                    kode_kegiatan="K-01",
+                    nama_kegiatan="Belanja ATK",
+                    tanggal="15-10-2026",
+                    thp="THP I",
+                    tahun="2026",
+                    jumlah=175000,
+                    foto_bukti="[]",
+                ),
+            ])
+            await session.commit()
+
+    asyncio.run(add_stage_two_draft())
+
+    stage_one = spj_client.get("/api/kwitansi?thp=1")
+    stage_two = spj_client.get("/api/kwitansi?thp=2")
+    october = spj_client.get("/api/kwitansi?month=10")
+    october_stage_one = spj_client.get("/api/kwitansi?month=10&thp=1")
+
+    assert stage_one.status_code == 200
+    assert {item["thp"] for item in stage_one.json()["data"]} == {
+        "THP I",
+        "Tahap I",
+    }
+    assert stage_two.status_code == 200
+    assert [item["thp"] for item in stage_two.json()["data"]] == ["THP II"]
+    assert october.status_code == 200
+    assert [item["no_bukti"] for item in october.json()["data"]] == ["BKT-003"]
+    assert october_stage_one.status_code == 200
+    assert [
+        item["no_bukti"] for item in october_stage_one.json()["data"]
+    ] == ["BKT-003"]
+
+
+def test_arkas_activity_sync_rejects_empty_data(spj_client):
+    response = spj_client.post(
+        "/api/master-kegiatan/sync-arkas",
+        json={"data": []},
+    )
+    assert response.status_code == 400
+    assert "Tidak ada referensi kegiatan ARKAS" in response.json()["detail"]
+
+
 def test_arkas_import_keeps_existing_receipts_and_vendor_identity(spj_client):
     payload = {
         "mode": "keep",
@@ -1306,3 +1444,244 @@ def test_arkas_import_replace_all_removes_existing_transactions(spj_client):
     rows = asyncio.run(read_rows())
     assert len(rows) == 1
     assert rows[0].no_bukti == "BPU-REPLACE"
+
+
+def test_arkas_replace_scope_preserves_same_receipt_in_other_fiscal_context(spj_client):
+    async def seed_scoped_rows():
+        from models import Kwitansi, Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            session.add_all(
+                [
+                    Transaksi(
+                        tanggal="01-11-2025",
+                        no_bukti="BPU-DUP",
+                        uraian="Target lama",
+                        fiscal_year=2025,
+                        source_fund_id="1",
+                        source_fund_name="BOS",
+                        budget_id="101",
+                        budget_name="Anggaran 2025 BOS",
+                    ),
+                    Transaksi(
+                        tanggal="01-11-2026",
+                        no_bukti="BPU-DUP",
+                        uraian="Di luar lingkup",
+                        fiscal_year=2026,
+                        source_fund_id="2",
+                        source_fund_name="DAK",
+                        budget_id="202",
+                        budget_name="Anggaran 2026 DAK",
+                    ),
+                ]
+            )
+            session.add(
+                Kwitansi(
+                    nomor_kwitansi="BPU-DUP-OUTSIDE",
+                    no_bukti="BPU-DUP",
+                    tanggal="01-11-2026",
+                    fiscal_year=2026,
+                    source_fund_id="2",
+                    source_fund_name="DAK",
+                    budget_id="202",
+                    budget_name="Anggaran 2026 DAK",
+                )
+            )
+            await session.commit()
+
+    asyncio.run(seed_scoped_rows())
+    response = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "replace_all",
+            "transaksi": [
+                {
+                    "tanggal": "05-11-2025",
+                    "no_bukti": "BPU-DUP",
+                    "uraian": "Target baru",
+                    "pengeluaran": 500,
+                    "fiscal_year": 2025,
+                    "source_fund_id": "1",
+                    "source_fund_name": "BOS",
+                    "budget_id": "101",
+                    "budget_name": "Anggaran 2025 BOS",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["deleted_count"] == 1
+
+    async def read_scope_rows():
+        from sqlalchemy import select
+        from models import Kwitansi, Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            transactions = (await session.execute(select(Transaksi))).scalars().all()
+            kwitansi = (await session.execute(select(Kwitansi))).scalars().all()
+            return transactions, kwitansi
+
+    transactions, kwitansi = asyncio.run(read_scope_rows())
+    assert {(item.fiscal_year, item.uraian) for item in transactions if item.no_bukti == "BPU-DUP"} == {
+        (2025, "Target baru"),
+        (2026, "Di luar lingkup"),
+    }
+    assert any(item.nomor_kwitansi == "BPU-DUP-OUTSIDE" for item in kwitansi)
+
+
+def test_arkas_import_update_key_includes_fiscal_context(spj_client):
+    payload = {
+        "mode": "update",
+        "transaksi": [
+            {
+                "tanggal": "05-11-2025",
+                "no_bukti": "BPU-COLLIDE",
+                "uraian": "BOS",
+                "pengeluaran": 100,
+                "fiscal_year": 2025,
+                "source_fund_id": "1",
+                "budget_id": "101",
+            },
+            {
+                "tanggal": "05-11-2026",
+                "no_bukti": "BPU-COLLIDE",
+                "uraian": "DAK",
+                "pengeluaran": 200,
+                "fiscal_year": 2026,
+                "source_fund_id": "2",
+                "budget_id": "202",
+            },
+        ],
+    }
+    response = spj_client.post("/api/transaksi/import-arkas", json=payload)
+    assert response.status_code == 400
+    assert "satu tahun" in response.json()["detail"]
+
+
+def test_arkas_activity_references_are_scoped_by_year_and_source(spj_client):
+    for year, source_id, name in (
+        (2025, "1", "Kegiatan BOS 2025"),
+        (2026, "2", "Kegiatan DAK 2026"),
+    ):
+        response = spj_client.post(
+            "/api/master-kegiatan/sync-arkas",
+            json={
+                "data": [
+                    {
+                        "kode_kegiatan": "02.03.01",
+                        "nama_kegiatan": name,
+                        "fiscal_year": year,
+                        "source_fund_id": source_id,
+                        "source_fund_name": f"Sumber {source_id}",
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["created_count"] == 1
+
+    first = spj_client.get(
+        "/api/master-kegiatan?fiscal_year=2025&source_fund_id=1"
+    )
+    second = spj_client.get(
+        "/api/master-kegiatan?fiscal_year=2026&source_fund_id=2"
+    )
+    assert first.status_code == second.status_code == 200
+    assert {
+        item["nama_kegiatan"]
+        for item in first.json()["data"]
+        if item["kode_kegiatan"] == "02.03.01"
+    } == {"Kegiatan BOS 2025"}
+    assert {
+        item["nama_kegiatan"]
+        for item in second.json()["data"]
+        if item["kode_kegiatan"] == "02.03.01"
+    } == {"Kegiatan DAK 2026"}
+
+
+def test_fiscal_filters_keep_legacy_rows_separate(spj_client):
+    async def add_other_scope():
+        from models import Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            session.add(
+                Transaksi(
+                    tanggal="05-11-2026",
+                    no_bukti="BPU-FILTER",
+                    uraian="Scoped row",
+                    fiscal_year=2026,
+                    source_fund_id="BOS",
+                    budget_id="budget-2026",
+                )
+            )
+            session.add(
+                Transaksi(
+                    tanggal="05-11-2026",
+                    no_bukti="BPU-LEGACY",
+                    uraian="Legacy row",
+                )
+            )
+            await session.commit()
+
+    asyncio.run(add_other_scope())
+    scoped = spj_client.get(
+        "/api/transaksi?fiscal_year=2026&source_fund_id=BOS&budget_id=budget-2026"
+    )
+    unspecified = spj_client.get(
+        "/api/transaksi?fiscal_year=unspecified&source_fund_id=unspecified&budget_id=unspecified"
+    )
+    assert scoped.status_code == unspecified.status_code == 200
+    assert [row["no_bukti"] for row in scoped.json()["data"]] == ["BPU-FILTER"]
+    assert "BPU-LEGACY" in {
+        row["no_bukti"] for row in unspecified.json()["data"]
+    }
+
+
+def test_spj_generation_groups_receipts_per_fiscal_context(spj_client):
+    async def add_receipt_collisions():
+        from models import Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            session.add_all(
+                [
+                    Transaksi(
+                        tanggal="05-11-2025",
+                        no_bukti="BPU-CROSS-CONTEXT",
+                        kode_kegiatan="K-01",
+                        uraian="BOS detail",
+                        pengeluaran=100,
+                        fiscal_year=2025,
+                        source_fund_id="1",
+                        budget_id="101",
+                    ),
+                    Transaksi(
+                        tanggal="05-11-2026",
+                        no_bukti="BPU-CROSS-CONTEXT",
+                        kode_kegiatan="K-01",
+                        uraian="DAK detail",
+                        pengeluaran=200,
+                        fiscal_year=2026,
+                        source_fund_id="2",
+                        budget_id="202",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(add_receipt_collisions())
+    response = spj_client.post("/api/kwitansi/generate")
+    assert response.status_code == 200
+    rows = spj_client.get("/api/kwitansi").json()["data"]
+    grouped = [
+        item for item in rows if item["no_bukti"] == "BPU-CROSS-CONTEXT"
+    ]
+    assert len(grouped) == 2
+    assert {
+        (item["fiscal_year"], item["source_fund_id"], item["budget_id"])
+        for item in grouped
+    } == {(2025, "1", "101"), (2026, "2", "202")}
+    assert all(
+        "/1-101" not in item["nomor_kwitansi"]
+        and "/2-202" not in item["nomor_kwitansi"]
+        for item in grouped
+    )

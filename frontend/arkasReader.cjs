@@ -99,7 +99,7 @@ function toAmount(value) {
   return Number.isFinite(amount) ? amount : 0;
 }
 
-function buildQuery(db, year) {
+function buildQuery(db, filters) {
   const kasColumns = getTableColumns(db, "kas_umum");
   requireColumns("kas_umum", kasColumns, [
     "id_kas_umum",
@@ -141,6 +141,15 @@ function buildQuery(db, year) {
     "tahun_anggaran",
     "id_ref_sumber_dana",
     "sekolah_id",
+    "soft_delete",
+    "is_approve",
+    "is_revisi",
+    "is_aktif",
+  ]);
+  const sourceColumns = getTableColumns(db, "ref_sumber_dana");
+  requireColumns("ref_sumber_dana", sourceColumns, [
+    "id_ref_sumber_dana",
+    "nama_sumber_dana",
   ]);
   const rekeningColumns = getTableColumns(db, "ref_rekening");
   requireColumns("ref_rekening", rekeningColumns, [
@@ -169,12 +178,14 @@ function buildQuery(db, year) {
     'INNER JOIN "rapbs_periode" rp ON ku."id_rapbs_periode" = rp."id_rapbs_periode"',
     'INNER JOIN "rapbs" r ON rp."id_rapbs" = r."id_rapbs"',
     'INNER JOIN "anggaran" a ON a."id_anggaran" = r."id_anggaran"',
+    'INNER JOIN "ref_sumber_dana" rsd ON rsd."id_ref_sumber_dana" = a."id_ref_sumber_dana"',
   ];
   if (hasSchoolHistory) {
     joins.push(
       'LEFT JOIN "sekolah_history" sh ON a."sekolah_id" = sh."sekolah_id" AND a."tahun_anggaran" = sh."tahun"',
     );
   }
+
   joins.push(
     'INNER JOIN "ref_rekening" rr ON ku."kode_rekening" = rr."kode_rekening" AND rr."tahun" = a."tahun_anggaran"',
     `INNER JOIN "ref_kode" rk ON r."id_ref_kode" = rk."id_ref_kode"
@@ -192,6 +203,10 @@ function buildQuery(db, year) {
     selectColumn("ku", "tanggal_transaksi", "tanggalTransaksi", kasColumns),
     'rk."id_kode" AS "kodeKegiatan"',
     'rk."uraian_kode" AS "namaKegiatan"',
+    'a."tahun_anggaran" AS "fiscalYear"',
+    'a."id_ref_sumber_dana" AS "sourceFundId"',
+    'rsd."nama_sumber_dana" AS "sourceFundName"',
+    'a."id_anggaran" AS "budgetId"',
     'rr."kode_rekening" AS "kodeRekening"',
     selectColumn("ku", "uraian", "uraian", kasColumns),
     'SUM(ku."volume") AS "volume"',
@@ -225,24 +240,175 @@ function buildQuery(db, year) {
     'ku."tanggal_transaksi"',
     'rk."id_kode"',
     'rk."uraian_kode"',
+    'a."tahun_anggaran"',
+    'a."id_ref_sumber_dana"',
+    'rsd."nama_sumber_dana"',
+    'a."id_anggaran"',
     'rr."kode_rekening"',
     'ku."uraian"',
     'rp."satuan"',
   ];
 
+  const predicates = [
+    "ku.\"soft_delete\" = 0",
+    "kun.\"soft_delete\" = 0",
+    "ku.\"id_ref_bku\" IN (4, 24, 15, 35)",
+    "upper(trim(kun.\"no_bukti\")) LIKE 'BPU%'",
+    'a."soft_delete" = 0',
+    'a."is_approve" = 1',
+    'a."is_aktif" = 1',
+    `a."is_revisi" = (
+      SELECT MAX(ar."is_revisi") FROM "anggaran" ar
+       WHERE ar."tahun_anggaran" = a."tahun_anggaran"
+         AND ar."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+         AND ar."soft_delete" = 0
+         AND ar."is_approve" = 1
+         AND ar."is_aktif" = 1
+    )`,
+    'ku."id_anggaran" = a."id_anggaran"',
+  ];
+  const parameters = [];
+  if (filters.fiscalYear != null) {
+    predicates.push('a."tahun_anggaran" = ?');
+    parameters.push(filters.fiscalYear);
+  }
+  if (filters.sourceFundId) {
+    predicates.push('a."id_ref_sumber_dana" = ?');
+    parameters.push(filters.sourceFundId);
+  }
+  if (filters.budgetId) {
+    predicates.push('a."id_anggaran" = ?');
+    parameters.push(filters.budgetId);
+  }
+
   return db.query(
     `SELECT ${fields.join(", ")}
        FROM "kas_umum" ku
        ${joins.join("\n")}
-       WHERE ku."soft_delete" = 0
-         AND kun."soft_delete" = 0
-         AND ku."id_ref_bku" IN (4, 24, 15, 35)
-         AND upper(trim(kun."no_bukti")) LIKE 'BPU%'
-         AND a."tahun_anggaran" = ?
-         AND ku."id_anggaran" = a."id_anggaran"
+       WHERE ${predicates.join("\n         AND ")}
        GROUP BY ${groupColumns.join(", ")}
        ORDER BY ku."tanggal_transaksi" DESC, ku."id_kas_umum" DESC`,
-    [year],
+    parameters,
+  );
+}
+
+function buildActivitiesQuery(db, filters) {
+  const anggaranColumns = getTableColumns(db, "anggaran");
+  requireColumns("anggaran", anggaranColumns, [
+    "id_anggaran",
+    "tahun_anggaran",
+    "id_ref_sumber_dana",
+    "sekolah_id",
+    "soft_delete",
+    "is_approve",
+    "is_revisi",
+    "is_aktif",
+  ]);
+  const sourceColumns = getTableColumns(db, "ref_sumber_dana");
+  requireColumns("ref_sumber_dana", sourceColumns, [
+    "id_ref_sumber_dana",
+    "nama_sumber_dana",
+  ]);
+  const kegiatanColumns = getTableColumns(db, "ref_kode");
+  requireColumns("ref_kode", kegiatanColumns, [
+    "id_ref_kode",
+    "id_kode",
+    "parent_kode",
+    "tahun",
+    "sumber_dana_id",
+    "bentuk_pendidikan_id",
+    "uraian_kode",
+    "expired_date",
+  ]);
+
+  const historyColumns = getTableColumns(db, "sekolah_history");
+  const hasSchoolHistory =
+    historyColumns?.has("sekolah_id") &&
+    historyColumns.has("tahun") &&
+    historyColumns.has("bentuk_pendidikan_id");
+  const historyJoin = hasSchoolHistory
+    ? `LEFT JOIN "sekolah_history" sh
+         ON a."sekolah_id" = sh."sekolah_id"
+        AND a."tahun_anggaran" = sh."tahun"`
+    : "";
+  const predicates = [
+    'rk3."tahun" = ?',
+    'rk2."tahun" = ?',
+    'rk1."tahun" = ?',
+    'a."soft_delete" = 0',
+    'a."is_approve" = 1',
+    'a."is_aktif" = 1',
+    `a."is_revisi" = (
+      SELECT MAX(ar."is_revisi") FROM "anggaran" ar
+       WHERE ar."tahun_anggaran" = a."tahun_anggaran"
+         AND ar."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+         AND ar."soft_delete" = 0
+         AND ar."is_approve" = 1
+         AND ar."is_aktif" = 1
+    )`,
+    'rk3."expired_date" IS NULL',
+    'rk2."expired_date" IS NULL',
+    'rk1."expired_date" IS NULL',
+    'rk3."bentuk_pendidikan_id" IS NOT NULL',
+    'a."tahun_anggaran" = rk3."tahun"',
+  ];
+  const parameters = [
+    filters.fiscalYear,
+    filters.fiscalYear,
+    filters.fiscalYear,
+    filters.fiscalYear,
+    filters.fiscalYear,
+  ];
+  if (hasSchoolHistory) {
+    predicates.push('rk3."bentuk_pendidikan_id" = sh."bentuk_pendidikan_id"');
+  }
+  if (filters.sourceFundId) {
+    predicates.push('a."id_ref_sumber_dana" = ?');
+    parameters.push(filters.sourceFundId);
+  }
+
+  return db.query(
+    `SELECT DISTINCT
+        trim(CAST(rk3."id_kode" AS TEXT)) AS "kodeKegiatan",
+        trim(rk3."uraian_kode") AS "namaKegiatan",
+        a."tahun_anggaran" AS "fiscalYear",
+        a."id_ref_sumber_dana" AS "sourceFundId",
+        rsd."nama_sumber_dana" AS "sourceFundName"
+       FROM "ref_kode" rk3
+       INNER JOIN "ref_kode" rk2
+         ON rk3."parent_kode" = rk2."id_ref_kode"
+        AND rk2."tahun" = ?
+        AND rk2."sumber_dana_id" = rk3."sumber_dana_id"
+        AND rk2."expired_date" IS NULL
+       INNER JOIN "ref_kode" rk1
+         ON rk2."parent_kode" = rk1."id_ref_kode"
+        AND rk1."tahun" = ?
+        AND rk1."expired_date" IS NULL
+       INNER JOIN "anggaran" a
+         ON a."tahun_anggaran" = rk3."tahun"
+        AND a."id_ref_sumber_dana" = rk3."sumber_dana_id"
+       INNER JOIN "ref_sumber_dana" rsd
+         ON rsd."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+       ${historyJoin}
+       WHERE ${predicates.join("\n         AND ")}
+         AND (
+           rk1."sumber_dana_id" = a."id_ref_sumber_dana"
+           OR (
+             rk1."sumber_dana_id" = 1
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM "ref_kode" p2
+                WHERE p2."id_kode" = rk1."id_kode"
+                  AND p2."tahun" = ?
+                  AND p2."sumber_dana_id" = a."id_ref_sumber_dana"
+                  AND p2."expired_date" IS NULL
+             )
+           )
+         )
+         AND trim(CAST(rk3."id_kode" AS TEXT)) <> ''
+         AND trim(rk3."uraian_kode") <> ''
+       ORDER BY "kodeKegiatan"`,
+    [...parameters, filters.fiscalYear],
   );
 }
 
@@ -258,13 +424,31 @@ function parseDetails(value) {
   }
 }
 
-async function readArkasTransactions(
-  databasePath,
-  fiscalYear = new Date().getFullYear(),
-) {
-  if (!Number.isInteger(fiscalYear) || fiscalYear < 2000 || fiscalYear > 9999) {
+function normalizeFilters(value) {
+  if (Number.isInteger(value)) return { fiscalYear: value };
+  const filters = value && typeof value === "object" ? value : {};
+  const fiscalYear =
+    filters.fiscalYear === undefined ||
+    filters.fiscalYear === "" ||
+    filters.fiscalYear === "all"
+      ? null
+      : Number(filters.fiscalYear);
+  if (fiscalYear !== null &&
+      (!Number.isInteger(fiscalYear) || fiscalYear < 2000 || fiscalYear > 9999)) {
     throw new Error("Tahun anggaran ARKAS tidak valid.");
   }
+  return {
+    fiscalYear,
+    sourceFundId: String(filters.sourceFundId || "").trim(),
+    budgetId: String(filters.budgetId || "").trim(),
+  };
+}
+
+async function readArkasTransactions(
+  databasePath,
+  selectedFilters = new Date().getFullYear(),
+) {
+  const filters = normalizeFilters(selectedFilters);
   sqliteInitialization ||= initSQLite();
   const sqlite = await sqliteInitialization;
   const module = sqlite.getModule();
@@ -274,7 +458,7 @@ async function readArkasTransactions(
   try {
     module.FS.writeFile(virtualPath, fs.readFileSync(databasePath));
     db = openDatabase(sqlite, virtualPath, encrypted);
-    const rows = buildQuery(db, fiscalYear);
+    const rows = buildQuery(db, filters);
     const transactions = rows.map((row) => {
       const volume = toAmount(row.volume);
       const harga = toAmount(row.harga);
@@ -284,6 +468,11 @@ async function readArkasTransactions(
         tanggal: formatDate(row.tanggalTransaksi),
         kode_kegiatan: String(row.kodeKegiatan ?? ""),
         nama_kegiatan: String(row.namaKegiatan || "").trim(),
+        fiscal_year: Number(row.fiscalYear),
+        source_fund_id: String(row.sourceFundId ?? ""),
+        source_fund_name: String(row.sourceFundName || "").trim(),
+        budget_id: String(row.budgetId ?? ""),
+        budget_name: "",
         kode_rekening: String(row.kodeRekening || "").trim(),
         uraian: String(row.uraian || "").trim(),
         volume,
@@ -301,7 +490,12 @@ async function readArkasTransactions(
       };
     });
 
-    return { transactions, returned: transactions.length, fiscalYear };
+    return {
+      transactions,
+      returned: transactions.length,
+      fiscalYear: filters.fiscalYear,
+      filters,
+    };
   } finally {
     try {
       db?.close();
@@ -313,4 +507,135 @@ async function readArkasTransactions(
   }
 }
 
-module.exports = { readArkasTransactions };
+async function readArkasActivities(
+  databasePath,
+  selectedFilters = new Date().getFullYear(),
+) {
+  const filters = normalizeFilters(selectedFilters);
+  if (!filters.fiscalYear) {
+    throw new Error("Pilih tahun anggaran sebelum menyinkronkan kegiatan ARKAS.");
+  }
+  sqliteInitialization ||= initSQLite();
+  const sqlite = await sqliteInitialization;
+  const module = sqlite.getModule();
+  const virtualPath = `/arkas-activities-${randomUUID()}.db`;
+  const encrypted = !isStandardSqliteDatabase(databasePath);
+  let db;
+  try {
+    module.FS.writeFile(virtualPath, fs.readFileSync(databasePath));
+    db = openDatabase(sqlite, virtualPath, encrypted);
+    const activities = buildActivitiesQuery(db, filters).map((row) => ({
+      kode_kegiatan: String(row.kodeKegiatan || "").trim(),
+      nama_kegiatan: String(row.namaKegiatan || "").trim(),
+      fiscal_year: Number(row.fiscalYear),
+      source_fund_id: String(row.sourceFundId ?? ""),
+      source_fund_name: String(row.sourceFundName || "").trim(),
+    }));
+    return {
+      activities,
+      returned: activities.length,
+      fiscalYear: filters.fiscalYear,
+      filters,
+    };
+  } finally {
+    try {
+      db?.close();
+    } finally {
+      if (module.FS.analyzePath(virtualPath).exists) {
+        module.FS.unlink(virtualPath);
+      }
+    }
+  }
+}
+
+async function readArkasContexts(databasePath) {
+  const sqlite = await (sqliteInitialization ||= initSQLite());
+  const module = sqlite.getModule();
+  const virtualPath = `/arkas-contexts-${randomUUID()}.db`;
+  const encrypted = !isStandardSqliteDatabase(databasePath);
+  let db;
+  try {
+    module.FS.writeFile(virtualPath, fs.readFileSync(databasePath));
+    db = openDatabase(sqlite, virtualPath, encrypted);
+    const anggaranColumns = getTableColumns(db, "anggaran");
+    requireColumns("anggaran", anggaranColumns, [
+      "id_anggaran",
+      "tahun_anggaran",
+      "id_ref_sumber_dana",
+      "soft_delete",
+      "is_approve",
+      "is_revisi",
+      "is_aktif",
+    ]);
+    const sourceColumns = getTableColumns(db, "ref_sumber_dana");
+    requireColumns("ref_sumber_dana", sourceColumns, [
+      "id_ref_sumber_dana",
+      "nama_sumber_dana",
+    ]);
+    const rows = db.query(
+      `SELECT a."tahun_anggaran" AS "fiscalYear",
+              a."id_ref_sumber_dana" AS "sourceFundId",
+              rsd."nama_sumber_dana" AS "sourceFundName",
+              a."id_anggaran" AS "budgetId",
+              a."is_revisi" AS "revision"
+         FROM "anggaran" a
+         INNER JOIN "ref_sumber_dana" rsd
+           ON rsd."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+        WHERE a."soft_delete" = 0
+          AND a."is_approve" = 1
+          AND a."is_aktif" = 1
+          AND a."is_revisi" = (
+            SELECT MAX(ar."is_revisi") FROM "anggaran" ar
+             WHERE ar."tahun_anggaran" = a."tahun_anggaran"
+               AND ar."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+               AND ar."soft_delete" = 0
+               AND ar."is_approve" = 1
+               AND ar."is_aktif" = 1
+          )
+        ORDER BY a."tahun_anggaran" DESC,
+                 rsd."nama_sumber_dana",
+                 a."id_anggaran"`,
+    );
+    const contexts = rows.map((row) => ({
+      fiscal_year: Number(row.fiscalYear),
+      source_fund_id: String(row.sourceFundId ?? ""),
+      source_fund_name: String(row.sourceFundName || "").trim(),
+      budget_id: String(row.budgetId ?? ""),
+      budget_name: "",
+      revision: Number(row.revision || 0),
+    }));
+    return {
+      contexts,
+      years: [...new Set(contexts.map((item) => item.fiscal_year))],
+      sources: [...new Map(
+        contexts.map((item) => [
+          `${item.fiscal_year}:${item.source_fund_id}`,
+          {
+            fiscal_year: item.fiscal_year,
+            source_fund_id: item.source_fund_id,
+            source_fund_name: item.source_fund_name,
+          },
+        ]),
+      ).values()],
+      budgets: contexts.map(({ budget_id, budget_name, ...rest }) => ({
+        ...rest,
+        budget_id,
+        budget_name,
+      })),
+    };
+  } finally {
+    try {
+      db?.close();
+    } finally {
+      if (module.FS.analyzePath(virtualPath).exists) {
+        module.FS.unlink(virtualPath);
+      }
+    }
+  }
+}
+
+module.exports = {
+  readArkasActivities,
+  readArkasContexts,
+  readArkasTransactions,
+};

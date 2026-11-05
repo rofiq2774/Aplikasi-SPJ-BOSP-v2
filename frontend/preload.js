@@ -7,7 +7,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // BUGFIX: backend sekarang child_process dengan port dinamis — renderer
   // tidak boleh hardcode http://127.0.0.1:8000 lagi. Ambil base URL dari main process.
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
-  readArkasTransactions: () => ipcRenderer.invoke("read-arkas-transactions"),
+  readArkasTransactions: filters =>
+    ipcRenderer.invoke("read-arkas-transactions", filters),
+  readArkasActivities: filters =>
+    ipcRenderer.invoke("read-arkas-activities", filters),
+  readArkasContexts: () => ipcRenderer.invoke("read-arkas-contexts"),
   getArkasDatabaseInfo: () => ipcRenderer.invoke("get-arkas-database-info"),
   selectArkasDatabase: () => ipcRenderer.invoke("select-arkas-database"),
   getArialPdfFonts: () => ipcRenderer.invoke("get-arial-pdf-fonts"),

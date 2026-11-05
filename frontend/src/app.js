@@ -65,6 +65,29 @@ async function waitForBackendHealth(origin, maxTries = 60) {
   return false;
 }
 
+async function deleteMasterKegiatanArkas(id) {
+  if (
+    !(await UI.confirm("Hapus referensi kegiatan pada tahun dan sumber dana ini?", {
+      title: "Hapus Referensi ARKAS",
+      okText: "Hapus",
+      danger: true,
+    }))
+  ) return;
+  try {
+    const response = await apiFetch(
+      `${API_BASE}/master-kegiatan/arkas/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "Gagal menghapus referensi ARKAS.");
+    await loadMasterKegiatan();
+    await loadFiscalContexts();
+    showToast("Berhasil!", result.message || "Referensi ARKAS dihapus.");
+  } catch (error) {
+    showToast("Gagal!", error.message || "Gagal menghapus referensi ARKAS.");
+  }
+}
+
 function ensureBackendReady() {
   if (_backendOrigin) return Promise.resolve(_backendOrigin);
   if (!_backendInitPromise) {
@@ -242,6 +265,141 @@ let pengaturan = {
 let masterKegiatan = [];
 let masterRekeningBelanja = [];
 let activeTab = "identitas";
+let fiscalContexts = [];
+
+function scopeFilterValue(context) {
+  return encodeURIComponent(
+    JSON.stringify({
+      fiscal_year: context.fiscal_year,
+      source_fund_id: context.source_fund_id || "",
+      budget_id: context.budget_id || "",
+    }),
+  );
+}
+
+function scopeFilterParams(value) {
+  if (!value || value === "all") return {};
+  if (value === "unspecified") {
+    return {
+      fiscal_year: "unspecified",
+      source_fund_id: "unspecified",
+      budget_id: "unspecified",
+    };
+  }
+  const context = JSON.parse(decodeURIComponent(value));
+  return {
+    fiscal_year: String(context.fiscal_year),
+    source_fund_id: context.source_fund_id,
+    budget_id: context.budget_id,
+  };
+}
+
+function scopeQueryString(value) {
+  return new URLSearchParams(scopeFilterParams(value)).toString();
+}
+
+function scopeLabel(context) {
+  return `${context.fiscal_year} • ${context.source_fund_name || "Nama sumber dana tidak tersedia"}`;
+}
+
+function populateFiscalScopeFilters() {
+  const transactionContexts = fiscalContexts.filter((item) => item.budget_id);
+  const options = [
+    { value: "all", label: "Semua tahun / sumber dana / anggaran" },
+    ...transactionContexts.map((context) => ({
+      value: scopeFilterValue(context),
+      label: scopeLabel(context),
+    })),
+  ];
+  for (const id of ["bku-scope-filter", "spj-scope-filter"]) {
+    const select = document.getElementById(id);
+    if (!select) continue;
+    const previous = select.value || "all";
+    select.replaceChildren(
+      ...options.map(({ value, label }) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        return option;
+      }),
+    );
+    select.value = options.some((item) => item.value === previous)
+      ? previous
+      : "all";
+  }
+
+  const masterSelect = document.getElementById("master-scope-filter");
+  if (masterSelect) {
+    const masterScopes = [
+      ...new Map(
+        fiscalContexts.map((item) => [
+          `${item.fiscal_year}:${item.source_fund_id}`,
+          item,
+        ]),
+      ).values(),
+    ];
+    const masterOptions = [
+      { value: "all", label: "Semua tahun / sumber dana" },
+      ...masterScopes.map((context) => ({
+        value: scopeFilterValue(context),
+        label: `${context.fiscal_year} • ${context.source_fund_name || "Nama sumber dana tidak tersedia"}`,
+      })),
+    ];
+    const previous = masterSelect.value || "all";
+    masterSelect.replaceChildren(
+      ...masterOptions.map(({ value, label }) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        return option;
+      }),
+    );
+    masterSelect.value = masterOptions.some((item) => item.value === previous)
+      ? previous
+      : "all";
+  }
+
+  const rekapSelect = document.getElementById("rekap-scope-filter");
+  if (rekapSelect) {
+    const rekapScopes = [
+      ...new Map(
+        fiscalContexts.map((item) => [
+          `${item.fiscal_year}:${item.source_fund_id || ""}`,
+          item,
+        ]),
+      ).values(),
+    ];
+    const rekapOptions = [
+      { value: "all", label: "Semua tahun / sumber dana" },
+      ...rekapScopes.map((context) => ({
+        value: scopeFilterValue({ ...context, budget_id: "" }),
+        label: scopeLabel(context),
+      })),
+    ];
+    const previous = rekapSelect.value || "all";
+    rekapSelect.replaceChildren(
+      ...rekapOptions.map(({ value, label }) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        return option;
+      }),
+    );
+    rekapSelect.value = rekapOptions.some((item) => item.value === previous)
+      ? previous
+      : "all";
+  }
+}
+
+async function loadFiscalContexts() {
+  const response = await apiFetch(`${API_BASE}/fiscal-contexts`);
+  const result = await response.json();
+  if (!response.ok || result.status !== "success") {
+    throw new Error(result.detail || "Gagal memuat konteks tahun anggaran.");
+  }
+  fiscalContexts = result.data || [];
+  populateFiscalScopeFilters();
+}
 
 // ---- Identitas Satuan Pendidikan per periode (menu terpadu: kop + surat + pejabat) ----
 let identitasPeriodeList = []; // daftar entri dari GET /identitas-periode
@@ -341,7 +499,19 @@ function renderPengaturanForm() {
 // Load referensi kegiatan
 async function loadMasterKegiatan() {
   try {
-    const res = await apiFetch(`${API_BASE}/master-kegiatan`);
+    const filterValue = document.getElementById("master-scope-filter")?.value;
+    const filter = scopeFilterParams(filterValue);
+    const params = new URLSearchParams();
+    if (filter.fiscal_year && filter.fiscal_year !== "unspecified") {
+      params.set("fiscal_year", filter.fiscal_year);
+    }
+    if (filter.source_fund_id && filter.source_fund_id !== "unspecified") {
+      params.set("source_fund_id", filter.source_fund_id);
+    }
+    const query = params.toString();
+    const res = await apiFetch(
+      `${API_BASE}/master-kegiatan${query ? `?${query}` : ""}`,
+    );
     const data = await res.json();
     if (data.data) {
       masterKegiatan = data.data;
@@ -476,7 +646,7 @@ async function uploadBKU() {
   }
 }
 
-function chooseArkasSyncMode(fiscalYear, transactionCount, sourceName) {
+function chooseArkasSyncMode(context, transactionCount, sourceName) {
   return new Promise((resolve) => {
     document
       .querySelectorAll(".ui-dialog-overlay")
@@ -500,10 +670,9 @@ function chooseArkasSyncMode(fiscalYear, transactionCount, sourceName) {
     message.className = "ui-dialog-message";
     message.textContent =
       `Sumber: ${sourceName}. Ditemukan ${transactionCount} baris BPU ` +
-      `tahun anggaran ${fiscalYear}. ` +
-      "Penyesuaian data dilakukan berdasarkan nomor bukti. " +
-      "Hapus semua akan mengosongkan seluruh BKU lokal; pertahankan akan melewati " +
-      "nomor bukti yang sudah ada; perbarui akan mengganti rincian dengan nomor bukti sama.";
+      `untuk ${scopeLabel(context)}. Sinkron hanya memengaruhi tahun, ` +
+      "sumber dana, dan anggaran yang dipilih; data di luar lingkup tetap aman. " +
+      "Pilih bagaimana menangani nomor bukti yang sudah ada.";
     body.appendChild(message);
     const footer = document.createElement("div");
     footer.className = "ui-dialog-foot";
@@ -517,7 +686,7 @@ function chooseArkasSyncMode(fiscalYear, transactionCount, sourceName) {
     const choices = [
       {
         mode: "replace_all",
-        label: "Hapus semua lalu impor",
+        label: "Ganti data pada konteks ini",
         className: "btn btn-danger",
       },
       {
@@ -564,23 +733,6 @@ function chooseArkasSyncMode(fiscalYear, transactionCount, sourceName) {
   });
 }
 
-async function loadArkasDatabaseInfo() {
-  if (typeof window.electronAPI?.getArkasDatabaseInfo !== "function") return;
-  const label = document.getElementById("arkas-database-label");
-  if (!label) return;
-  try {
-    const info = await window.electronAPI.getArkasDatabaseInfo();
-    label.textContent = !info.configured
-      ? "Database ARKAS belum dipilih"
-      : info.available
-        ? `Database ARKAS: ${info.sourceName}`
-        : `Database ARKAS tidak ditemukan: ${info.sourceName} (pilih ulang)`;
-  } catch (error) {
-    label.textContent = "Lokasi database ARKAS gagal dibaca";
-    showToast("Error!", error.message || "Gagal membaca pengaturan database ARKAS.");
-  }
-}
-
 async function changeArkasDatabase() {
   if (typeof window.electronAPI?.selectArkasDatabase !== "function") {
     showToast("Error!", "Pengaturan database ARKAS hanya tersedia di aplikasi desktop.");
@@ -589,11 +741,79 @@ async function changeArkasDatabase() {
   try {
     const selected = await window.electronAPI.selectArkasDatabase();
     if (selected.canceled) return;
-    await loadArkasDatabaseInfo();
     showToast("Berhasil!", `Lokasi database ARKAS disimpan: ${selected.sourceName}.`);
   } catch (error) {
     showToast("Error!", error.message || "Gagal menyimpan database ARKAS.");
   }
+}
+
+function chooseArkasContext(contexts, title = "Pilih konteks anggaran") {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "ui-dialog-overlay ui-dialog-kind-confirm";
+    const dialog = document.createElement("div");
+    dialog.className = "ui-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    const header = document.createElement("div");
+    header.className = "ui-dialog-head";
+    const heading = document.createElement("h3");
+    heading.className = "ui-dialog-title";
+    heading.textContent = title;
+    header.appendChild(heading);
+    const body = document.createElement("div");
+    body.className = "ui-dialog-body";
+    const select = document.createElement("select");
+    select.className = "form-control";
+    select.style.width = "100%";
+    contexts.forEach((context, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = scopeLabel(context);
+      select.appendChild(option);
+    });
+    const currentYearIndex = contexts.findIndex(
+      (item) => item.fiscal_year === new Date().getFullYear(),
+    );
+    if (currentYearIndex >= 0) select.value = String(currentYearIndex);
+    body.appendChild(select);
+    const footer = document.createElement("div");
+    footer.className = "ui-dialog-foot";
+    const finish = (selected) => {
+      overlay.remove();
+      resolve(selected);
+    };
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "btn btn-primary";
+    confirm.textContent = "Pilih";
+    confirm.addEventListener("click", () =>
+      finish(contexts[Number(select.value)] || null),
+    );
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn btn-secondary";
+    cancel.textContent = "Batal";
+    cancel.addEventListener("click", () => finish(null));
+    footer.append(confirm, cancel);
+    dialog.append(header, body, footer);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+  });
+}
+
+function selectedArkasContext(filterId, contexts, requireBudget = true) {
+  const value = document.getElementById(filterId)?.value || "all";
+  if (value === "all" || value === "unspecified") return null;
+  const filter = JSON.parse(decodeURIComponent(value));
+  return contexts.find(
+    (context) =>
+      String(context.fiscal_year) === String(filter.fiscal_year) &&
+      String(context.source_fund_id || "") ===
+        String(filter.source_fund_id || "") &&
+      (!requireBudget ||
+        String(context.budget_id || "") === String(filter.budget_id || "")),
+  ) || null;
 }
 
 async function syncArkas() {
@@ -607,19 +827,40 @@ async function syncArkas() {
 
   showToast("Info!", "Membaca database ARKAS...");
   try {
-    const imported = await window.electronAPI.readArkasTransactions();
+    const catalog = await window.electronAPI.readArkasContexts();
+    if (catalog.canceled) return;
+    const contexts = catalog.contexts || [];
+    if (!contexts.length) {
+      showToast("Warning!", "Tidak ditemukan tahun, sumber dana, atau anggaran ARKAS aktif.");
+      return;
+    }
+    const contextIndex = new Map(
+      [...fiscalContexts, ...contexts].map((item) => [
+        `${item.fiscal_year}:${item.source_fund_id}:${item.budget_id}`,
+        item,
+      ]),
+    );
+    fiscalContexts = [...contextIndex.values()];
+    populateFiscalScopeFilters();
+    let context = selectedArkasContext("bku-scope-filter", contexts);
+    if (!context) context = await chooseArkasContext(contexts);
+    if (!context) return;
+    const imported = await window.electronAPI.readArkasTransactions({
+      fiscalYear: context.fiscal_year,
+      sourceFundId: context.source_fund_id,
+      budgetId: context.budget_id,
+    });
     if (imported.canceled) return;
-    await loadArkasDatabaseInfo();
     if (!imported.transactions?.length) {
       showToast(
         "Warning!",
-        `Tidak ditemukan transaksi BPU untuk tahun anggaran ${imported.fiscalYear}.`,
+        `Tidak ditemukan transaksi BPU untuk ${scopeLabel(context)}.`,
       );
       return;
     }
 
     const mode = await chooseArkasSyncMode(
-      imported.fiscalYear,
+      context,
       imported.returned,
       imported.sourceName,
     );
@@ -628,8 +869,8 @@ async function syncArkas() {
     if (
       mode === "replace_all" &&
       !(await UI.confirm(
-        "Semua data BKU lokal akan dihapus sebelum data ARKAS diimpor. " +
-          "Ini termasuk data non-BPU dan input manual. Data kwitansi tidak dihapus. Lanjutkan?",
+        `Data BKU dan SPJ pada konteks ${scopeLabel(context)} akan diganti ` +
+          "dengan data ARKAS. Data tahun, sumber dana, atau anggaran lain tetap dipertahankan. Lanjutkan?",
         {
           title: "Konfirmasi Hapus Semua Data BKU",
           okText: "Hapus dan Impor",
@@ -650,10 +891,16 @@ async function syncArkas() {
       throw new Error(result.detail || "Gagal mengimpor data ARKAS.");
     }
 
+    await loadFiscalContexts();
+    const selectedScopeValue = scopeFilterValue(context);
+    const bkuFilter = document.getElementById("bku-scope-filter");
+    const spjFilter = document.getElementById("spj-scope-filter");
+    if (bkuFilter) bkuFilter.value = selectedScopeValue;
+    if (spjFilter) spjFilter.value = selectedScopeValue;
     await loadDataBKU();
     await loadKwitansiList();
     const modeDescription = {
-      replace_all: "Data BKU lama dihapus",
+      replace_all: "Data pada konteks terpilih diganti",
       keep: "Data dengan nomor bukti yang sudah ada dipertahankan",
       update: "Data dengan nomor bukti yang sama diperbarui",
     }[mode];
@@ -685,6 +932,32 @@ function renderBkuShopIdentity(item) {
       ? `<small style="display:block;color:#64748b;font-size:11px;">${escapeSpjFormValue(details)}</small>`
       : ""
   }</td>`;
+}
+
+function renderFiscalContext(item) {
+  if (item.fiscal_year == null) {
+    return '<small style="display:block;color:#64748b;font-size:11px;">Belum ditentukan</small>';
+  }
+  const context = [
+    item.fiscal_year,
+    item.source_fund_name || "Nama sumber dana tidak tersedia",
+  ]
+    .filter(Boolean)
+    .map(escapeSpjFormValue)
+    .join(" • ");
+  return `<small style="display:block;color:#64748b;font-size:11px;">${context}</small>`;
+}
+
+function displayKwitansiNumber(item) {
+  let number = String(item.nomor_kwitansi || "");
+  if (item.source_fund_id || item.budget_id) {
+    const internalScopeSuffix =
+      `/${item.source_fund_id || "-"}-${item.budget_id || "-"}`;
+    if (number.endsWith(internalScopeSuffix)) {
+      number = number.slice(0, -internalScopeSuffix.length);
+    }
+  }
+  return escapeSpjFormValue(number);
 }
 
 // Save data BKU
@@ -1017,7 +1290,17 @@ function applyBhpToBKU(bhpItems) {
 //load Kwitansi
 async function loadKwitansiList() {
   try {
-    const res = await apiFetch(`${API_BASE}/kwitansi`);
+    const params = new URLSearchParams(
+      scopeFilterParams(document.getElementById("spj-scope-filter")?.value),
+    );
+    const thp = document.getElementById("spj-thp-filter")?.value || "all";
+    const month = document.getElementById("spj-month-filter")?.value || "all";
+    if (thp !== "all") params.set("thp", thp);
+    if (month !== "all") params.set("month", month);
+    const query = params.toString();
+    const res = await apiFetch(
+      `${API_BASE}/kwitansi${query ? `?${query}` : ""}`,
+    );
     const json = await res.json();
 
     if (json.status === "success") {
@@ -1035,22 +1318,35 @@ async function loadKwitansiList() {
 
 // Generate Kwitansi
 async function generateKwitansi() {
+  const filterValue =
+    document.getElementById("spj-scope-filter")?.value || "all";
+  const scopeLabelText =
+    document.getElementById("spj-scope-filter")?.selectedOptions?.[0]?.textContent ||
+    "semua konteks";
   if (
     !(await UI.confirm(
-      "Generate ulang semua Data SPJ? Data lama akan dihapus.",
+      filterValue === "all"
+        ? "Generate ulang semua Data SPJ? Data SPJ lama pada semua konteks akan diganti."
+        : `Generate ulang Data SPJ untuk ${scopeLabelText}? Konteks lain tidak akan diubah.`,
       { title: "Generate Ulang SPJ", okText: "Ya, Generate" },
     ))
   ) {
     return;
   }
 
-  const res = await apiFetch(`${API_BASE}/kwitansi/generate`, {
-    method: "POST",
-  });
-
-  const json = await res.json();
-  showToast("Berhasil!", `Berhasil generate ${json.generated} SPJ`);
-  loadKwitansiList();
+  try {
+    const query = scopeQueryString(filterValue);
+    const res = await apiFetch(
+      `${API_BASE}/kwitansi/generate${query ? `?${query}` : ""}`,
+      { method: "POST" },
+    );
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.detail || "Gagal membuat SPJ.");
+    showToast("Berhasil!", `Berhasil generate ${json.generated} SPJ`);
+    await loadKwitansiList();
+  } catch (error) {
+    showToast("Gagal!", error.message || "Gagal membuat SPJ.");
+  }
 }
 
 // Download Kwitansi (SPJ) — RENDER PDF SEPENUHNYA DI FRONTEND
@@ -1163,23 +1459,24 @@ async function renderSpjPreviewPages() {
   const container = document.getElementById("spj-preview-pages");
   if (!state || !container) return;
 
+  state.renderGeneration = (state.renderGeneration || 0) + 1;
+  const renderGeneration = state.renderGeneration;
+  state.renderTask?.cancel();
+  container.replaceChildren();
+
   for (let pageNumber = 1; pageNumber <= state.document.numPages; pageNumber += 1) {
-    if (state !== _spjPreviewState) return;
+    if (state !== _spjPreviewState || renderGeneration !== state.renderGeneration) return;
     const page = await state.document.getPage(pageNumber);
-    if (state !== _spjPreviewState) return;
+    if (state !== _spjPreviewState || renderGeneration !== state.renderGeneration) return;
 
     const baseViewport = page.getViewport({ scale: 1 });
-    const scale = Math.min(
-      1.5,
-      Math.max(0.5, (container.clientWidth - 32) / baseViewport.width),
-    );
+    const scale = state.zoom || 1;
     const viewport = page.getViewport({ scale });
     const outputScale = Math.min(window.devicePixelRatio || 1, 1.5);
     const pageContainer = document.createElement("div");
-    pageContainer.style.cssText =
-      "display:flex; justify-content:center; padding:16px; background:#e5e7eb;";
+    pageContainer.className = "spj-preview-page";
     const canvas = document.createElement("canvas");
-    canvas.style.cssText = "background:white; box-shadow:0 2px 8px #0003;";
+    canvas.className = "spj-preview-canvas";
     canvas.width = Math.floor(viewport.width * outputScale);
     canvas.height = Math.floor(viewport.height * outputScale);
     canvas.style.width = `${Math.floor(viewport.width)}px`;
@@ -1187,19 +1484,66 @@ async function renderSpjPreviewPages() {
     pageContainer.appendChild(canvas);
     container.appendChild(pageContainer);
 
-    state.renderTask = page.render({
+    const renderTask = page.render({
       canvasContext: canvas.getContext("2d"),
       viewport,
       transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
     });
-    await state.renderTask.promise;
-    state.renderTask = null;
+    state.renderTask = renderTask;
+    try {
+      await renderTask.promise;
+    } catch (error) {
+      if (error?.name === "RenderingCancelledException") return;
+      throw error;
+    } finally {
+      if (state.renderTask === renderTask) state.renderTask = null;
+    }
+  }
+}
+
+async function setSpjPreviewZoom(zoom) {
+  const state = _spjPreviewState;
+  if (!state) return;
+  state.zoom = Math.min(3, Math.max(0.25, Number(zoom) || 1));
+  const zoomLabel = document.getElementById("spj-preview-zoom");
+  if (zoomLabel) zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+  try {
+    await renderSpjPreviewPages();
+  } catch (error) {
+    if (error?.name === "RenderingCancelledException") return;
+    const message = error?.message || String(error);
+    appLog("error", `previewKwitansi: gagal merender ulang pada zoom ${state.zoom}: ${message}`);
+    showToast("Error!", `Gagal mengubah zoom preview SPJ: ${message}`);
+  }
+}
+
+async function fitSpjPreviewWidth() {
+  const state = _spjPreviewState;
+  const container = document.getElementById("spj-preview-pages");
+  if (!state || !container) return;
+  try {
+    const firstPage = await state.document.getPage(1);
+    if (state !== _spjPreviewState) return;
+    const pageWidth = firstPage.getViewport({ scale: 1 }).width;
+    const fitScale = Math.min(1.5, Math.max(0.25, (container.clientWidth - 48) / pageWidth));
+    await setSpjPreviewZoom(fitScale);
+  } catch (error) {
+    if (state !== _spjPreviewState || error?.name === "RenderingCancelledException") return;
+    const message = error?.message || String(error);
+    appLog("error", `previewKwitansi: gagal menyesuaikan lebar halaman: ${message}`);
+    showToast("Error!", `Gagal menyesuaikan lebar preview SPJ: ${message}`);
+  }
+}
+
+function adjustSpjPreviewZoom(delta) {
+  if (_spjPreviewState) {
+    void setSpjPreviewZoom(_spjPreviewState.zoom + delta);
   }
 }
 
 async function previewKwitansi(id) {
   showPopup(`
-    <div class="popup-content" style="width:min(1100px,96vw); max-width:96vw;">
+    <div class="popup-content spj-preview-popup" style="width:min(1200px,96vw); max-width:96vw;">
       <div class="popup-header">
         <div>
           <h3 style="margin:0;">Preview SPJ</h3>
@@ -1207,8 +1551,8 @@ async function previewKwitansi(id) {
         </div>
         <button class="btn btn-secondary" onclick="closePopup()">Tutup</button>
       </div>
-      <div class="popup-body" style="padding:10px;">
-        <div id="spj-preview-frame" style="height:78vh; display:grid; place-items:center;">
+      <div class="popup-body spj-preview-popup-body">
+        <div id="spj-preview-frame" class="spj-preview-frame">
           Menyiapkan preview SPJ...
         </div>
       </div>
@@ -1256,15 +1600,22 @@ async function previewKwitansi(id) {
       loadingTask,
       document: pdfDocument,
       renderTask: null,
+      zoom: 1,
     };
     previewContainer.innerHTML = `
-      <div style="position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:center; padding:8px; background:#f8f9fa; border-bottom:1px solid #ddd;">
-        <span>${pdfDocument.numPages} halaman — gulir untuk melihat seluruh dokumen</span>
+      <div class="spj-preview-toolbar" role="toolbar" aria-label="Kontrol preview SPJ">
+        <span class="spj-preview-page-count">${pdfDocument.numPages} halaman</span>
+        <div class="spj-preview-zoom-controls">
+          <button type="button" class="btn btn-secondary btn-sm" aria-label="Perkecil preview" title="Perkecil" onclick="adjustSpjPreviewZoom(-0.1)">−</button>
+          <button type="button" id="spj-preview-zoom" class="btn btn-secondary btn-sm spj-preview-zoom-value" aria-label="Kembalikan zoom ke 100%" title="Kembalikan ke 100%" onclick="setSpjPreviewZoom(1)">100%</button>
+          <button type="button" class="btn btn-secondary btn-sm" aria-label="Perbesar preview" title="Perbesar" onclick="adjustSpjPreviewZoom(0.1)">+</button>
+          <button type="button" class="btn btn-outline-primary btn-sm" onclick="fitSpjPreviewWidth()">Lebar halaman</button>
+        </div>
       </div>
-      <div id="spj-preview-pages" style="height:calc(78vh - 45px); overflow:auto; background:#e5e7eb;">
+      <div id="spj-preview-pages" class="spj-preview-pages">
       </div>
     `;
-    await renderSpjPreviewPages();
+    await fitSpjPreviewWidth();
     const subtitle = document.querySelector("#popup-overlay .popup-header small");
     if (subtitle) subtitle.textContent = "Preview menggunakan data tersimpan terbaru.";
     appLog(
@@ -1284,60 +1635,90 @@ async function previewKwitansi(id) {
   }
 }
 
-// Import referensi kegiatan from Excel
-async function importMasterKegiatan() {
-  const fileInput = document.getElementById("excelFile");
-  if (!fileInput.files.length) {
-    showToast("Error!", "Pilih file Excel terlebih dahulu!");
+async function syncMasterKegiatanArkas() {
+  if (typeof window.electronAPI?.readArkasActivities !== "function") {
+    showToast("Error!", "Sinkron referensi ARKAS hanya tersedia di aplikasi desktop.");
     return;
   }
-
-  showToast("Info", "Sedang import...");
+  showToast("Info!", "Membaca referensi kegiatan dari ARKAS...");
   try {
-    const data = await fileInput.files[0].arrayBuffer();
-    const workbook = XLSX.read(data, { type: "array" });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const json = XLSX.utils.sheet_to_json(sheet);
-
-    if (!json.length) {
-      showToast("Error!", "File Excel kosong atau format salah");
+    const catalog = await window.electronAPI.readArkasContexts();
+    if (catalog.canceled) return;
+    fiscalContexts = [
+      ...new Map(
+        [...fiscalContexts, ...(catalog.contexts || [])].map((item) => [
+          `${item.fiscal_year}:${item.source_fund_id}:${item.budget_id}`,
+          item,
+        ]),
+      ).values(),
+    ];
+    populateFiscalScopeFilters();
+    const scopeOptions = [
+      ...new Map(
+        (catalog.contexts || []).map((item) => [
+          `${item.fiscal_year}:${item.source_fund_id}`,
+          item,
+        ]),
+      ).values(),
+    ];
+    if (!scopeOptions.length) {
+      showToast("Warning!", "Tidak ditemukan tahun dan sumber dana ARKAS aktif.");
+      return;
+    }
+    let context = selectedArkasContext(
+      "master-scope-filter",
+      scopeOptions,
+      false,
+    );
+    if (!context) {
+      context = await chooseArkasContext(
+        scopeOptions,
+        "Pilih tahun dan sumber dana",
+      );
+    }
+    if (!context) return;
+    const imported = await window.electronAPI.readArkasActivities({
+      fiscalYear: context.fiscal_year,
+      sourceFundId: context.source_fund_id,
+    });
+    if (imported.canceled) return;
+    if (!imported.activities?.length) {
+      showToast(
+        "Warning!",
+        `Tidak ditemukan referensi kegiatan untuk tahun anggaran ${imported.fiscalYear}.`,
+      );
       return;
     }
 
-    const masterData = json
-      .map((row) => ({
-        kode_kegiatan: String(
-          row.kode_kegiatan || row["Kode Kegiatan"] || row["kode"] || "",
-        ).trim(),
-        nama_kegiatan: String(
-          row.nama_kegiatan || row["Nama Kegiatan"] || row["nama"] || "",
-        ).trim(),
-      }))
-      .filter((item) => item.kode_kegiatan && item.nama_kegiatan);
-
-    const res = await apiFetch(`${API_BASE}/master-kegiatan/bulk`, {
+    const response = await apiFetch(`${API_BASE}/master-kegiatan/sync-arkas`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: masterData }),
+      body: JSON.stringify({ data: imported.activities }),
     });
-
-    if (res.ok) {
-      const result = await res.json();
-      const total = result.saved_count ?? result.total ?? 0;
-
-      showToast(
-        "Berhasil!",
-        `Berhasil import ${total} data referensi kegiatan`,
-      );
-      loadMasterKegiatan();
-    } else {
-      showToast("Error!", "Gagal import data referensi kegiatan");
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || "Gagal menyinkronkan referensi kegiatan.");
     }
-  } catch (err) {
-    showToast("Error!", "Error: " + err);
+    await loadFiscalContexts();
+    const scopeSelect = document.getElementById("master-scope-filter");
+    if (scopeSelect) {
+      const selected = fiscalContexts.find(
+        (item) =>
+          Number(item.fiscal_year) === Number(context.fiscal_year) &&
+          String(item.source_fund_id) === String(context.source_fund_id),
+      );
+      if (selected) scopeSelect.value = scopeFilterValue(selected);
+    }
+    await loadMasterKegiatan();
+    showToast(
+      "Berhasil!",
+      `${result.created_count} kegiatan ditambahkan, ` +
+        `${result.updated_count} diperbarui, ${result.unchanged_count} tetap. ` +
+        `Referensi lokal yang tidak ada di ARKAS tidak dihapus.`,
+    );
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal membaca referensi kegiatan ARKAS.");
   }
-
-  fileInput.value = "";
 }
 
 // Import referensi rekening belanja from Excel
@@ -1520,13 +1901,27 @@ async function generateRekapTransaksi(forceDetails = false) {
     const thp = document.getElementById("rekap-thp-select")
       ? document.getElementById("rekap-thp-select").value
       : "all";
+    const scope = scopeFilterParams(
+      document.getElementById("rekap-scope-filter")?.value,
+    );
+    const scopeLabelText =
+      document.getElementById("rekap-scope-filter")?.selectedOptions?.[0]
+        ?.textContent || "Semua tahun / sumber dana";
+    const params = new URLSearchParams({
+      details: include ? "1" : "0",
+      thp,
+    });
+    if (scope.fiscal_year) params.set("fiscal_year", scope.fiscal_year);
+    if (scope.source_fund_id) {
+      params.set("source_fund_id", scope.source_fund_id);
+    }
     const res = await apiFetch(
-      `${API_BASE}/rekap-transaksi?details=${include ? 1 : 0}&thp=${encodeURIComponent(thp)}`,
+      `${API_BASE}/rekap-transaksi?${params}`,
     );
     const json = await res.json();
     if (json.status !== "success")
       throw new Error(json.detail || "Gagal memproses rekap");
-    renderRekapTransaksi(json.data, include);
+    renderRekapTransaksi(json.data, include, scopeLabelText);
     showToast("Berhasil!", "Rekap selesai");
   } catch (err) {
     showToast("Error!", err.message || err);
@@ -1543,18 +1938,23 @@ function getPlaceholderCode(text) {
 }
 
 // 2. EDIT FUNGSI RENDER (Menambahkan Kolom Kode Template)
-function renderRekapTransaksi(data, withDetails = false) {
+function renderRekapTransaksi(
+  data,
+  withDetails = false,
+  scopeLabelText = "Semua tahun / sumber dana",
+) {
   const container = document.getElementById("rekap-result");
   if (!container) return;
 
   if (!Array.isArray(data) || data.length === 0) {
     container.innerHTML =
-      "<p style='text-align:center; padding:20px;'>Tidak ada data rekap.</p>";
+      `<p style='text-align:center; padding:20px;'>Tidak ada data rekap untuk ${escapeSpjFormValue(scopeLabelText)}.</p>`;
     return;
   }
 
   // Tambahkan header kolom 'Kode Template'
   let html = `
+        <h4 class="rekap-scope-caption">Tahun / sumber dana: ${escapeSpjFormValue(scopeLabelText)}</h4>
         <div class="table-container">
             <table>
                 <thead>
@@ -1626,6 +2026,9 @@ function renderRekapTransaksi(data, withDetails = false) {
 async function processTemplateExcel() {
   const fileInput = document.getElementById("template-file");
   const thpSelect = document.getElementById("rekap-thp-select");
+  const scope = scopeFilterParams(
+    document.getElementById("rekap-scope-filter")?.value,
+  );
 
   if (!fileInput.files || fileInput.files.length === 0) {
     showToast("Warning", "Silakan pilih file template Excel (.xlsx) dulu.");
@@ -1636,6 +2039,10 @@ async function processTemplateExcel() {
   const originalFile = fileInput.files[0]; // Simpan referensi file asli
   formData.append("file", originalFile);
   formData.append("thp", thpSelect.value);
+  if (scope.fiscal_year) formData.append("fiscal_year", scope.fiscal_year);
+  if (scope.source_fund_id) {
+    formData.append("source_fund_id", scope.source_fund_id);
+  }
 
   showToast("Info", "Sedang memproses Excel...");
 
@@ -1863,6 +2270,7 @@ function renderMasterKegiatan(data = null) {
                     <tr>
                         <th style="width:150px">Kode Kegiatan</th>
                         <th>Nama Kegiatan</th>
+                        <th>Tahun / Sumber Dana</th>
                         <th style="width:100px; text-align:center">Aksi</th>
                     </tr>
                 </thead>
@@ -1870,12 +2278,18 @@ function renderMasterKegiatan(data = null) {
     `;
 
   list.forEach((item) => {
+    const scoped = item.fiscal_year != null;
     html += `
             <tr>
-                <td><strong>${item.kode_kegiatan}</strong></td>
-                <td>${item.nama_kegiatan}</td>
+                <td><strong>${escapeSpjFormValue(item.kode_kegiatan)}</strong></td>
+                <td>${escapeSpjFormValue(item.nama_kegiatan)}</td>
+                <td>${scoped
+                  ? `${escapeSpjFormValue(item.fiscal_year)} • ${escapeSpjFormValue(item.source_fund_name || "Nama sumber dana tidak tersedia")}`
+                  : "Referensi lokal"}</td>
                 <td style="text-align:center">
-                    <button class="btn btn-sm btn-danger" onclick="deleteMasterKegiatan('${item.kode_kegiatan}')">
+                    <button class="btn btn-sm btn-danger" onclick="${scoped
+                      ? `deleteMasterKegiatanArkas(${Number(item.id)})`
+                      : `deleteMasterKegiatan(${JSON.stringify(String(item.kode_kegiatan))})`}">
                     Hapus
                     </button>
                 </td>
@@ -1899,7 +2313,7 @@ function renderBKUResult(filteredData = null, isExtractMode = false) {
 
   if (dataToRender.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="11" style="text-align:center; padding:20px;">Tidak ada data ditemukan.</td></tr>';
+      '<tr><td colspan="12" style="text-align:center; padding:20px;">Tidak ada data ditemukan.</td></tr>';
     if (btnArea) btnArea.style.display = "none";
     return;
   }
@@ -1926,8 +2340,13 @@ function renderBKUResult(filteredData = null, isExtractMode = false) {
                 <td>${formatCurrencyLabel(item.harga_satuan || 0)}</td>
                 <td>${formatCurrencyLabel(item.pengeluaran || 0)}</td>
                 <td style="text-align:center">
-                    <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))})`)}">Hapus</button>
+                    <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))}, ${JSON.stringify({
+                      fiscal_year: item.fiscal_year ?? "unspecified",
+                      source_fund_id: item.source_fund_id || "unspecified",
+                      budget_id: item.budget_id || "unspecified",
+                    })})`)}">Hapus</button>
                 </td>
+                <td>${renderFiscalContext(item)}</td>
             </tr>
         `;
     tbody.insertAdjacentHTML("beforeend", row);
@@ -2044,13 +2463,14 @@ function renderKwitansiList(list) {
                         <th style="width:140px">Jumlah</th>
                         <th style="width:110px; text-align:center">Status</th>
                         <th style="width:160px; text-align:center">Aksi</th>
+                        <th>Keterangan</th>
                     </tr>
                 </thead>
                 <tbody>
     `;
 
   if (list.length === 0) {
-    html += `<tr><td colspan="7" style="text-align:center; padding: 40px; color: #999;">Belum ada data SPJ</td></tr>`;
+    html += `<tr><td colspan="8" style="text-align:center; padding: 40px; color: #999;">Belum ada data SPJ</td></tr>`;
   } else {
     list.forEach((k) => {
       const isBlank = (val) => !val || val.toString().trim() === "";
@@ -2066,7 +2486,7 @@ function renderKwitansiList(list) {
       html += `
         <tr>
             <td>${formatTanggalID(k.tanggal)}</td>
-            <td>${k.nomor_kwitansi || "<span style='color:orange'>DRAFT</span>"}</td>
+            <td>${k.nomor_kwitansi ? displayKwitansiNumber(k) : "<span style='color:orange'>DRAFT</span>"}</td>
             <td>${escapeSpjFormValue(k.nama_kegiatan)}</td>
             <td>
                 <strong>${escapeSpjFormValue(k.nama_toko)}</strong>
@@ -2092,6 +2512,7 @@ function renderKwitansiList(list) {
           : `<span style="color:#aaa; font-size:11px; font-style: italic;">Draft</span>`
         }
 </td>
+            <td>${renderFiscalContext(k)}</td>
         </tr>
     `;
     });
@@ -4189,10 +4610,15 @@ async function loadDataBKU() {
   if (!tbody) return;
 
   tbody.innerHTML =
-    '<tr><td colspan="11" style="text-align:center;">Memuat data...</td></tr>';
+    '<tr><td colspan="12" style="text-align:center;">Memuat data...</td></tr>';
 
   try {
-    const response = await apiFetch(`${API_BASE}/transaksi`);
+    const query = scopeQueryString(
+      document.getElementById("bku-scope-filter")?.value,
+    );
+    const response = await apiFetch(
+      `${API_BASE}/transaksi${query ? `?${query}` : ""}`,
+    );
     const result = await response.json();
 
     // KARENA BACKEND MENGIRIM {"status": "success", "data": [...] }
@@ -4207,7 +4633,7 @@ async function loadDataBKU() {
 
     if (transactions.length === 0) {
       tbody.innerHTML =
-        '<tr><td colspan="11" style="text-align:center;">Tidak ada data BKU ditemukan.</td></tr>';
+        '<tr><td colspan="12" style="text-align:center;">Tidak ada data BKU ditemukan.</td></tr>';
       return;
     }
 
@@ -4227,8 +4653,13 @@ async function loadDataBKU() {
             <td>${formatCurrencyLabel(item.harga_satuan || 0)}</td>
             <td>${formatCurrencyLabel(item.pengeluaran || 0)}</td>
             <td style="text-align:center">
-                <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))})`)}">Hapus</button>
+                <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))}, ${JSON.stringify({
+                  fiscal_year: item.fiscal_year ?? "unspecified",
+                  source_fund_id: item.source_fund_id || "unspecified",
+                  budget_id: item.budget_id || "unspecified",
+                })})`)}">Hapus</button>
             </td>
+            <td>${renderFiscalContext(item)}</td>
         </tr>
     `;
       tbody.insertAdjacentHTML("beforeend", row);
@@ -4236,11 +4667,11 @@ async function loadDataBKU() {
   } catch (error) {
     showToast("Gagal!", error);
     tbody.innerHTML =
-      '<tr><td colspan="11" style="text-align:center; color:red;">Gagal terhubung ke database.</td></tr>';
+      '<tr><td colspan="12" style="text-align:center; color:red;">Gagal terhubung ke database.</td></tr>';
   }
 }
 
-async function deleteTransaksi(no_bukti) {
+async function deleteTransaksi(no_bukti, scope = {}) {
   if (
     !(await UI.confirm(
       `Apakah Anda yakin ingin menghapus transaksi dengan No Bukti: ${no_bukti}? Data yang dihapus tidak dapat dikembalikan.`,
@@ -4252,8 +4683,13 @@ async function deleteTransaksi(no_bukti) {
 
   try {
     // Panggil endpoint DELETE ke backend
+    const params = new URLSearchParams({
+      fiscal_year: String(scope.fiscal_year ?? "unspecified"),
+      source_fund_id: String(scope.source_fund_id || "unspecified"),
+      budget_id: String(scope.budget_id || "unspecified"),
+    });
     const response = await apiFetch(
-      `${API_BASE}/transaksi/${encodeURIComponent(no_bukti)}`,
+      `${API_BASE}/transaksi/${encodeURIComponent(no_bukti)}?${params}`,
       {
         method: "DELETE",
       },
@@ -4759,9 +5195,11 @@ function updateIdentitasAktifInfo() {
 // diisi dari data legacy /get-pemda (_dataPemdaLegacy) — hasil pemetaan inilah
 // yang dipakai backend bila belum ada satupun entri IdentitasPeriode, sehingga
 // data warisan tidak hilang dan pengguna tinggal menyesuaikan periode barunya.
-function resetIdentitasForm() {
+function resetIdentitasForm({ show = true } = {}) {
   identitasFormMode = "new";
   identitasEditingId = null;
+  const formCard = document.getElementById("idn-form-card");
+  if (formCard) formCard.hidden = !show;
   const form = document.getElementById("form-identitas");
   if (form) form.reset();
   ["idn-label", "idn-tanggal-awal", "idn-tanggal-akhir", "idn-pemda", "idn-sekolah", "idn-alamat", "idn-tempat", "idn-kepala", "idn-nip-kepala", "idn-bendahara", "idn-nip-bendahara", "idn-pengurus", "idn-nip-pengurus"].forEach(
@@ -4792,12 +5230,14 @@ function resetIdentitasForm() {
   _idnLogoSekolahKeep = "";
 
   const title = document.getElementById("idn-form-title");
-  if (title) title.innerHTML = `${iconSvg("edit", 17)} Tambah Identitas Periode`;
+  if (title) title.innerHTML = `${iconSvg("edit", 17)} Periode Identitas`;
   updateIdentitasPreview();
 }
 
 // Isi form dari satu entri (dipakai Edit & Duplikat)
 function isiFormDariIdentitas(d, { duplikat = false } = {}) {
+  const formCard = document.getElementById("idn-form-card");
+  if (formCard) formCard.hidden = false;
   const setVal = (id, v) => {
     const el = document.getElementById(id);
     if (el) el.value = v ?? "";
@@ -4887,7 +5327,7 @@ async function deleteIdentitasPeriode(id) {
     const res = await response.json().catch(() => null);
     if (res && res.status === "success") {
       showToast("Berhasil!", res.message || "Entri identitas dihapus.");
-      if (identitasEditingId === id) resetIdentitasForm();
+      if (identitasEditingId === id) resetIdentitasForm({ show: false });
       loadIdentitasPeriode();
       loadDataPemda().then(() => {
         if (typeof updatePemdaPreview === "function") updatePemdaPreview();
@@ -4955,7 +5395,7 @@ async function saveIdentitasPeriode() {
     const res = await response.json().catch(() => null);
     if (res && res.status === "success") {
       showToast("Berhasil!", res.message);
-      resetIdentitasForm();
+      resetIdentitasForm({ show: false });
       await loadIdentitasPeriode();
       // Sinkronkan pratinjau menu lama (kop/pemda legacy ikut terbarukan)
       loadDataPemda().then(() => {
@@ -5200,9 +5640,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // data dimuat. (Sebelumnya `await ensureBackendReady()` mendahului
   // initApp(): saat backend lambat siap, halaman tampak kosong.)
   initApp();
-  loadArkasDatabaseInfo();
-
   await ensureBackendReady();
+  try {
+    await loadFiscalContexts();
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal memuat pilihan tahun anggaran.");
+  }
   loadPengaturan();
   loadMasterKegiatan();
   loadMasterRekeningBelanja();
@@ -5221,7 +5664,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // selalu kosong saat aplikasi pertama dibuka.
   await loadDataPemda();
   updatePemdaPreview();
-  resetIdentitasForm();
+  resetIdentitasForm({ show: false });
   loadIdentitasPeriode();
 
   // SETUP EVENT LISTENER PENCARIAN SETELAH initApp() SELESAI
@@ -5356,7 +5799,7 @@ function initApp() {
   const navHtml = NAV.map((n) =>
     n.section
       ? `<div class="sidebar-section">${n.section}</div>`
-      : `<button class="tab-btn" data-tab="${n.tab}"${n.id ? ` id="${n.id}"` : ""} onclick="switchTab('${n.tab}')"><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`,
+      : `<button class="tab-btn" data-tab="${n.tab}" aria-label="${n.label}" title="${n.label}"${n.id ? ` id="${n.id}"` : ""} onclick="switchTab('${n.tab}')"><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`,
   ).join("");
 
   // #app adalah satu-satunya elemen di <body>; dialah yang menjadi baris
@@ -5457,16 +5900,18 @@ function initApp() {
 
 <div id="tab-data-bku" class="tab-content">
     <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap:wrap; gap:12px; margin-bottom: 15px;">
             <h3>${iconSvg("barChart", 17)} Data BKU</h3>
-                <div style="display:flex; gap:10px; align-items:center;">
+                <div class="bku-toolbar">
+                    <select id="bku-scope-filter" class="form-control" onchange="loadDataBKU()">
+                        <option value="all">Semua tahun / sumber dana / anggaran</option>
+                    </select>
                     <button class="btn btn-primary" onclick="loadDataBKU()">${iconSvg("refreshCw", 15)} Segarkan Data</button>
                     <button class="btn btn-success" onclick="syncArkas()" title="Impor transaksi BPU dari database ARKAS">Sinkron ARKAS</button>
                     <button class="btn btn-outline-primary" onclick="changeArkasDatabase()" title="Pilih atau ubah lokasi database ARKAS">Ubah Database</button>
                     <button class="btn btn-outline-primary" onclick="openManualBKUForm()" title="Tambah data BKU manual">＋ Tambah Manual</button>
                 </div>
         </div>
-        <small id="arkas-database-label" style="display:block;color:#666;margin:-8px 0 12px 0;">Memeriksa lokasi database ARKAS...</small>
                 <div class="table-scroll">
                     <table id="table-bku" style="width:100%; border-collapse:collapse;">
                         <thead>
@@ -5482,6 +5927,7 @@ function initApp() {
                                 <th>Harga Satuan</th>
                                 <th>Harga</th>
                                 <th style="width:120px; text-align:center">Aksi</th>
+                                <th>Keterangan</th>
                             </tr>
                         </thead>
                         <tbody id="bku-body">
@@ -5624,6 +6070,34 @@ function initApp() {
                     <h3 style="margin:0">${iconSvg("receipt", 17)} Daftar Draft SPJ</h3>
                     <div id="kwitansi-stats"></div>
                 </div>
+                <div class="scope-filter-toolbar">
+                    <label for="spj-scope-filter" style="font-size:12px;">Filter tahun / sumber dana / anggaran:</label>
+                    <select id="spj-scope-filter" class="form-control" onchange="loadKwitansiList()" style="max-width:420px;">
+                        <option value="all">Semua tahun / sumber dana / anggaran</option>
+                    </select>
+                    <label for="spj-thp-filter" style="font-size:12px;">Tahap:</label>
+                    <select id="spj-thp-filter" class="form-control" onchange="loadKwitansiList()" style="max-width:180px;">
+                        <option value="all">Semua tahap</option>
+                        <option value="1">Tahap 1</option>
+                        <option value="2">Tahap 2</option>
+                    </select>
+                    <label for="spj-month-filter" style="font-size:12px;">Bulan:</label>
+                    <select id="spj-month-filter" class="form-control" onchange="loadKwitansiList()" style="max-width:180px;">
+                        <option value="all">Semua bulan</option>
+                        <option value="1">Januari</option>
+                        <option value="2">Februari</option>
+                        <option value="3">Maret</option>
+                        <option value="4">April</option>
+                        <option value="5">Mei</option>
+                        <option value="6">Juni</option>
+                        <option value="7">Juli</option>
+                        <option value="8">Agustus</option>
+                        <option value="9">September</option>
+                        <option value="10">Oktober</option>
+                        <option value="11">November</option>
+                        <option value="12">Desember</option>
+                    </select>
+                </div>
                 <div id="kwitansi-list" class="table-container"></div>
             </div>
         </div>
@@ -5647,8 +6121,8 @@ function initApp() {
                 <div id="idn-list" class="table-container"></div>
             </div>
 
-            <div class="card" id="idn-form-card">
-                <h3 style="margin-top:0" id="idn-form-title">${iconSvg("edit", 17)} Tambah Identitas Periode</h3>
+            <div class="card" id="idn-form-card" hidden>
+                <h3 style="margin-top:0" id="idn-form-title">${iconSvg("edit", 17)} Periode Identitas</h3>
                 <form id="form-identitas" onsubmit="event.preventDefault(); saveIdentitasPeriode();">
                     <div class="grid-2" style="margin-bottom:8px;">
                         <div class="form-group">
@@ -5762,7 +6236,7 @@ function initApp() {
 
                     <div style="display:flex; gap:10px; margin-top:16px;">
                         <button type="submit" class="btn btn-primary" style="flex:1; padding:12px 18px; font-weight:700;">${iconSvg("save", 15)} Simpan Identitas</button>
-                        <button type="button" class="btn btn-secondary" style="padding:12px 18px;" onclick="resetIdentitasForm()">Batal / Baru</button>
+                        <button type="button" class="btn btn-secondary" style="padding:12px 18px;" onclick="resetIdentitasForm({show:false})">Batal</button>
                     </div>
                 </form>
             </div>
@@ -5770,16 +6244,13 @@ function initApp() {
 
         <div id="tab-master" class="tab-content">
             <div class="card">
-                <h3 style="margin-top:0">${iconSvg("book", 17)} Data Referensi Kegiatan</h3>
-                <div style="background: #fffbeb; border: 1px solid #fef3c7; padding: 15px; border-radius: 12px; margin-bottom: 25px;">
-                    <h4 style="margin:0 0 5px 0; color: #92400e; font-size: 14px;">${iconSvg("download", 15)} Import dari Excel</h4>
-                    <p style="color: #b45309; margin: 0 0 15px 0; font-size: 13px;">
-                        Gunakan file Excel dengan header: <strong>kode_kegiatan</strong> dan <strong>nama_kegiatan</strong>.
-                    </p>
-                    <div style="display: flex; gap: 10px; align-items: center;">
-                        <input type="file" id="excelFile" accept=".xlsx,.xls" style="font-size: 12px;">
-                        <button class="btn btn-primary btn-sm" onclick="importMasterKegiatan()">Import Data</button>
-                    </div>
+                <div class="scope-filter-toolbar">
+                    <h3 style="margin-top:0">${iconSvg("book", 17)} Data Referensi Kegiatan</h3>
+                    <label for="master-scope-filter" style="font-size:12px;">Filter tahun / sumber dana:</label>
+                    <select id="master-scope-filter" class="form-control" onchange="loadMasterKegiatan()" style="max-width:320px;">
+                        <option value="all">Semua tahun / sumber dana</option>
+                    </select>
+                    <button class="btn btn-success" onclick="syncMasterKegiatanArkas()" title="Tambah dan perbarui kode kegiatan dari database ARKAS">Sinkron dari ARKAS</button>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                     <h4 style="margin:0">Daftar Referensi Kegiatan Tersimpan (<span id="master-count">0</span>)</h4>
@@ -5792,9 +6263,14 @@ function initApp() {
     <div class="card" style="margin-top:20px;">
         <h3 style="margin-top:0">${iconSvg("trendingUp", 17)} Rekap Belanja</h3>
         
-        <div style="display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap: wrap;">
+        <div class="scope-filter-toolbar" style="margin-top:12px;">
+            <label>
+                <select id="rekap-scope-filter" class="form-control" style="max-width:320px;">
+                    <option value="all">Semua tahun / sumber dana</option>
+                </select>
+            </label>
             <label style="display:flex; align-items:center; gap:8px;">
-                <select id="rekap-thp-select" style="padding:8px; border-radius:6px; border:1px solid #ddd;">
+                <select id="rekap-thp-select" class="form-control" style="max-width:180px;">
                     <option value="all">Semua Tahap</option>
                     <option value="1">Tahap 1</option>
                     <option value="2">Tahap 2</option>
@@ -5856,12 +6332,16 @@ window.savePengaturan = savePengaturan;
 window.uploadBKU = uploadBKU;
 window.syncArkas = syncArkas;
 window.changeArkasDatabase = changeArkasDatabase;
+window.syncMasterKegiatanArkas = syncMasterKegiatanArkas;
 window.saveTransaksi = saveTransaksi;
 window.generateKwitansi = generateKwitansi;
 window.downloadKwitansi = downloadKwitansi;
 window.previewKwitansi = previewKwitansi;
+window.setSpjPreviewZoom = setSpjPreviewZoom;
+window.adjustSpjPreviewZoom = adjustSpjPreviewZoom;
+window.fitSpjPreviewWidth = fitSpjPreviewWidth;
 window.deleteMasterKegiatan = deleteMasterKegiatan;
-window.importMasterKegiatan = importMasterKegiatan;
+window.deleteMasterKegiatanArkas = deleteMasterKegiatanArkas;
 window.importMasterRekeningBelanja = importMasterRekeningBelanja;
 window.openUpdateDetailPopup = openUpdateDetailPopup;
 window.changeJenisBelanjaSpj = changeJenisBelanjaSpj;
@@ -5901,6 +6381,7 @@ window.loadDataPemda = loadDataPemda;
 window.downloadKwitansi = downloadKwitansi;
 window.downloadBAST = downloadBAST;
 window.deleteMasterKegiatan = deleteMasterKegiatan;
+window.deleteMasterKegiatanArkas = deleteMasterKegiatanArkas;
 window.deleteExistingFoto = deleteExistingFoto;
 window.deleteTransaksi = deleteTransaksi;
 window.updateBhpFileList = updateBhpFileList;

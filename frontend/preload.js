@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getBackendUrl: () => ipcRenderer.invoke("get-backend-url"),
   readArkasTransactions: filters =>
     ipcRenderer.invoke("read-arkas-transactions", filters),
+  readArkasTaxRecap: filters =>
+    ipcRenderer.invoke("read-arkas-tax-recap", filters),
   readArkasActivities: filters =>
     ipcRenderer.invoke("read-arkas-activities", filters),
   readArkasContexts: () => ipcRenderer.invoke("read-arkas-contexts"),

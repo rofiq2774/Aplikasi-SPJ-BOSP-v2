@@ -412,6 +412,196 @@ function buildActivitiesQuery(db, filters) {
   );
 }
 
+function buildTaxRecapQuery(db, filters) {
+  const kasColumns = getTableColumns(db, "kas_umum");
+  requireColumns("kas_umum", kasColumns, [
+    "id_kas_umum",
+    "id_kas_nota",
+    "parent_id_kas_umum",
+    "id_ref_bku",
+    "id_anggaran",
+    "tanggal_transaksi",
+    "no_bukti",
+    "uraian",
+    "uraian_pajak",
+    "saldo",
+    "is_sspd",
+    "soft_delete",
+    "status_bku",
+  ]);
+  const taxNoteColumns = getTableColumns(db, "kas_umum_nota_pajak");
+  requireColumns("kas_umum_nota_pajak", taxNoteColumns, [
+    "id_kas_nota",
+    "ntpn",
+    "soft_delete",
+  ]);
+  const notaColumns = getTableColumns(db, "kas_umum_nota");
+  requireColumns("kas_umum_nota", notaColumns, [
+    "id_kas_nota",
+    "is_beli_di_siplah",
+    "soft_delete",
+  ]);
+  const anggaranColumns = getTableColumns(db, "anggaran");
+  requireColumns("anggaran", anggaranColumns, [
+    "id_anggaran",
+    "tahun_anggaran",
+    "id_ref_sumber_dana",
+    "soft_delete",
+    "is_approve",
+    "is_revisi",
+    "is_aktif",
+  ]);
+  const sourceColumns = getTableColumns(db, "ref_sumber_dana");
+  requireColumns("ref_sumber_dana", sourceColumns, [
+    "id_ref_sumber_dana",
+    "nama_sumber_dana",
+  ]);
+
+  const fields = [
+    'tax."id_kas_umum" AS "idKasUmum"',
+    'tax."tanggal_transaksi" AS "tanggalTransaksi"',
+    'tax."no_bukti" AS "noBukti"',
+    'tax."uraian" AS "uraianPajak"',
+    'tax."uraian_pajak" AS "uraianPajakTooltip"',
+    'tax."saldo" AS "nominalPajak"',
+    'tax."id_kas_nota" AS "idKasNota"',
+    'tax."parent_id_kas_umum" AS "parentIdKasUmum"',
+    'parent."no_bukti" AS "parentNoBukti"',
+    'parent."uraian" AS "parentUraian"',
+    'parent."saldo" AS "parentNominal"',
+    'parent."status_bku" AS "parentStatusBku"',
+    'kun."is_beli_di_siplah" AS "isBeliDiSiplah"',
+    `CASE
+       WHEN parent."status_bku" = 'S'
+         OR COALESCE(kun."is_beli_di_siplah", 0) = 1 THEN 0
+       ELSE COALESCE(setoran."nominalWajibDisetor", 0)
+     END AS "nominalWajibDisetor"`,
+    'a."tahun_anggaran" AS "fiscalYear"',
+    'a."id_ref_sumber_dana" AS "sourceFundId"',
+    'rsd."nama_sumber_dana" AS "sourceFundName"',
+    'a."id_anggaran" AS "budgetId"',
+    'ntpn."ntpn" AS "ntpn"',
+    selectColumn("tax", "is_ppn", "isPpn", kasColumns),
+    selectColumn("tax", "is_pph_21", "isPph21", kasColumns),
+    selectColumn("tax", "is_pph_22", "isPph22", kasColumns),
+    selectColumn("tax", "is_pph_23", "isPph23", kasColumns),
+    selectColumn("tax", "is_pph_4", "isPph4", kasColumns),
+    selectColumn("tax", "is_sspd", "isSspd", kasColumns),
+  ];
+  const predicates = [
+    'tax."soft_delete" = 0',
+    'tax."id_ref_bku" IN (10, 30)',
+    'tax."parent_id_kas_umum" IS NOT NULL',
+    'a."soft_delete" = 0',
+    'a."is_approve" = 1',
+    'a."is_aktif" = 1',
+    `a."is_revisi" = (
+      SELECT MAX(ar."is_revisi") FROM "anggaran" ar
+       WHERE ar."tahun_anggaran" = a."tahun_anggaran"
+         AND ar."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+         AND ar."soft_delete" = 0
+         AND ar."is_approve" = 1
+         AND ar."is_aktif" = 1
+    )`,
+    'tax."id_anggaran" = a."id_anggaran"',
+  ];
+  const parameters = [];
+  if (filters.fiscalYear != null) {
+    predicates.push('a."tahun_anggaran" = ?');
+    parameters.push(filters.fiscalYear);
+  }
+  if (filters.sourceFundId) {
+    predicates.push('a."id_ref_sumber_dana" = ?');
+    parameters.push(filters.sourceFundId);
+  }
+  if (filters.budgetId) {
+    predicates.push('a."id_anggaran" = ?');
+    parameters.push(filters.budgetId);
+  }
+
+  return db.query(
+    `SELECT ${fields.join(", ")}
+       FROM "kas_umum" tax
+       LEFT JOIN "kas_umum" parent
+         ON parent."id_kas_umum" = tax."parent_id_kas_umum"
+        AND parent."soft_delete" = 0
+       LEFT JOIN "kas_umum_nota" kun
+         ON kun."id_kas_nota" = parent."id_kas_nota"
+        AND kun."soft_delete" = 0
+       INNER JOIN "anggaran" a
+         ON a."id_anggaran" = tax."id_anggaran"
+       INNER JOIN "ref_sumber_dana" rsd
+         ON rsd."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+       LEFT JOIN (
+         SELECT "parent_id_kas_umum",
+                trim(replace("uraian", 'Setor ', '')) AS "jenisPajak",
+                SUM("saldo") AS "nominalWajibDisetor"
+           FROM "kas_umum"
+          WHERE "soft_delete" = 0
+            AND "id_ref_bku" IN (11, 31)
+            AND "is_sspd" IS NOT 1
+            AND "uraian_pajak" IS NOT 'Dipungut oleh penyedia'
+          GROUP BY "parent_id_kas_umum",
+                   trim(replace("uraian", 'Setor ', ''))
+       ) setoran
+         ON setoran."parent_id_kas_umum" = tax."parent_id_kas_umum"
+        AND setoran."jenisPajak" = trim(replace(tax."uraian", 'Terima ', ''))
+       LEFT JOIN (
+         SELECT "id_kas_nota", group_concat(DISTINCT "ntpn") AS "ntpn"
+           FROM "kas_umum_nota_pajak"
+          WHERE "soft_delete" = 0
+          GROUP BY "id_kas_nota"
+       ) ntpn ON ntpn."id_kas_nota" = tax."id_kas_nota"
+       WHERE ${predicates.join("\n         AND ")}
+       ORDER BY parent."no_bukti" COLLATE NOCASE ASC,
+                tax."id_kas_umum" ASC`,
+    parameters,
+  );
+}
+
+function mapTaxRecapRow(row) {
+  const taxDescription = String(row.uraianPajak || "")
+    .replace(/^(?:Terima|Setor)\s+/i, "")
+    .trim();
+  const percentageMatch = `${taxDescription} ${row.uraianPajakTooltip || ""}`.match(
+    /(\d+(?:[.,]\d+)?)\s*%/,
+  );
+  const nominal = toAmount(row.nominalPajak);
+  const parentNominal = Math.abs(toAmount(row.parentNominal));
+  const percentage = percentageMatch
+    ? Number(percentageMatch[1].replace(",", "."))
+    : parentNominal > 0
+      ? (Math.abs(nominal) / parentNominal) * 100
+      : null;
+  const jenisPajak =
+    taxDescription.replace(/\s*\d+(?:[.,]\d+)?\s*%/g, "").trim() ||
+    [
+      ["isPpn", "PPN"],
+      ["isPph21", "PPh 21"],
+      ["isPph22", "PPh 22"],
+      ["isPph23", "PPh 23"],
+      ["isPph4", "PPh 4"],
+      ["isSspd", "SSPD"],
+    ].find(([field]) => Number(row[field]) === 1)?.[1] ||
+    "Pajak";
+
+  return {
+    tanggal: formatDate(row.tanggalTransaksi),
+    uraian: String(row.parentUraian || taxDescription).trim(),
+    no_bukti: String(row.parentNoBukti || row.noBukti || "").trim(),
+    jenis_pajak: jenisPajak,
+    persentase_pajak:
+      percentage === null ? null : Math.round(percentage * 10000) / 10000,
+    nominal_pajak: nominal,
+    nominal_wajib_disetor: toAmount(row.nominalWajibDisetor),
+    ntpn: String(row.ntpn || "").trim(),
+    fiscal_year: Number(row.fiscalYear),
+    source_fund_id: String(row.sourceFundId ?? ""),
+    source_fund_name: String(row.sourceFundName || "").trim(),
+    budget_id: String(row.budgetId ?? ""),
+  };
+}
+
 function parseDetails(value) {
   if (!value || typeof value !== "string") return {};
   try {
@@ -427,20 +617,21 @@ function parseDetails(value) {
 function normalizeFilters(value) {
   if (Number.isInteger(value)) return { fiscalYear: value };
   const filters = value && typeof value === "object" ? value : {};
+  const fiscalYearValue = filters.fiscalYear ?? filters.fiscal_year;
   const fiscalYear =
-    filters.fiscalYear === undefined ||
-    filters.fiscalYear === "" ||
-    filters.fiscalYear === "all"
+    fiscalYearValue === undefined ||
+    fiscalYearValue === "" ||
+    fiscalYearValue === "all"
       ? null
-      : Number(filters.fiscalYear);
+      : Number(fiscalYearValue);
   if (fiscalYear !== null &&
       (!Number.isInteger(fiscalYear) || fiscalYear < 2000 || fiscalYear > 9999)) {
     throw new Error("Tahun anggaran ARKAS tidak valid.");
   }
   return {
     fiscalYear,
-    sourceFundId: String(filters.sourceFundId || "").trim(),
-    budgetId: String(filters.budgetId || "").trim(),
+    sourceFundId: String(filters.sourceFundId ?? filters.source_fund_id ?? "").trim(),
+    budgetId: String(filters.budgetId ?? filters.budget_id ?? "").trim(),
   };
 }
 
@@ -493,6 +684,42 @@ async function readArkasTransactions(
     return {
       transactions,
       returned: transactions.length,
+      fiscalYear: filters.fiscalYear,
+      filters,
+    };
+  } finally {
+    try {
+      db?.close();
+    } finally {
+      if (module.FS.analyzePath(virtualPath).exists) {
+        module.FS.unlink(virtualPath);
+      }
+    }
+  }
+}
+
+async function readArkasTaxRecap(databasePath, selectedFilters = {}) {
+  const filters = normalizeFilters(selectedFilters);
+  sqliteInitialization ||= initSQLite();
+  const sqlite = await sqliteInitialization;
+  const module = sqlite.getModule();
+  const virtualPath = `/arkas-tax-recap-${randomUUID()}.db`;
+  const encrypted = !isStandardSqliteDatabase(databasePath);
+  let db;
+  try {
+    module.FS.writeFile(virtualPath, fs.readFileSync(databasePath));
+    db = openDatabase(sqlite, virtualPath, encrypted);
+    const taxes = buildTaxRecapQuery(db, filters)
+      .map(mapTaxRecapRow)
+      .sort((left, right) =>
+        left.no_bukti.localeCompare(right.no_bukti, "id", {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      );
+    return {
+      taxes,
+      returned: taxes.length,
       fiscalYear: filters.fiscalYear,
       filters,
     };
@@ -637,5 +864,8 @@ async function readArkasContexts(databasePath) {
 module.exports = {
   readArkasActivities,
   readArkasContexts,
+  readArkasTaxRecap,
   readArkasTransactions,
+  mapTaxRecapRow,
+  normalizeFilters,
 };

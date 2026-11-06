@@ -266,6 +266,10 @@ let masterKegiatan = [];
 let masterRekeningBelanja = [];
 let activeTab = "identitas";
 let fiscalContexts = [];
+let arkasTaxContexts = [];
+let arkasTaxRows = [];
+let arkasTaxContextsLoaded = false;
+let arkasTaxLoadRequest = 0;
 
 function scopeFilterValue(context) {
   return encodeURIComponent(
@@ -389,6 +393,33 @@ function populateFiscalScopeFilters() {
       ? previous
       : "all";
   }
+}
+
+function populateArkasTaxScopeFilter() {
+  const select = document.getElementById("pajak-scope-filter");
+  if (!select) return;
+
+  const options = [
+    { value: "all", label: "Semua tahun / sumber dana / anggaran" },
+    ...arkasTaxContexts
+      .filter((context) => context.budget_id)
+      .map((context) => ({
+        value: scopeFilterValue(context),
+        label: scopeLabel(context),
+      })),
+  ];
+  const previous = select.value || "all";
+  select.replaceChildren(
+    ...options.map(({ value, label }) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    }),
+  );
+  select.value = options.some((item) => item.value === previous)
+    ? previous
+    : "all";
 }
 
 async function loadFiscalContexts() {
@@ -1316,6 +1347,137 @@ async function loadKwitansiList() {
   }
 }
 
+async function loadRekapPajak(refreshContexts = false) {
+  const list = document.getElementById("pajak-list");
+  if (typeof window.electronAPI?.readArkasTaxRecap !== "function") {
+    showToast("Error!", "Rekap pajak ARKAS hanya tersedia di aplikasi desktop.");
+    return;
+  }
+
+  const requestId = ++arkasTaxLoadRequest;
+  if (list) {
+    list.innerHTML =
+      "<div style='padding:24px;text-align:center;color:#64748b;'>Membaca rekap pajak dari ARKAS...</div>";
+  }
+  try {
+    if (refreshContexts || !arkasTaxContextsLoaded) {
+      const catalog = await window.electronAPI.readArkasContexts();
+      if (requestId !== arkasTaxLoadRequest) return;
+      if (catalog.canceled) {
+        if (list) {
+          list.innerHTML =
+            "<div style='padding:24px;text-align:center;color:#64748b;'>Pemilihan database ARKAS dibatalkan.</div>";
+        }
+        return;
+      }
+      arkasTaxContexts = catalog.contexts || [];
+      arkasTaxContextsLoaded = true;
+      populateArkasTaxScopeFilter();
+    }
+
+    const result = await window.electronAPI.readArkasTaxRecap(
+      scopeFilterParams(document.getElementById("pajak-scope-filter")?.value),
+    );
+    if (requestId !== arkasTaxLoadRequest) return;
+    if (result.canceled) {
+      if (list) {
+        list.innerHTML =
+          "<div style='padding:24px;text-align:center;color:#64748b;'>Pemilihan database ARKAS dibatalkan.</div>";
+      }
+      return;
+    }
+    arkasTaxRows = result.taxes || [];
+    renderRekapPajak(arkasTaxRows);
+  } catch (error) {
+    if (requestId !== arkasTaxLoadRequest) return;
+    if (list) {
+      list.innerHTML =
+        `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(error.message || "Gagal membaca rekap pajak dari ARKAS.")}</div>`;
+    }
+    showToast("Error!", error.message || "Gagal membaca rekap pajak dari ARKAS.");
+  }
+}
+
+function renderRekapPajak(rows = arkasTaxRows) {
+  const container = document.getElementById("pajak-list");
+  if (!container) return;
+
+  const thp = document.getElementById("pajak-thp-filter")?.value || "all";
+  const month = document.getElementById("pajak-month-filter")?.value || "all";
+  const filteredRows = (Array.isArray(rows) ? rows : []).filter((row) => {
+    const date = parseTanggalToDate(row.tanggal);
+    if (!date) return thp === "all" && month === "all";
+    const rowMonth = date.getMonth() + 1;
+    if (month !== "all" && rowMonth !== Number(month)) return false;
+    if (thp === "1" && rowMonth > 6) return false;
+    if (thp === "2" && rowMonth <= 6) return false;
+    return true;
+  });
+  const totalNominal = filteredRows.reduce(
+    (total, row) => total + (Number(row.nominal_pajak) || 0),
+    0,
+  );
+  const totalWajibDisetor = filteredRows.reduce(
+    (total, row) => total + (Number(row.nominal_wajib_disetor) || 0),
+    0,
+  );
+  const stats = document.getElementById("pajak-stats");
+  if (stats) {
+    stats.textContent = `${filteredRows.length} transaksi • Pajak ${formatRupiah(totalNominal)} • Wajib disetor ${formatRupiah(totalWajibDisetor)}`;
+  }
+
+  const rowsHtml = filteredRows.length
+    ? filteredRows.map((row, index) => {
+      const percentage =
+        row.persentase_pajak === null || row.persentase_pajak === undefined
+          ? "-"
+          : `${new Intl.NumberFormat("id-ID", {
+              maximumFractionDigits: 4,
+            }).format(Number(row.persentase_pajak))}%`;
+      return `<tr>
+        <td style="text-align:center;">${index + 1}</td>
+        <td>${escapeSpjFormValue(row.uraian || "-")}</td>
+        <td>${escapeSpjFormValue(row.no_bukti || "-")}</td>
+        <td>${escapeSpjFormValue(row.jenis_pajak || "-")}</td>
+        <td style="text-align:right;">${percentage}</td>
+        <td style="text-align:right;white-space:nowrap;">${formatRupiah(Number(row.nominal_pajak) || 0)}</td>
+        <td style="text-align:right;white-space:nowrap;">${formatRupiah(Number(row.nominal_wajib_disetor) || 0)}</td>
+        <td>${escapeSpjFormValue(row.ntpn || "-")}</td>
+        <td>${renderFiscalContext(row)}</td>
+      </tr>`;
+    })
+      .join("")
+    : `<tr><td colspan="9" style="text-align:center;padding:32px;color:#64748b;">Tidak ada data pajak untuk filter yang dipilih.</td></tr>`;
+
+  container.innerHTML = `<div class="table-scroll">
+    <table class="main-table" style="min-width:900px;">
+      <thead>
+        <tr>
+          <th style="width:55px;text-align:center;">No</th>
+          <th>Uraian</th>
+          <th style="width:160px;">No Bukti</th>
+          <th style="width:130px;">Jenis Pajak</th>
+          <th style="width:130px;text-align:right;">Persentase Pajak</th>
+          <th style="width:180px;text-align:right;">Nominal Pajak</th>
+          <th style="width:210px;text-align:right;">Nominal Pajak Wajib Disetor</th>
+          <th style="width:170px;">NTPN</th>
+          <th style="width:190px;">Keterangan</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot>
+        <tr>
+          <th colspan="5" style="text-align:right;">TOTAL</th>
+          <th style="text-align:right;white-space:nowrap;">${formatRupiah(totalNominal)}</th>
+          <th style="text-align:right;white-space:nowrap;">${formatRupiah(totalWajibDisetor)}</th>
+          <th></th>
+          <th></th>
+        </tr>
+      </tfoot>
+    </table>
+  </div>`;
+}
+
 // Generate Kwitansi
 async function generateKwitansi() {
   const filterValue =
@@ -2127,6 +2289,7 @@ const TAB_TITLES = {
   bku: "Upload BKU",
   "data-bku": "Data BKU",
   kwitansi: "Daftar SPJ",
+  pajak: "Rekap Pajak",
   rekap: "Rekap Belanja",
   update: "Pembaruan Aplikasi",
   dukung: "Dukung Kami",
@@ -2153,7 +2316,7 @@ window.switchTab = function (tab) {
   const searchInputPre = document.getElementById("globalSearchInput");
   if (
     searchInputPre &&
-    ["identitas", "rekap", "bku", "update", "dukung"].includes(tab)
+    ["identitas", "rekap", "pajak", "bku", "update", "dukung"].includes(tab)
   ) {
     searchInputPre.value = "";
   }
@@ -2201,6 +2364,11 @@ window.switchTab = function (tab) {
         if (typeof renderKwitansiList === "function" && bkuData) {
           renderKwitansiList(bkuData.kwitansi_list);
         }
+        break;
+
+      case "pajak":
+        if (searchContainer) searchContainer.classList.add("hidden");
+        loadRekapPajak();
         break;
 
       case "identitas":
@@ -5771,6 +5939,7 @@ function initApp() {
     { tab: "bku", label: "Upload BKU", icon: "fileText" },
     { tab: "data-bku", label: "Data BKU", icon: "barChart" },
     { tab: "kwitansi", label: "Daftar SPJ", icon: "receipt" },
+    { tab: "pajak", label: "Rekap Pajak", icon: "fileText" },
     { tab: "rekap", label: "Rekap Belanja", icon: "trendingUp" },
     { section: "Sistem" },
     { tab: "dukung", label: "Dukung Kami", icon: "heart" },
@@ -6244,6 +6413,47 @@ function initApp() {
             </div>
         </div>
 
+<div id="tab-pajak" class="tab-content">
+    <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+            <h3 style="margin:0">${iconSvg("fileText", 17)} Rekap Pajak</h3>
+            <div id="pajak-stats" style="font-size:13px;font-weight:600;color:#475569;"></div>
+        </div>
+        <div class="scope-filter-toolbar">
+            <label for="pajak-scope-filter" style="font-size:12px;">Filter tahun / sumber dana / anggaran:</label>
+            <select id="pajak-scope-filter" class="form-control" onchange="loadRekapPajak()" style="max-width:420px;">
+                <option value="all">Semua tahun / sumber dana / anggaran</option>
+            </select>
+            <label for="pajak-thp-filter" style="font-size:12px;">Tahap:</label>
+            <select id="pajak-thp-filter" class="form-control" onchange="renderRekapPajak()" style="max-width:180px;" title="Tahap I: Januari–Juni; Tahap II: Juli–Desember">
+                <option value="all">Semua tahap</option>
+                <option value="1">Tahap 1</option>
+                <option value="2">Tahap 2</option>
+            </select>
+            <label for="pajak-month-filter" style="font-size:12px;">Bulan:</label>
+            <select id="pajak-month-filter" class="form-control" onchange="renderRekapPajak()" style="max-width:180px;">
+                <option value="all">Semua bulan</option>
+                <option value="1">Januari</option>
+                <option value="2">Februari</option>
+                <option value="3">Maret</option>
+                <option value="4">April</option>
+                <option value="5">Mei</option>
+                <option value="6">Juni</option>
+                <option value="7">Juli</option>
+                <option value="8">Agustus</option>
+                <option value="9">September</option>
+                <option value="10">Oktober</option>
+                <option value="11">November</option>
+                <option value="12">Desember</option>
+            </select>
+            <button class="btn btn-primary" onclick="loadRekapPajak(true)">${iconSvg("refreshCw", 15)} Segarkan Data ARKAS</button>
+        </div>
+        <div id="pajak-list" class="table-container">
+            <div style="padding:24px;text-align:center;color:#64748b;">Pilih menu Rekap Pajak untuk membaca data dari ARKAS.</div>
+        </div>
+    </div>
+</div>
+
 <div id="tab-rekap" class="tab-content">
     <div class="card" style="margin-top:20px;">
         <h3 style="margin-top:0">${iconSvg("trendingUp", 17)} Rekap Belanja</h3>
@@ -6342,6 +6552,8 @@ window.loadPengaturan = loadPengaturan;
 window.loadMasterKegiatan = loadMasterKegiatan;
 window.loadKwitansiList = loadKwitansiList;
 window.renderKwitansiList = renderKwitansiList;
+window.loadRekapPajak = loadRekapPajak;
+window.renderRekapPajak = renderRekapPajak;
 window.generateRekapTransaksi = generateRekapTransaksi;
 window.renderRekapTransaksi = renderRekapTransaksi;
 window.renderBKUResult = renderBKUResult;

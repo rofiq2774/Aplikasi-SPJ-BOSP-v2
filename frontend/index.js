@@ -9,6 +9,7 @@ const log = require("electron-log");
 const {
   readArkasActivities,
   readArkasContexts,
+  readArkasTaxRecap,
   readArkasTransactions,
 } = require("./arkasReader.cjs");
 
@@ -625,6 +626,29 @@ ipcMain.handle("read-arkas-transactions", async (event, filters) => {
     return { canceled: true, transactions: [], returned: 0 };
   }
   return readAndRememberArkasDatabase(databasePath, filters);
+});
+
+ipcMain.handle("read-arkas-tax-recap", async (event, filters) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  let databasePath = settings?.path;
+  if (!databasePath || !fs.existsSync(databasePath)) {
+    databasePath = await selectArkasDatabase(databasePath);
+  }
+  if (!databasePath) return { canceled: true, taxes: [], returned: 0 };
+
+  const result = await readArkasTaxRecap(databasePath, filters);
+  saveArkasDatabasePath(databasePath);
+  writeAppLog(
+    "info",
+    "frontend-main",
+    `Rekap pajak ARKAS dibaca; ditemukan ${result.returned} transaksi pajak.`,
+  );
+  return {
+    canceled: false,
+    sourceName: path.basename(databasePath),
+    ...result,
+  };
 });
 
 ipcMain.handle("read-arkas-activities", async (event, filters) => {

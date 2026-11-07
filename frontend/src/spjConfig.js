@@ -285,3 +285,11 @@ export function getJenisBelanjaConfig(jenis) {
   // Gunakan konfigurasi umum agar jenis lama/tidak dikenal tetap dapat diproses.
   return JENIS_BELANJA_SPJ[jenis] || JENIS_BELANJA_SPJ.umum;
 }
+
+export function getTandaTerimaTaxField(data = {}, jenisBelanja) {
+  const recipients = Array.isArray(data.penerima_list) ? data.penerima_list : [];
+  const hasPph21 = recipients.some((recipient) => Number(recipient?.pph21) > 0);
+  const hasPph23 = recipients.some((recipient) => Number(recipient?.pph23) > 0);
+  if (hasPph21 !== hasPph23) return hasPph23 ? "pph23" : "pph21";
+  return jenisBelanja === "sewa" ? "pph23" : "pph21";
+}

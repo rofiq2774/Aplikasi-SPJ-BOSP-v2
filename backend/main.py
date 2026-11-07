@@ -1177,6 +1177,50 @@ def _data_lampiran_dict(kwitansi) -> dict:
         return {}
 
 
+def _prefill_tanda_terima(kwitansi, data_lampiran: dict, tax_rows: list) -> dict:
+    """Isi awal tanda terima dari data transaksi tanpa menimpa isian tersimpan."""
+    data = dict(data_lampiran)
+    tax_totals = {"pph21": 0.0, "pph23": 0.0}
+    for tax in tax_rows:
+        tax_type = "".join(str(tax.jenis_pajak or "").upper().split())
+        field = "pph21" if "PPH21" in tax_type else "pph23" if "PPH23" in tax_type else None
+        if field:
+            tax_totals[field] += float(tax.nominal_pajak or 0)
+
+    recipients = data.get("penerima_list")
+    if isinstance(recipients, list) and recipients:
+        if len(recipients) != 1 or not isinstance(recipients[0], dict):
+            return data
+        recipient = dict(recipients[0])
+    else:
+        recipient = {}
+
+    defaults = {
+        "nama": data.get("penerima_nama") or kwitansi.nama_toko or "",
+        "jabatan": data.get("penerima_jabatan") or "",
+        "nuptk": data.get("penerima_nuptk") or "",
+        "npwp": data.get("penerima_npwp") or kwitansi.npwp_toko or "",
+        "honor": data.get("penerima_honor", kwitansi.jumlah or 0),
+        "pph21": data.get("pph21", tax_totals["pph21"]),
+        "pph23": data.get("pph23", tax_totals["pph23"]),
+    }
+    for key, value in defaults.items():
+        if recipient.get(key) is None or (
+            isinstance(recipient.get(key), str) and not recipient[key].strip()
+        ):
+            recipient[key] = value
+    for field, amount in tax_totals.items():
+        try:
+            current_amount = float(recipient.get(field) or 0)
+        except (TypeError, ValueError):
+            current_amount = 0
+        if current_amount <= 0 and amount > 0:
+            recipient[field] = amount
+
+    data["penerima_list"] = [recipient]
+    return data
+
+
 JENIS_BELANJA_VALID = {
     "honor_jasa", "makanan_minuman", "perjalanan_dinas",
     "sewa", "jasa_tukang", "fotokopi", "telepon_listrik_air", "umum",
@@ -5041,6 +5085,18 @@ async def get_kwitansi_detail(
     if not kw:
         raise HTTPException(status_code=404, detail="Kwitansi tidak ditemukan")
 
+    tax_result = await db.execute(
+        select(RekapPajak).where(
+            RekapPajak.no_bukti == kw.no_bukti,
+            fiscal_scope_conditions(RekapPajak, kw),
+        )
+    )
+    data_lampiran = _prefill_tanda_terima(
+        kw,
+        _data_lampiran_dict(kw),
+        tax_result.scalars().all(),
+    )
+
     # =========================
     # 2. Ambil transaksi (uraian)
     # =========================
@@ -5120,7 +5176,7 @@ async def get_kwitansi_detail(
             "budget_id": kw.budget_id,
             "budget_name": kw.budget_name,
             "jenis_belanja": getattr(kw, "jenis_belanja", None) or "umum",
-            "data_lampiran": _data_lampiran_dict(kw),
+            "data_lampiran": data_lampiran,
 
             # Data transaksi
             "uraian": uraian_list,

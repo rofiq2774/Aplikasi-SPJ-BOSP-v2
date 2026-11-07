@@ -2,7 +2,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage } = require("elec
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { spawn, exec } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const http = require("http");
 const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
@@ -78,10 +78,7 @@ writeAppLog(
 process.on("uncaughtException", (err) => {
   const msg = err && err.stack ? err.stack : String(err);
   writeAppLog("error", "frontend-main", `Uncaught Exception: ${msg}`);
-  // Ensure backend is stopped if main crashes
-  try {
-    stopBackend();
-  } catch (e) {}
+  stopBackend().finally(() => app.exit(1));
 });
 
 process.on("unhandledRejection", (reason) => {
@@ -108,6 +105,9 @@ ipcMain.handle("get-app-version", () => {
 
 let pyProcess = null;
 let mainWindow = null;
+let backendShutdownPromise = null;
+let backendShutdownComplete = false;
+let backendShutdownInProgress = false;
 
 // ===================== DYNAMIC PORT (child_process) =====================
 // Backend FastAPI dijalankan lewat child_process dan TIDAK lagi dipatok di port
@@ -142,34 +142,79 @@ autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = false;
 /* ===================== STOP BACKEND ===================== */
 function stopBackend() {
-  if (pyProcess) {
-    const pid = pyProcess.pid;
-    try {
-      if (process.platform === "win32") {
-        // /t ikut mematikan anak-anak proses (mis. worker uvicorn)
-        exec(`taskkill /pid ${pid} /f /t`, () => {});
-      } else {
-        pyProcess.kill("SIGTERM");
-      }
-      writeAppLog(
-        "info",
-        "frontend-main",
-        `Backend child_process dihentikan (pid=${pid})`,
-      );
-    } catch (e) {
-      writeAppLog(
-        "error",
-        "frontend-main",
-        `Gagal menghentikan backend (pid=${pid}): ${e.message || e}`,
-      );
-    }
-    pyProcess = null;
+  if (backendShutdownPromise) return backendShutdownPromise;
+  if (!pyProcess) {
+    backendPort = 0;
+    return Promise.resolve();
   }
+
+  const backend = pyProcess;
+  const pid = backend.pid;
+  backendShutdownPromise = new Promise((resolve) => {
+    const finish = (error) => {
+      if (pyProcess === backend) pyProcess = null;
+      backendPort = 0;
+      if (error) {
+        writeAppLog(
+          "error",
+          "frontend-main",
+          `Gagal menghentikan backend (pid=${pid}): ${error.message || error}`,
+        );
+      } else {
+        writeAppLog(
+          "info",
+          "frontend-main",
+          `Backend child_process dihentikan (pid=${pid})`,
+        );
+      }
+      resolve();
+    };
+
+    if (process.platform === "win32") {
+      // Tunggu taskkill selesai supaya proses turunan backend ikut berhenti
+      // sebelum Electron keluar.
+      execFile(
+        "taskkill",
+        ["/pid", String(pid), "/f", "/t"],
+        { windowsHide: true },
+        (error) => finish(error),
+      );
+      return;
+    }
+
+    if (backend.exitCode !== null || backend.signalCode !== null) {
+      finish();
+      return;
+    }
+
+    const forceKillTimer = setTimeout(() => {
+      if (backend.exitCode === null && backend.signalCode === null) {
+        backend.kill("SIGKILL");
+      }
+    }, 5000);
+    forceKillTimer.unref();
+    backend.once("exit", () => {
+      clearTimeout(forceKillTimer);
+      finish();
+    });
+
+    try {
+      backend.kill("SIGTERM");
+    } catch (error) {
+      clearTimeout(forceKillTimer);
+      finish(error);
+    }
+  }).finally(() => {
+    backendShutdownPromise = null;
+  });
+  return backendShutdownPromise;
 }
 
-process.on("SIGINT", stopBackend);
-process.on("SIGTERM", stopBackend);
-process.on("exit", stopBackend);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    stopBackend().finally(() => app.quit());
+  });
+}
 /* ======================================================= */
 
 /* ===================== WAIT BACKEND ===================== */
@@ -891,15 +936,18 @@ app.whenReady().then(async () => {
   createWindow();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   writeAppLog("info", "frontend-main", "Aplikasi ditutup (before-quit)");
-  stopBackend();
+  if (backendShutdownComplete || backendShutdownInProgress) return;
+  backendShutdownInProgress = true;
+  event.preventDefault();
+  stopBackend().finally(() => {
+    backendShutdownComplete = true;
+    app.quit();
+  });
 });
 
 app.on("window-all-closed", () => {
-  stopBackend();
   if (process.platform !== "darwin") app.quit();
 });
-
-app.on("will-quit", stopBackend);
 /* ===================================================== */

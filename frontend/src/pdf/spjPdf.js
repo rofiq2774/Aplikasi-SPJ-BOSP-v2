@@ -3,7 +3,10 @@
 // ============================================================================
 
 import pdfMake from "pdfmake/build/pdfmake";
-import { getJenisBelanjaConfig } from "../spjConfig.js";
+import {
+  getJenisBelanjaConfig,
+  getTandaTerimaTaxField,
+} from "../spjConfig.js";
 
 // Peta nama -> base64 diisi oleh ensureArialFonts() dari IPC Electron main.
 const ARIAL_VFS_NAMES = {
@@ -1933,8 +1936,11 @@ function buildDataLampiranSections(data) {
     }
 
     if (dokumen.recipientTable) {
-      const taxField = data.jenis_belanja === "sewa" ? "pph23" : "pph21";
-      const taxLabel = data.jenis_belanja === "sewa" ? "PPh 23" : "PPh 21";
+      const taxField = getTandaTerimaTaxField(
+        formData,
+        data.jenis_belanja,
+      );
+      const taxLabel = taxField === "pph23" ? "PPh 23" : "PPh 21";
       const recipients =
         Array.isArray(formData.penerima_list) && formData.penerima_list.length
           ? formData.penerima_list

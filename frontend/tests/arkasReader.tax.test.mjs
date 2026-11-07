@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { getTandaTerimaTaxField } from "../src/spjConfig.js";
 
 const require = createRequire(import.meta.url);
 const { mapTaxRecapRow, normalizeFilters } = require("../arkasReader.cjs");
@@ -85,4 +86,25 @@ test("infers the effective rate for ARKAS tax labels without a rate", () => {
 
   assert.equal(row.jenis_pajak, "PPh 21");
   assert.equal(row.persentase_pajak, 5);
+});
+
+test("selects the tax field present in the synced receipt data", () => {
+  assert.equal(
+    getTandaTerimaTaxField({
+      penerima_list: [{ pph21: 0, pph23: 3000 }],
+    }, "umum"),
+    "pph23",
+  );
+  assert.equal(
+    getTandaTerimaTaxField({
+      penerima_list: [{ pph21: 25000, pph23: 0 }],
+    }, "sewa"),
+    "pph21",
+  );
+  assert.equal(
+    getTandaTerimaTaxField({
+      penerima_list: [{ pph21: 25000, pph23: 3000 }],
+    }, "sewa"),
+    "pph23",
+  );
 });

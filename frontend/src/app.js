@@ -4,6 +4,7 @@ import { iconSvg } from "./icons.js";
 import { buildSpjPdf, setBackendOriginGetter } from "./pdf/spjPdf.js";
 import {
   getFotoJenisLabel,
+  getTandaTerimaTaxField,
   JENIS_BELANJA_SPJ,
 } from "./spjConfig.js";
 
@@ -3280,9 +3281,8 @@ function dateInputValue(value) {
 }
 
 function renderTandaTerimaRecipientRows(data = {}, jenisBelanja) {
-  const isSewa = jenisBelanja === "sewa";
-  const taxField = isSewa ? "pph23" : "pph21";
-  const taxLabel = isSewa ? "PPh 23" : "PPh 21";
+  const taxField = getTandaTerimaTaxField(data, jenisBelanja);
+  const taxLabel = taxField === "pph23" ? "PPh 23" : "PPh 21";
   const savedRecipients = Array.isArray(data.penerima_list) && data.penerima_list.length
     ? data.penerima_list
     : [{
@@ -3335,11 +3335,13 @@ function collectDataLampiranForm() {
   });
   const recipientRows = Array.from(document.querySelectorAll(".tt-penerima-row"));
   if (recipientRows.length) {
-    result.penerima_list = recipientRows.map((row) => {
+    result.penerima_list = recipientRows.map((row, index) => {
+      const savedRecipient = result.penerima_list?.[index] || {};
       const taxInput = row.querySelector(
         ".tt-penerima-pph21, .tt-penerima-pph23",
       );
       return {
+        ...savedRecipient,
         nama: row.querySelector(".tt-penerima-nama").value.trim(),
         jabatan: row.querySelector(".tt-penerima-jabatan").value.trim(),
         nuptk: row.querySelector(".tt-penerima-nuptk").value.trim(),
@@ -3420,7 +3422,7 @@ function isSpjDetailComplete(item) {
   // Periksa kolom wajib, dokumen wajib, BAST bila diperlukan, dan semua foto kategori.
   const config = JENIS_BELANJA_SPJ[item.jenis_belanja] || JENIS_BELANJA_SPJ.umum;
   const formData = item.data_lampiran || {};
-  const taxField = item.jenis_belanja === "sewa" ? "pph23" : "pph21";
+  const taxField = getTandaTerimaTaxField(formData, item.jenis_belanja);
   const fieldsComplete = config.dokumen
     .filter((dokumen) => !dokumen.optional)
     .every((dokumen) =>
@@ -4675,7 +4677,7 @@ async function saveUpdateDetail(kwitansiId) {
     // ===============================
     const dataLampiran = collectDataLampiranForm();
     const jenisBelanja = document.getElementById("edit-jenis-belanja").value;
-    const taxField = jenisBelanja === "sewa" ? "pph23" : "pph21";
+    const taxField = getTandaTerimaTaxField(dataLampiran, jenisBelanja);
     if (JENIS_BELANJA_SPJ[jenisBelanja]?.dokumen.some((dokumen) => dokumen.recipientTable)) {
       const recipients = dataLampiran.penerima_list || [];
       if (!recipients.length || recipients.some((recipient) =>

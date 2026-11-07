@@ -215,6 +215,79 @@ def test_manual_kwitansi_rejects_unknown_detail_account_code(spj_client):
     assert "Kode rekening tidak ditemukan" in response.json()["detail"]
 
 
+def test_kwitansi_detail_prefills_receipt_from_transaction_and_scoped_taxes(spj_client):
+    from models import Kwitansi, RekapPajak
+    from sqlalchemy import select
+
+    async def add_tax_rows():
+        async with spj_client.test_session_maker() as session:
+            kwitansi = await session.get(Kwitansi, 1)
+            kwitansi.data_lampiran = json.dumps({
+                "penerima_list": [{
+                    "nama": "",
+                    "npwp": "",
+                    "honor": "",
+                    "pph21": "0",
+                    "pph23": "0",
+                }],
+            })
+            session.add_all([
+                RekapPajak(
+                    tanggal="2026-11-05",
+                    no_bukti="BKT-001",
+                    uraian="Honor kegiatan",
+                    jenis_pajak="PPh 21",
+                    nominal_pajak=25000,
+                ),
+                RekapPajak(
+                    tanggal="2026-11-05",
+                    no_bukti="BKT-001",
+                    uraian="Sewa",
+                    jenis_pajak="PPh 23",
+                    nominal_pajak=3000,
+                ),
+                RekapPajak(
+                    tanggal="2026-11-05",
+                    no_bukti="BKT-001",
+                    uraian="PPh dari konteks lain",
+                    jenis_pajak="PPh 21",
+                    nominal_pajak=90000,
+                    source_fund_id="other-fund",
+                ),
+            ])
+            await session.commit()
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(add_tax_rows())
+    finally:
+        loop.close()
+
+    response = spj_client.get("/api/kwitansi/1")
+    assert response.status_code == 200, response.text
+    recipient = response.json()["data"]["data_lampiran"]["penerima_list"][0]
+    assert recipient["nama"] == "Toko Makmur"
+    assert recipient["npwp"] == "01.234.567.8-901.000"
+    assert recipient["honor"] == 1500000.0
+    assert recipient["pph21"] == 25000
+    assert recipient["pph23"] == 3000
+
+    async def read_saved_lampiran():
+        async with spj_client.test_session_maker() as session:
+            result = await session.execute(
+                select(Kwitansi.data_lampiran).where(Kwitansi.id == 1)
+            )
+            return result.scalar_one()
+
+    loop = asyncio.new_event_loop()
+    try:
+        saved_lampiran = loop.run_until_complete(read_saved_lampiran())
+    finally:
+        loop.close()
+    assert json.loads(saved_lampiran)["penerima_list"][0]["pph21"] == "0"
+    assert json.loads(saved_lampiran)["penerima_list"][0]["pph23"] == "0"
+
+
 def test_arkas_tax_sync_persists_rows_and_filters_by_fiscal_scope(spj_client):
     base_tax = {
         "tanggal": "2026-03-12",

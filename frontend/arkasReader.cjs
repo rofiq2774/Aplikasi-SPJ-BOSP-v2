@@ -586,6 +586,7 @@ function mapTaxRecapRow(row) {
     "Pajak";
 
   return {
+    arkas_id: String(row.idKasUmum ?? "").trim(),
     tanggal: formatDate(row.tanggalTransaksi),
     uraian: String(row.parentUraian || taxDescription).trim(),
     no_bukti: String(row.parentNoBukti || row.noBukti || "").trim(),
@@ -593,7 +594,9 @@ function mapTaxRecapRow(row) {
     persentase_pajak:
       percentage === null ? null : Math.round(percentage * 10000) / 10000,
     nominal_pajak: nominal,
-    nominal_wajib_disetor: toAmount(row.nominalWajibDisetor),
+    nominal_wajib_disetor: String(row.ntpn || "").trim()
+      ? 0
+      : toAmount(row.nominalWajibDisetor),
     ntpn: String(row.ntpn || "").trim(),
     fiscal_year: Number(row.fiscalYear),
     source_fund_id: String(row.sourceFundId ?? ""),

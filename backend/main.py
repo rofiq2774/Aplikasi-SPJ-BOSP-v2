@@ -1,6 +1,7 @@
 # 1. Python Standard Libraries
 import asyncio
 import base64
+import copy
 import io
 import json
 import logging
@@ -52,7 +53,7 @@ from starlette.middleware.cors import CORSMiddleware
 from database import BASE_DIR, AsyncSessionLocal, Base, engine, get_db
 from models import (
     IdentitasPeriode, Kwitansi, MasterKegiatan, MasterKegiatanArkas,
-    MasterRekeningBelanja, Pengaturan, Transaksi
+    MasterRekeningBelanja, Pengaturan, RekapPajak, Transaksi
 )
 _migrated = False
 
@@ -368,9 +369,27 @@ class BKUData(BaseModel):
     transaksi: List[TransaksiItem] = []
 
 
+class ArkasTaxItem(BaseModel):
+    arkas_id: Optional[str] = None
+    tanggal: str = ""
+    no_bukti: str
+    uraian: str = ""
+    jenis_pajak: str
+    persentase_pajak: Optional[float] = None
+    nominal_pajak: float = 0
+    nominal_wajib_disetor: float = 0
+    ntpn: str = ""
+    fiscal_year: Optional[int] = None
+    source_fund_id: Optional[str] = None
+    source_fund_name: Optional[str] = None
+    budget_id: Optional[str] = None
+    budget_name: Optional[str] = None
+
+
 class ArkasImportRequest(BaseModel):
     mode: str = "keep"
-    transaksi: List[TransaksiItem]
+    transaksi: List[TransaksiItem] = []
+    pajak: List[ArkasTaxItem] = []
 
 
 class MasterKegiatanArkasItem(BaseModel):
@@ -2455,10 +2474,11 @@ async def import_arkas_transactions(
         )
 
     transactions = data.transaksi
-    if not transactions:
+    taxes = data.pajak
+    if not transactions and not taxes:
         raise HTTPException(
             status_code=400,
-            detail="Tidak ada transaksi ARKAS untuk disinkronkan.",
+            detail="Tidak ada transaksi BPU atau data pajak ARKAS untuk disinkronkan.",
         )
     if any(
         not normalize_no_bukti_backend(item.no_bukti).startswith("bpu")
@@ -2484,6 +2504,7 @@ async def import_arkas_transactions(
         )
 
     scopes = {item_scope(item) for item in transactions}
+    scopes.update(item_scope(item) for item in taxes)
     if len(scopes) != 1:
         raise HTTPException(
             status_code=400,
@@ -2509,23 +2530,60 @@ async def import_arkas_transactions(
     def receipt_key(item):
         return (normalize_no_bukti_backend(item.no_bukti), *record_scope(item))
 
+    def tax_key(item):
+        return (
+            normalize_no_bukti_backend(item.no_bukti),
+            item.jenis_pajak.strip().casefold(),
+            *record_scope(item),
+        )
+
+    def consolidate_taxes(items):
+        consolidated = {}
+        for item in items:
+            key = tax_key(item)
+            existing = consolidated.get(key)
+            if existing is None:
+                consolidated[key] = copy.copy(item)
+                continue
+
+            existing.nominal_pajak += float(item.nominal_pajak or 0)
+            existing.nominal_wajib_disetor += float(
+                item.nominal_wajib_disetor or 0
+            )
+            if not (existing.ntpn or "").strip() and (item.ntpn or "").strip():
+                existing.ntpn = item.ntpn
+            if not existing.arkas_id and item.arkas_id:
+                existing.arkas_id = item.arkas_id
+        return list(consolidated.values())
+
     try:
+        taxes = consolidate_taxes(taxes)
         current_result = await db.execute(
             select(Transaksi).where(scope_conditions(Transaksi))
         )
         current_rows = current_result.scalars().all()
+        existing_tax_result = await db.execute(
+            select(RekapPajak).where(scope_conditions(RekapPajak))
+        )
+        existing_taxes = existing_tax_result.scalars().all()
         incoming_receipts = {receipt_key(item) for item in transactions}
         deleted_count = 0
+        deleted_tax_count = 0
+        updated_tax_count = 0
         skipped_count = 0
 
         if data.mode == "replace_all":
             deleted_count = len(current_rows)
+            deleted_tax_count = len(existing_taxes)
             if deleted_count:
                 await db.execute(
                     delete(Transaksi).where(scope_conditions(Transaksi))
                 )
             await db.execute(
                 delete(Kwitansi).where(scope_conditions(Kwitansi))
+            )
+            await db.execute(
+                delete(RekapPajak).where(scope_conditions(RekapPajak))
             )
         elif data.mode == "keep":
             existing_receipts = {
@@ -2553,6 +2611,100 @@ async def import_arkas_transactions(
                     )
                 )
                 deleted_count = len(rows_to_update)
+
+        incoming_tax_receipts = {
+            normalize_no_bukti_backend(item.no_bukti)
+            for item in [*data.transaksi, *data.pajak]
+        }
+        if data.mode == "update" and incoming_tax_receipts:
+            taxes_to_update = [
+                item
+                for item in existing_taxes
+                if normalize_no_bukti_backend(item.no_bukti)
+                in incoming_tax_receipts
+            ]
+            if taxes_to_update:
+                await db.execute(
+                    delete(RekapPajak).where(
+                        RekapPajak.id.in_([item.id for item in taxes_to_update])
+                    )
+                )
+                deleted_tax_count = len(taxes_to_update)
+        elif data.mode == "keep":
+            existing_taxes_by_key = {
+                tax_key(item): item
+                for item in existing_taxes
+            }
+            new_taxes = []
+            seen_tax_keys = set()
+            for item in taxes:
+                key = tax_key(item)
+                if key in seen_tax_keys:
+                    continue
+                seen_tax_keys.add(key)
+                existing_tax = existing_taxes_by_key.get(key)
+                if existing_tax is None:
+                    new_taxes.append(item)
+                    continue
+
+                ntpn = (item.ntpn or "").strip()
+                values = {
+                    "arkas_id": item.arkas_id or None,
+                    "tanggal": normalize_date_backend(item.tanggal) or item.tanggal,
+                    "no_bukti": item.no_bukti.strip(),
+                    "uraian": item.uraian or "",
+                    "jenis_pajak": item.jenis_pajak.strip(),
+                    "persentase_pajak": item.persentase_pajak,
+                    "nominal_pajak": float(item.nominal_pajak or 0),
+                    "nominal_wajib_disetor": (
+                        0 if ntpn else float(item.nominal_wajib_disetor or 0)
+                    ),
+                    "ntpn": ntpn,
+                    "source_fund_name": item.source_fund_name or None,
+                    "budget_name": item.budget_name or None,
+                }
+                changed = any(
+                    getattr(existing_tax, field) != value
+                    for field, value in values.items()
+                )
+                if changed:
+                    for field, value in values.items():
+                        setattr(existing_tax, field, value)
+                    updated_tax_count += 1
+            taxes = new_taxes
+
+        unique_taxes = []
+        seen_tax_keys = set()
+        for item in taxes:
+            key = tax_key(item)
+            if key not in seen_tax_keys:
+                unique_taxes.append(item)
+                seen_tax_keys.add(key)
+        taxes = unique_taxes
+
+        for item in taxes:
+            db.add(
+                RekapPajak(
+                    arkas_id=item.arkas_id or None,
+                    tanggal=normalize_date_backend(item.tanggal) or item.tanggal,
+                    no_bukti=item.no_bukti.strip(),
+                    uraian=item.uraian or "",
+                    jenis_pajak=item.jenis_pajak.strip(),
+                    persentase_pajak=item.persentase_pajak,
+                    nominal_pajak=float(item.nominal_pajak or 0),
+                    nominal_wajib_disetor=(
+                        0
+                        if (item.ntpn or "").strip()
+                        else float(item.nominal_wajib_disetor or 0)
+                    ),
+                    ntpn=(item.ntpn or "").strip(),
+                    fiscal_year=item.fiscal_year,
+                    source_fund_id=item.source_fund_id or None,
+                    source_fund_name=item.source_fund_name or None,
+                    budget_id=item.budget_id or None,
+                    budget_name=item.budget_name or None,
+                )
+            )
 
         for item in transactions:
             db.add(
@@ -2711,6 +2863,9 @@ async def import_arkas_transactions(
         if (
             saved_count
             or deleted_count
+            or taxes
+            or deleted_tax_count
+            or updated_tax_count
             or synced_kwitansi_count
             or created_kwitansi_count
         ):
@@ -2727,6 +2882,9 @@ async def import_arkas_transactions(
             "mode": data.mode,
             "saved_count": saved_count,
             "deleted_count": deleted_count,
+            "saved_tax_count": len(taxes),
+            "deleted_tax_count": deleted_tax_count,
+            "updated_tax_count": updated_tax_count,
             "skipped_count": skipped_count,
             "synced_kwitansi_count": synced_kwitansi_count,
             "created_kwitansi_count": created_kwitansi_count,
@@ -3591,10 +3749,10 @@ def fiscal_scope_conditions(model, record):
 
 @api_router.get("/fiscal-contexts")
 async def get_fiscal_contexts(db: AsyncSession = Depends(get_db)):
-    """Return locally stored scopes for BKU, SPJ, and scoped activity references."""
+    """Return locally stored scopes for BKU, SPJ, taxes, and activity references."""
     try:
         contexts = set()
-        for model in (Transaksi, Kwitansi, MasterKegiatanArkas):
+        for model in (Transaksi, Kwitansi, RekapPajak, MasterKegiatanArkas):
             result = await db.execute(
                 select(
                     model.fiscal_year,
@@ -3642,6 +3800,57 @@ async def get_fiscal_contexts(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         logger.exception("Gagal memuat pilihan konteks fiskal.")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/rekap-pajak")
+async def get_rekap_pajak(
+    db: AsyncSession = Depends(get_db),
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
+    budget_id: Optional[str] = None,
+):
+    """Read tax recap rows stored in the application database."""
+    try:
+        stmt = select(RekapPajak)
+        stmt = apply_fiscal_scope_filters(
+            stmt, RekapPajak, fiscal_year, source_fund_id, budget_id
+        ).order_by(
+            func.length(RekapPajak.no_bukti).asc(),
+            RekapPajak.no_bukti.asc(),
+            RekapPajak.jenis_pajak.asc(),
+        )
+        result = await db.execute(stmt)
+        return {
+            "status": "success",
+            "data": [
+                {
+                    "id": item.id,
+                    "arkas_id": item.arkas_id,
+                    "tanggal": item.tanggal,
+                    "no_bukti": item.no_bukti,
+                    "uraian": item.uraian,
+                    "jenis_pajak": item.jenis_pajak,
+                    "persentase_pajak": item.persentase_pajak,
+                    "nominal_pajak": item.nominal_pajak,
+                    "nominal_wajib_disetor": (
+                        0 if (item.ntpn or "").strip() else item.nominal_wajib_disetor
+                    ),
+                    "ntpn": item.ntpn,
+                    "fiscal_year": item.fiscal_year,
+                    "source_fund_id": item.source_fund_id,
+                    "source_fund_name": item.source_fund_name,
+                    "budget_id": item.budget_id,
+                    "budget_name": item.budget_name,
+                }
+                for item in result.scalars().all()
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Gagal memuat rekap pajak lokal.")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @api_router.get("/transaksi/sumif/{no_bukti}")
 async def get_sumif_no_bukti(
@@ -3712,6 +3921,31 @@ async def delete_transaksi(
         Transaksi.id.in_([item.id for item in transactions])
     )
     await db.execute(transaction_delete)
+    if scopes or any((fiscal_year, source_fund_id, budget_id)):
+        tax_delete = delete(RekapPajak).where(
+            RekapPajak.no_bukti == clean_no_bukti
+        )
+        if scopes:
+            year, source_id, budget = next(iter(scopes))
+            tax_delete = tax_delete.where(
+                and_(
+                    RekapPajak.fiscal_year.is_(None)
+                    if year is None
+                    else RekapPajak.fiscal_year == year,
+                    RekapPajak.source_fund_id.is_(None)
+                    if source_id is None
+                    else RekapPajak.source_fund_id == source_id,
+                    RekapPajak.budget_id.is_(None)
+                    if budget is None
+                    else RekapPajak.budget_id == budget,
+                )
+            )
+        else:
+            tax_delete = apply_fiscal_scope_filters(
+                tax_delete, RekapPajak, fiscal_year, source_fund_id, budget_id
+            )
+        await db.execute(tax_delete)
+
     kwitansi_delete = delete(Kwitansi).where(Kwitansi.no_bukti == clean_no_bukti)
     if scopes:
         year, source_id, budget = next(iter(scopes))

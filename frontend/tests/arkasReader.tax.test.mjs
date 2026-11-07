@@ -7,6 +7,7 @@ const { mapTaxRecapRow, normalizeFilters } = require("../arkasReader.cjs");
 
 test("maps ARKAS tax rows to tax recap fields and extracts stated rates", () => {
   const row = mapTaxRecapRow({
+    idKasUmum: 101,
     tanggalTransaksi: "2026-03-12",
     uraianPajak: "Terima PPh 23 2%",
     parentUraian: "Belanja jasa pemeliharaan",
@@ -24,6 +25,7 @@ test("maps ARKAS tax rows to tax recap fields and extracts stated rates", () => 
 
   assert.deepEqual(
     {
+      arkas_id: row.arkas_id,
       tanggal: row.tanggal,
       uraian: row.uraian,
       no_bukti: row.no_bukti,
@@ -34,16 +36,28 @@ test("maps ARKAS tax rows to tax recap fields and extracts stated rates", () => 
       ntpn: row.ntpn,
     },
     {
+      arkas_id: "101",
       tanggal: "12-03-2026",
       uraian: "Belanja jasa pemeliharaan",
       no_bukti: "BPU-026",
       jenis_pajak: "PPh 23",
       persentase_pajak: 2,
       nominal_pajak: 20000,
-      nominal_wajib_disetor: 15000,
+      nominal_wajib_disetor: 0,
       ntpn: "NTPN-123",
     },
   );
+});
+
+test("keeps payable tax when NTPN is empty", () => {
+  const row = mapTaxRecapRow({
+    uraianPajak: "Terima PPh 23",
+    nominalPajak: 20000,
+    nominalWajibDisetor: 15000,
+    ntpn: "",
+  });
+
+  assert.equal(row.nominal_wajib_disetor, 15000);
 });
 
 test("normalizes the fiscal scope filter shape used by the recap UI", () => {

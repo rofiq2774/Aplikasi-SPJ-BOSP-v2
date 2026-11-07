@@ -252,6 +252,8 @@ document.title = `Aplikasi SPJ BOSP v${appVersion}`;
 
 // State
 let bkuData = null;
+let bkuCurrentViewData = [];
+const selectedBkuRows = new Map();
 let pengaturan = {
   nama_sekolah: "",
   nama_kepala_sekolah: "",
@@ -266,9 +268,7 @@ let masterKegiatan = [];
 let masterRekeningBelanja = [];
 let activeTab = "identitas";
 let fiscalContexts = [];
-let arkasTaxContexts = [];
 let arkasTaxRows = [];
-let arkasTaxContextsLoaded = false;
 let arkasTaxLoadRequest = 0;
 
 function scopeFilterValue(context) {
@@ -401,7 +401,7 @@ function populateArkasTaxScopeFilter() {
 
   const options = [
     { value: "all", label: "Semua tahun / sumber dana / anggaran" },
-    ...arkasTaxContexts
+    ...fiscalContexts
       .filter((context) => context.budget_id)
       .map((context) => ({
         value: scopeFilterValue(context),
@@ -430,6 +430,7 @@ async function loadFiscalContexts() {
   }
   fiscalContexts = result.data || [];
   populateFiscalScopeFilters();
+  populateArkasTaxScopeFilter();
 }
 
 // ---- Identitas Satuan Pendidikan per periode (menu terpadu: kop + surat + pejabat) ----
@@ -677,7 +678,7 @@ async function uploadBKU() {
   }
 }
 
-function chooseArkasSyncMode(context, transactionCount, sourceName) {
+function chooseArkasSyncMode(context, transactionCount, taxCount, sourceName) {
   return new Promise((resolve) => {
     document
       .querySelectorAll(".ui-dialog-overlay")
@@ -700,7 +701,8 @@ function chooseArkasSyncMode(context, transactionCount, sourceName) {
     const message = document.createElement("p");
     message.className = "ui-dialog-message";
     message.textContent =
-      `Sumber: ${sourceName}. Ditemukan ${transactionCount} baris BPU ` +
+      `Sumber: ${sourceName}. Ditemukan ${transactionCount} baris BPU dan ` +
+      `${taxCount} baris pajak ` +
       `untuk ${scopeLabel(context)}. Sinkron hanya memengaruhi tahun, ` +
       "sumber dana, dan anggaran yang dipilih; data di luar lingkup tetap aman. " +
       "Pilih bagaimana menangani nomor bukti yang sudah ada.";
@@ -847,10 +849,11 @@ function selectedArkasContext(filterId, contexts, requireBudget = true) {
   ) || null;
 }
 
-async function syncArkas() {
+async function syncArkas(contextFilterId = "bku-scope-filter") {
   if (
     !window.electronAPI ||
-    typeof window.electronAPI.readArkasTransactions !== "function"
+    typeof window.electronAPI.readArkasTransactions !== "function" ||
+    typeof window.electronAPI.readArkasTaxRecap !== "function"
   ) {
     showToast("Error!", "Fitur Sinkron ARKAS hanya tersedia di aplikasi desktop.");
     return;
@@ -873,26 +876,32 @@ async function syncArkas() {
     );
     fiscalContexts = [...contextIndex.values()];
     populateFiscalScopeFilters();
-    let context = selectedArkasContext("bku-scope-filter", contexts);
+    let context = selectedArkasContext(contextFilterId, contexts);
     if (!context) context = await chooseArkasContext(contexts);
     if (!context) return;
-    const imported = await window.electronAPI.readArkasTransactions({
+    const filters = {
       fiscalYear: context.fiscal_year,
       sourceFundId: context.source_fund_id,
       budgetId: context.budget_id,
-    });
+    };
+    const [imported, importedTaxes] = await Promise.all([
+      window.electronAPI.readArkasTransactions(filters),
+      window.electronAPI.readArkasTaxRecap(filters),
+    ]);
     if (imported.canceled) return;
-    if (!imported.transactions?.length) {
+    if (importedTaxes.canceled) return;
+    if (!imported.transactions?.length && !importedTaxes.taxes?.length) {
       showToast(
         "Warning!",
-        `Tidak ditemukan transaksi BPU untuk ${scopeLabel(context)}.`,
+        `Tidak ditemukan transaksi BPU atau data pajak untuk ${scopeLabel(context)}.`,
       );
       return;
     }
 
     const mode = await chooseArkasSyncMode(
       context,
-      imported.returned,
+      imported.returned || 0,
+      importedTaxes.returned || 0,
       imported.sourceName,
     );
     if (!mode) return;
@@ -915,7 +924,11 @@ async function syncArkas() {
     const response = await apiFetch(`${API_BASE}/transaksi/import-arkas`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode, transaksi: imported.transactions }),
+      body: JSON.stringify({
+        mode,
+        transaksi: imported.transactions || [],
+        pajak: importedTaxes.taxes || [],
+      }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -923,13 +936,9 @@ async function syncArkas() {
     }
 
     await loadFiscalContexts();
-    const selectedScopeValue = scopeFilterValue(context);
-    const bkuFilter = document.getElementById("bku-scope-filter");
-    const spjFilter = document.getElementById("spj-scope-filter");
-    if (bkuFilter) bkuFilter.value = selectedScopeValue;
-    if (spjFilter) spjFilter.value = selectedScopeValue;
     await loadDataBKU();
     await loadKwitansiList();
+    await loadRekapPajak();
     const modeDescription = {
       replace_all: "Data pada konteks terpilih diganti",
       keep: "Data dengan nomor bukti yang sudah ada dipertahankan",
@@ -940,6 +949,7 @@ async function syncArkas() {
       `${modeDescription}. ${result.saved_count} baris diimpor, ` +
         `${result.deleted_count} baris diganti/dihapus, ` +
         `${result.skipped_count} baris dilewati. ` +
+        `${result.saved_tax_count || 0} data pajak disimpan. ` +
         `${result.synced_kwitansi_count} SPJ diperbarui dan ` +
         `${result.created_kwitansi_count} SPJ dibuat.`,
     );
@@ -1347,54 +1357,36 @@ async function loadKwitansiList() {
   }
 }
 
-async function loadRekapPajak(refreshContexts = false) {
+async function loadRekapPajak() {
   const list = document.getElementById("pajak-list");
-  if (typeof window.electronAPI?.readArkasTaxRecap !== "function") {
-    showToast("Error!", "Rekap pajak ARKAS hanya tersedia di aplikasi desktop.");
-    return;
-  }
-
   const requestId = ++arkasTaxLoadRequest;
   if (list) {
     list.innerHTML =
-      "<div style='padding:24px;text-align:center;color:#64748b;'>Membaca rekap pajak dari ARKAS...</div>";
+      "<div style='padding:24px;text-align:center;color:#64748b;'>Memuat rekap pajak tersimpan...</div>";
   }
   try {
-    if (refreshContexts || !arkasTaxContextsLoaded) {
-      const catalog = await window.electronAPI.readArkasContexts();
-      if (requestId !== arkasTaxLoadRequest) return;
-      if (catalog.canceled) {
-        if (list) {
-          list.innerHTML =
-            "<div style='padding:24px;text-align:center;color:#64748b;'>Pemilihan database ARKAS dibatalkan.</div>";
-        }
-        return;
-      }
-      arkasTaxContexts = catalog.contexts || [];
-      arkasTaxContextsLoaded = true;
-      populateArkasTaxScopeFilter();
-    }
-
-    const result = await window.electronAPI.readArkasTaxRecap(
-      scopeFilterParams(document.getElementById("pajak-scope-filter")?.value),
-    );
+    await loadFiscalContexts();
     if (requestId !== arkasTaxLoadRequest) return;
-    if (result.canceled) {
-      if (list) {
-        list.innerHTML =
-          "<div style='padding:24px;text-align:center;color:#64748b;'>Pemilihan database ARKAS dibatalkan.</div>";
-      }
-      return;
+    const query = scopeQueryString(
+      document.getElementById("pajak-scope-filter")?.value,
+    );
+    const response = await apiFetch(
+      `${API_BASE}/rekap-pajak${query ? `?${query}` : ""}`,
+    );
+    const result = await response.json();
+    if (requestId !== arkasTaxLoadRequest) return;
+    if (!response.ok || result.status !== "success") {
+      throw new Error(result.detail || "Gagal memuat rekap pajak lokal.");
     }
-    arkasTaxRows = result.taxes || [];
+    arkasTaxRows = result.data || [];
     renderRekapPajak(arkasTaxRows);
   } catch (error) {
     if (requestId !== arkasTaxLoadRequest) return;
     if (list) {
       list.innerHTML =
-        `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(error.message || "Gagal membaca rekap pajak dari ARKAS.")}</div>`;
+        `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(error.message || "Gagal memuat rekap pajak lokal.")}</div>`;
     }
-    showToast("Error!", error.message || "Gagal membaca rekap pajak dari ARKAS.");
+    showToast("Error!", error.message || "Gagal memuat rekap pajak lokal.");
   }
 }
 
@@ -1418,7 +1410,11 @@ function renderRekapPajak(rows = arkasTaxRows) {
     0,
   );
   const totalWajibDisetor = filteredRows.reduce(
-    (total, row) => total + (Number(row.nominal_wajib_disetor) || 0),
+    (total, row) =>
+      total +
+      (String(row.ntpn || "").trim()
+        ? 0
+        : Number(row.nominal_wajib_disetor) || 0),
     0,
   );
   const stats = document.getElementById("pajak-stats");
@@ -1441,7 +1437,7 @@ function renderRekapPajak(rows = arkasTaxRows) {
         <td>${escapeSpjFormValue(row.jenis_pajak || "-")}</td>
         <td style="text-align:right;">${percentage}</td>
         <td style="text-align:right;white-space:nowrap;">${formatRupiah(Number(row.nominal_pajak) || 0)}</td>
-        <td style="text-align:right;white-space:nowrap;">${formatRupiah(Number(row.nominal_wajib_disetor) || 0)}</td>
+        <td style="text-align:right;white-space:nowrap;">${formatRupiah(String(row.ntpn || "").trim() ? 0 : Number(row.nominal_wajib_disetor) || 0)}</td>
         <td>${escapeSpjFormValue(row.ntpn || "-")}</td>
         <td>${renderFiscalContext(row)}</td>
       </tr>`;
@@ -2471,18 +2467,91 @@ function renderMasterKegiatan(data = null) {
 
 // Render functions
 // Tambahkan parameter isExtractMode (default: false)
+function bkuDeletionTarget(item) {
+  return {
+    no_bukti: String(item.no_bukti || ""),
+    fiscal_year: item.fiscal_year ?? "unspecified",
+    source_fund_id: item.source_fund_id || "unspecified",
+    budget_id: item.budget_id || "unspecified",
+  };
+}
+
+function bkuSelectionKey(item) {
+  const target = bkuDeletionTarget(item);
+  return JSON.stringify([
+    target.no_bukti,
+    target.fiscal_year,
+    target.source_fund_id,
+    target.budget_id,
+  ]);
+}
+
+function updateBkuBulkDeleteButton(visibleRows = []) {
+  const button = document.getElementById("btn-hapus-bku-terpilih");
+  if (!button) return;
+  button.disabled = selectedBkuRows.size === 0;
+  button.textContent = selectedBkuRows.size
+    ? `Hapus Terpilih (${selectedBkuRows.size})`
+    : "Hapus Terpilih";
+
+  const selectAll = document.getElementById("bku-select-all");
+  if (selectAll) {
+    const selectedVisible = visibleRows.filter((item) =>
+      selectedBkuRows.has(bkuSelectionKey(item)),
+    ).length;
+    selectAll.checked =
+      visibleRows.length > 0 && selectedVisible === visibleRows.length;
+    selectAll.indeterminate =
+      selectedVisible > 0 && selectedVisible < visibleRows.length;
+  }
+}
+
+function toggleBkuSelection(checkbox) {
+  const target = JSON.parse(checkbox.dataset.target || "{}");
+  const key = bkuSelectionKey(target);
+  if (checkbox.checked) selectedBkuRows.set(key, target);
+  else selectedBkuRows.delete(key);
+  renderBKUResult(bkuCurrentViewData);
+}
+
+function setBkuVisibleSelection(checked) {
+  for (const item of bkuCurrentViewData) {
+    const key = bkuSelectionKey(item);
+    if (checked) selectedBkuRows.set(key, bkuDeletionTarget(item));
+    else selectedBkuRows.delete(key);
+  }
+  renderBKUResult(bkuCurrentViewData);
+}
+
 function renderBKUResult(filteredData = null, isExtractMode = false) {
   const tbody = document.getElementById("bku-body");
   const btnArea = document.getElementById("bku-action-buttons");
 
   if (!tbody) return;
 
-  const dataToRender = filteredData || (bkuData ? bkuData.transaksi : []);
+  const sourceData = filteredData || bkuData?.transaksi || [];
+  bkuCurrentViewData = Array.isArray(sourceData) ? sourceData : [];
+  const thp = document.getElementById("bku-thp-filter")?.value || "all";
+  const month = document.getElementById("bku-month-filter")?.value || "all";
+  const dataToRender = bkuCurrentViewData.filter((item) => {
+    const date = parseTanggalToDate(item.tanggal);
+    if (!date) return thp === "all" && month === "all";
+    const rowMonth = date.getMonth() + 1;
+    if (month !== "all" && rowMonth !== Number(month)) return false;
+    if (thp === "1" && rowMonth > 6) return false;
+    if (thp === "2" && rowMonth <= 6) return false;
+    return true;
+  });
+  const visibleKeys = new Set(dataToRender.map(bkuSelectionKey));
+  for (const key of selectedBkuRows.keys()) {
+    if (!visibleKeys.has(key)) selectedBkuRows.delete(key);
+  }
 
   if (dataToRender.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="12" style="text-align:center; padding:20px;">Tidak ada data ditemukan.</td></tr>';
+      '<tr><td colspan="13" style="text-align:center; padding:20px;">Tidak ada data ditemukan.</td></tr>';
     if (btnArea) btnArea.style.display = "none";
+    updateBkuBulkDeleteButton();
     return;
   }
 
@@ -2495,8 +2564,11 @@ function renderBKUResult(filteredData = null, isExtractMode = false) {
 
   tbody.innerHTML = "";
   dataToRender.forEach((item) => {
+    const target = bkuDeletionTarget(item);
+    const selectionKey = bkuSelectionKey(item);
     const row = `
             <tr>
+                <td style="text-align:center;"><input type="checkbox" aria-label="Pilih transaksi ${escapeSpjFormValue(item.no_bukti || "")}" data-selection-key="${escapeSpjFormValue(selectionKey)}" data-target="${escapeSpjFormValue(JSON.stringify(target))}" ${selectedBkuRows.has(selectionKey) ? "checked" : ""} onchange="toggleBkuSelection(this)"></td>
                 <td>${escapeSpjFormValue(item.no_bukti || "-")}</td>
                 <td>${escapeSpjFormValue(item.tanggal || "-")}</td>
                 <td>${escapeSpjFormValue(item.kode_kegiatan || "-")}</td>
@@ -2519,6 +2591,7 @@ function renderBKUResult(filteredData = null, isExtractMode = false) {
         `;
     tbody.insertAdjacentHTML("beforeend", row);
   });
+  updateBkuBulkDeleteButton(dataToRender);
 }
 
 function parseTanggalToDate(value) {
@@ -4763,7 +4836,7 @@ async function loadDataBKU() {
   if (!tbody) return;
 
   tbody.innerHTML =
-    '<tr><td colspan="12" style="text-align:center;">Memuat data...</td></tr>';
+    '<tr><td colspan="13" style="text-align:center;">Memuat data...</td></tr>';
 
   try {
     const query = scopeQueryString(
@@ -4784,43 +4857,11 @@ async function loadDataBKU() {
       kwitansi_list: bkuData?.kwitansi_list || [],
     };
 
-    if (transactions.length === 0) {
-      tbody.innerHTML =
-        '<tr><td colspan="12" style="text-align:center;">Tidak ada data BKU ditemukan.</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = ""; // Bersihkan loading state
-
-    transactions.forEach((item) => {
-      const row = `
-        <tr>
-            <td>${escapeSpjFormValue(item.no_bukti || "-")}</td>
-            <td>${escapeSpjFormValue(item.tanggal || "-")}</td>
-            <td>${escapeSpjFormValue(item.kode_kegiatan || "-")}</td>
-            <td>${escapeSpjFormValue(item.kode_rekening || "-")}</td>
-            <td>${escapeSpjFormValue(item.uraian || "-")}</td>
-            ${renderBkuShopIdentity(item)}
-            <td>${escapeSpjFormValue(item.volume || 0)}</td>
-            <td>${escapeSpjFormValue(item.satuan || "")}</td>
-            <td>${formatCurrencyLabel(item.harga_satuan || 0)}</td>
-            <td>${formatCurrencyLabel(item.pengeluaran || 0)}</td>
-            <td style="text-align:center">
-                <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))}, ${JSON.stringify({
-                  fiscal_year: item.fiscal_year ?? "unspecified",
-                  source_fund_id: item.source_fund_id || "unspecified",
-                  budget_id: item.budget_id || "unspecified",
-                })})`)}">Hapus</button>
-            </td>
-            <td>${renderFiscalContext(item)}</td>
-        </tr>
-    `;
-      tbody.insertAdjacentHTML("beforeend", row);
-    });
+    renderBKUResult(transactions);
   } catch (error) {
     showToast("Gagal!", error);
     tbody.innerHTML =
-      '<tr><td colspan="12" style="text-align:center; color:red;">Gagal terhubung ke database.</td></tr>';
+      '<tr><td colspan="13" style="text-align:center; color:red;">Gagal terhubung ke database.</td></tr>';
   }
 }
 
@@ -4862,12 +4903,69 @@ async function deleteTransaksi(no_bukti, scope = {}) {
     if (typeof loadKwitansiList === "function") {
       loadKwitansiList();
     }
+    await loadRekapPajak();
 
     // 3. Tampilkan Notifikasi Sukses Saja
     showToast("Berhasil!", "Data BKU dan Draft SPJ terkait berhasil dihapus.");
   } catch (error) {
     showToast("Gagal!", `Gagal menghapus: ${error.message}`);
   }
+}
+
+async function deleteSelectedTransaksi() {
+  const targets = [...selectedBkuRows.values()];
+  if (!targets.length) return;
+
+  if (
+    !(await UI.confirm(
+      `Hapus ${targets.length} data BKU terpilih beserta Draft SPJ terkait? Data yang dihapus tidak dapat dikembalikan.`,
+      { title: "Hapus Data BKU Terpilih", okText: "Hapus", danger: true },
+    ))
+  ) {
+    return;
+  }
+
+  const button = document.getElementById("btn-hapus-bku-terpilih");
+  if (button) button.disabled = true;
+  let deleted = 0;
+  const failures = [];
+
+  for (const target of targets) {
+    try {
+      const params = new URLSearchParams({
+        fiscal_year: String(target.fiscal_year),
+        source_fund_id: String(target.source_fund_id),
+        budget_id: String(target.budget_id),
+      });
+      const response = await apiFetch(
+        `${API_BASE}/transaksi/${encodeURIComponent(target.no_bukti)}?${params}`,
+        { method: "DELETE" },
+      );
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "Gagal menghapus data BKU.");
+      }
+      selectedBkuRows.delete(bkuSelectionKey(target));
+      deleted++;
+    } catch (error) {
+      failures.push({ no_bukti: target.no_bukti, message: error.message });
+    }
+  }
+
+  await loadDataBKU();
+  await loadKwitansiList();
+  await loadRekapPajak();
+
+  if (failures.length) {
+    showToast(
+      "Sebagian Data Gagal Dihapus",
+      `${deleted} berhasil dihapus. ${failures.length} gagal: ${failures
+        .map((item) => `${item.no_bukti} (${item.message})`)
+        .join("; ")}`,
+    );
+    return;
+  }
+  showToast("Berhasil!", `${deleted} data BKU terpilih berhasil dihapus.`);
 }
 
 // Tampilkan/sembunyikan placeholder pada kotak preview logo
@@ -6060,6 +6158,27 @@ function initApp() {
                     <select id="bku-scope-filter" class="form-control" onchange="loadDataBKU()">
                         <option value="all">Semua tahun / sumber dana / anggaran</option>
                     </select>
+                    <select id="bku-thp-filter" class="form-control" onchange="renderBKUResult()" title="Tahap I: Januari–Juni; Tahap II: Juli–Desember">
+                        <option value="all">Semua tahap</option>
+                        <option value="1">Tahap 1</option>
+                        <option value="2">Tahap 2</option>
+                    </select>
+                    <select id="bku-month-filter" class="form-control" onchange="renderBKUResult()">
+                        <option value="all">Semua bulan</option>
+                        <option value="1">Januari</option>
+                        <option value="2">Februari</option>
+                        <option value="3">Maret</option>
+                        <option value="4">April</option>
+                        <option value="5">Mei</option>
+                        <option value="6">Juni</option>
+                        <option value="7">Juli</option>
+                        <option value="8">Agustus</option>
+                        <option value="9">September</option>
+                        <option value="10">Oktober</option>
+                        <option value="11">November</option>
+                        <option value="12">Desember</option>
+                    </select>
+                    <button id="btn-hapus-bku-terpilih" class="btn btn-danger" onclick="deleteSelectedTransaksi()" disabled>Hapus Terpilih</button>
                     <button class="btn btn-primary" onclick="loadDataBKU()">${iconSvg("refreshCw", 15)} Segarkan Data</button>
                     <button class="btn btn-success" onclick="syncArkas()" title="Impor transaksi BPU dari database ARKAS">Sinkron ARKAS</button>
                     <button class="btn btn-outline-primary" onclick="changeArkasDatabase()" title="Pilih atau ubah lokasi database ARKAS">Ubah Database</button>
@@ -6070,6 +6189,7 @@ function initApp() {
                     <table id="table-bku" style="width:100%; border-collapse:collapse;">
                         <thead>
                             <tr>
+                                <th style="width:44px;text-align:center;"><input type="checkbox" id="bku-select-all" aria-label="Pilih semua transaksi yang tampil" onchange="setBkuVisibleSelection(this.checked)"></th>
                                 <th>No. Bukti</th>
                                 <th>Tanggal</th>
                                 <th>Kode Kegiatan</th>
@@ -6446,7 +6566,7 @@ function initApp() {
                 <option value="11">November</option>
                 <option value="12">Desember</option>
             </select>
-            <button class="btn btn-primary" onclick="loadRekapPajak(true)">${iconSvg("refreshCw", 15)} Segarkan Data ARKAS</button>
+            <button class="btn btn-primary" onclick="syncArkas('pajak-scope-filter')">${iconSvg("refreshCw", 15)} Sinkronkan dari ARKAS</button>
         </div>
         <div id="pajak-list" class="table-container">
             <div style="padding:24px;text-align:center;color:#64748b;">Pilih menu Rekap Pajak untuk membaca data dari ARKAS.</div>
@@ -6559,6 +6679,9 @@ window.renderRekapTransaksi = renderRekapTransaksi;
 window.renderBKUResult = renderBKUResult;
 window.renderMasterKegiatan = renderMasterKegiatan;
 window.loadDataBKU = loadDataBKU;
+window.toggleBkuSelection = toggleBkuSelection;
+window.setBkuVisibleSelection = setBkuVisibleSelection;
+window.deleteSelectedTransaksi = deleteSelectedTransaksi;
 window.previewImage = previewImage;
 window.openLogoFull = openLogoFull;
 window.updatePemdaPreview = updatePemdaPreview;

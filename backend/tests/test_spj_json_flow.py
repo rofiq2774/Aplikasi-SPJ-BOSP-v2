@@ -215,6 +215,181 @@ def test_manual_kwitansi_rejects_unknown_detail_account_code(spj_client):
     assert "Kode rekening tidak ditemukan" in response.json()["detail"]
 
 
+def test_arkas_tax_sync_persists_rows_and_filters_by_fiscal_scope(spj_client):
+    base_tax = {
+        "tanggal": "2026-03-12",
+        "no_bukti": "BPU-01",
+        "uraian": "Belanja jasa pemeliharaan",
+        "jenis_pajak": "PPh 23",
+        "persentase_pajak": 2,
+        "nominal_pajak": 20000,
+        "nominal_wajib_disetor": 15000,
+        "ntpn": "NTPN-2026",
+        "source_fund_id": "1",
+        "source_fund_name": "BOSP Reguler",
+        "budget_id": "budget-1",
+        "budget_name": "Anggaran 2026",
+    }
+
+    for year, arkas_id in ((2025, "arkas-tax-2025-1"), (2026, "arkas-tax-2026-1")):
+        tax = {
+            **base_tax,
+            "arkas_id": arkas_id,
+            "fiscal_year": year,
+            "ntpn": f"NTPN-{year}",
+        }
+        taxes = [tax]
+        if year == 2025:
+            taxes.append(
+                {
+                    **tax,
+                    "arkas_id": "arkas-tax-2025-2",
+                    "jenis_pajak": "PPN",
+                    "nominal_pajak": 10000,
+                }
+            )
+        response = spj_client.post(
+            "/api/transaksi/import-arkas",
+            json={"mode": "keep", "transaksi": [], "pajak": taxes},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["saved_tax_count"] == len(taxes)
+
+    repeated = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "keep",
+            "transaksi": [],
+            "pajak": [{
+                **base_tax,
+                "arkas_id": "arkas-tax-2025-1",
+                "fiscal_year": 2025,
+                "ntpn": "NTPN-2025",
+            }],
+        },
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["saved_tax_count"] == 0
+
+    response = spj_client.get(
+        "/api/rekap-pajak",
+        params={
+            "fiscal_year": "2026",
+            "source_fund_id": "1",
+            "budget_id": "budget-1",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "success"
+    assert len(result["data"]) == 1
+    assert result["data"][0]["ntpn"] == "NTPN-2026"
+    assert result["data"][0]["fiscal_year"] == 2026
+    assert result["data"][0]["nominal_wajib_disetor"] == 0
+
+    from sqlalchemy import select
+    from models import RekapPajak
+
+    async def get_saved_payable_amount():
+        async with spj_client.test_session_maker() as session:
+            saved = await session.execute(
+                select(RekapPajak.nominal_wajib_disetor).where(
+                    RekapPajak.arkas_id == "arkas-tax-2026-1"
+                )
+            )
+            return saved.scalar_one()
+
+    loop = asyncio.new_event_loop()
+    try:
+        assert loop.run_until_complete(get_saved_payable_amount()) == 0
+    finally:
+        loop.close()
+
+    updated = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "keep",
+            "transaksi": [],
+            "pajak": [{
+                **base_tax,
+                "arkas_id": "arkas-tax-2026-1",
+                "fiscal_year": 2026,
+                "ntpn": "",
+            }],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["updated_tax_count"] == 1
+
+    refreshed = spj_client.get(
+        "/api/rekap-pajak",
+        params={
+            "fiscal_year": "2026",
+            "source_fund_id": "1",
+            "budget_id": "budget-1",
+        },
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    refreshed_row = next(
+        row for row in refreshed.json()["data"] if row["arkas_id"] == "arkas-tax-2026-1"
+    )
+    assert refreshed_row["ntpn"] == ""
+    assert refreshed_row["nominal_wajib_disetor"] == 15000
+
+    previous_year = spj_client.get(
+        "/api/rekap-pajak",
+        params={
+            "fiscal_year": "2025",
+            "source_fund_id": "1",
+            "budget_id": "budget-1",
+        },
+    )
+    assert previous_year.status_code == 200, previous_year.text
+    assert len(previous_year.json()["data"]) == 2
+
+    duplicate_type = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "keep",
+            "transaksi": [],
+            "pajak": [
+                {
+                    **base_tax,
+                    "arkas_id": "arkas-tax-2026-duplicate-1",
+                    "fiscal_year": 2026,
+                    "no_bukti": "BPU-57",
+                    "ntpn": "",
+                },
+                {
+                    **base_tax,
+                    "arkas_id": "arkas-tax-2026-duplicate-2",
+                    "fiscal_year": 2026,
+                    "no_bukti": "BPU-57",
+                    "nominal_pajak": 5000,
+                    "nominal_wajib_disetor": 3000,
+                    "ntpn": "",
+                },
+            ],
+        },
+    )
+    assert duplicate_type.status_code == 200, duplicate_type.text
+    duplicate_rows = spj_client.get(
+        "/api/rekap-pajak",
+        params={
+            "fiscal_year": "2026",
+            "source_fund_id": "1",
+            "budget_id": "budget-1",
+        },
+    ).json()["data"]
+    duplicate_receipt_rows = [
+        row for row in duplicate_rows if row["no_bukti"] == "BPU-57"
+    ]
+    assert len(duplicate_receipt_rows) == 1
+    assert duplicate_receipt_rows[0]["nominal_pajak"] == 25000
+    assert duplicate_receipt_rows[0]["nominal_wajib_disetor"] == 18000
+
+
 def test_spj_data_returns_json_and_valid_payload(spj_client):
     res = spj_client.get("/api/kwitansi/1/spj-data")
     assert res.status_code == 200, res.text

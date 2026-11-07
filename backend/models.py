@@ -37,6 +37,40 @@ class Transaksi(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class RekapPajak(Base):
+    """Salinan lokal rekap pajak yang disinkronkan dari database ARKAS."""
+
+    __tablename__ = "rekap_pajak"
+    __table_args__ = (
+        UniqueConstraint(
+            "fiscal_year",
+            "source_fund_id",
+            "budget_id",
+            "no_bukti",
+            "jenis_pajak",
+            name="uq_rekap_pajak_scope_receipt_type",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    arkas_id = Column(String, nullable=True)
+    tanggal = Column(String, nullable=False, default="")
+    no_bukti = Column(String, nullable=False)
+    uraian = Column(String, nullable=False, default="")
+    jenis_pajak = Column(String, nullable=False)
+    persentase_pajak = Column(Float, nullable=True)
+    nominal_pajak = Column(Float, nullable=False, default=0)
+    nominal_wajib_disetor = Column(Float, nullable=False, default=0)
+    ntpn = Column(String, nullable=False, default="")
+    fiscal_year = Column(Integer, nullable=True)
+    source_fund_id = Column(String, nullable=True)
+    source_fund_name = Column(String, nullable=True)
+    budget_id = Column(String, nullable=True)
+    budget_name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Pengaturan(Base):
     """Pengaturan umum sekolah yang dipakai sebagai data identitas bawaan."""
 

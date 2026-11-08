@@ -53,7 +53,7 @@ from starlette.middleware.cors import CORSMiddleware
 from database import BASE_DIR, AsyncSessionLocal, Base, engine, get_db
 from models import (
     IdentitasPeriode, Kwitansi, MasterKegiatan, MasterKegiatanArkas,
-    MasterRekeningBelanja, Pengaturan, RekapPajak, Transaksi
+    MasterRekeningBelanja, Pengaturan, RekapPajak, RkasAnggaran, RkasItem, Transaksi
 )
 _migrated = False
 
@@ -402,6 +402,33 @@ class MasterKegiatanArkasItem(BaseModel):
 
 class MasterKegiatanArkasBulkRequest(BaseModel):
     data: List[MasterKegiatanArkasItem]
+
+
+class RkasItemRequest(BaseModel):
+    item_id: str
+    activity_code: str = ""
+    activity_name: str = ""
+    account_code: str = ""
+    account_name: str = ""
+    description: str = ""
+    month: int
+    volume: float = 0
+    unit: str = ""
+    unit_price: float = 0
+    amount: float = 0
+
+
+class RkasContextRequest(BaseModel):
+    fiscal_year: int
+    source_fund_id: str
+    source_fund_name: str = ""
+    budget_id: str
+    revision: int = 0
+    items: List[RkasItemRequest] = []
+
+
+class RkasSyncRequest(BaseModel):
+    data: List[RkasContextRequest]
 
 
 class KwitansiRequest(BaseModel):
@@ -3791,6 +3818,16 @@ def fiscal_scope_conditions(model, record):
     return and_(*conditions)
 
 
+def format_rkas_revision(value: int) -> str:
+    changes, shifts = divmod(max(0, int(value or 0)), 100)
+    labels = []
+    if changes:
+        labels.append(f"Perubahan ke-{changes}")
+    if shifts:
+        labels.append(f"Pergeseran ke-{shifts}")
+    return "Awal" if not labels else " / ".join(labels)
+
+
 @api_router.get("/fiscal-contexts")
 async def get_fiscal_contexts(db: AsyncSession = Depends(get_db)):
     """Return locally stored scopes for BKU, SPJ, taxes, and activity references."""
@@ -3844,6 +3881,186 @@ async def get_fiscal_contexts(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         logger.exception("Gagal memuat pilihan konteks fiskal.")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/rkas/sync")
+async def sync_rkas_data(
+    request: RkasSyncRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist an ARKAS RKAS snapshot in the application database."""
+    if not request.data:
+        raise HTTPException(status_code=400, detail="Data RKAS kosong; tidak ada data yang disimpan.")
+
+    incoming_keys = [
+        (item.fiscal_year, item.source_fund_id.strip(), item.budget_id.strip())
+        for item in request.data
+    ]
+    if any(not source_id or not budget_id for _, source_id, budget_id in incoming_keys):
+        raise HTTPException(
+            status_code=400,
+            detail="Setiap anggaran RKAS wajib memiliki sumber dana dan ID anggaran.",
+        )
+    if len(set(incoming_keys)) != len(incoming_keys):
+        raise HTTPException(status_code=400, detail="Data RKAS berisi anggaran duplikat.")
+    if any(
+        not item.item_id.strip() or item.month < 1 or item.month > 12
+        for context in request.data
+        for item in context.items
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Rincian RKAS memiliki ID barang atau bulan yang tidak valid.",
+        )
+
+    try:
+        created_count = updated_count = item_count = 0
+        for incoming, (fiscal_year, source_fund_id, budget_id) in zip(
+            request.data, incoming_keys
+        ):
+            result = await db.execute(
+                select(RkasAnggaran).where(
+                    RkasAnggaran.fiscal_year == fiscal_year,
+                    RkasAnggaran.source_fund_id == source_fund_id,
+                    RkasAnggaran.budget_id == budget_id,
+                )
+            )
+            context = result.scalar_one_or_none()
+            if context is None:
+                context = RkasAnggaran(
+                    fiscal_year=fiscal_year,
+                    source_fund_id=source_fund_id,
+                    budget_id=budget_id,
+                )
+                db.add(context)
+                await db.flush()
+                created_count += 1
+            else:
+                updated_count += 1
+                await db.execute(
+                    delete(RkasItem).where(RkasItem.rkas_anggaran_id == context.id)
+                )
+
+            context.source_fund_name = incoming.source_fund_name.strip()
+            context.revision = incoming.revision
+            db.add_all([
+                RkasItem(
+                    rkas_anggaran_id=context.id,
+                    item_id=item.item_id.strip(),
+                    activity_code=item.activity_code.strip(),
+                    activity_name=item.activity_name.strip(),
+                    account_code=item.account_code.strip(),
+                    account_name=item.account_name.strip(),
+                    description=item.description.strip(),
+                    month=item.month,
+                    volume=item.volume,
+                    unit=item.unit.strip(),
+                    unit_price=item.unit_price,
+                    amount=item.amount,
+                )
+                for item in incoming.items
+            ])
+            item_count += len(incoming.items)
+
+        await db.commit()
+        return {
+            "status": "success",
+            "context_count": len(request.data),
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "item_count": item_count,
+        }
+    except Exception as e:
+        await db.rollback()
+        logger.exception("Gagal menyimpan data RKAS hasil sinkronisasi.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal menyimpan data RKAS: {str(e)}",
+        )
+
+
+@api_router.get("/rkas")
+async def get_rkas_contexts(db: AsyncSession = Depends(get_db)):
+    """Read RKAS contexts previously saved in the application database."""
+    result = await db.execute(
+        select(RkasAnggaran).order_by(
+            RkasAnggaran.fiscal_year.desc(),
+            RkasAnggaran.source_fund_name,
+            RkasAnggaran.budget_id,
+        )
+    )
+    return {
+        "status": "success",
+        "data": [
+            {
+                "fiscal_year": item.fiscal_year,
+                "source_fund_id": item.source_fund_id,
+                "source_fund_name": item.source_fund_name,
+                "budget_id": item.budget_id,
+                "revision": item.revision,
+                "revision_label": format_rkas_revision(item.revision),
+            }
+            for item in result.scalars().all()
+        ],
+    }
+
+
+@api_router.get("/rkas/items")
+async def get_rkas_items(
+    fiscal_year: int,
+    source_fund_id: str,
+    budget_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Read saved RKAS details; this endpoint never accesses the ARKAS database."""
+    result = await db.execute(
+        select(RkasAnggaran).where(
+            RkasAnggaran.fiscal_year == fiscal_year,
+            RkasAnggaran.source_fund_id == source_fund_id,
+            RkasAnggaran.budget_id == budget_id,
+        )
+    )
+    context = result.scalar_one_or_none()
+    if context is None:
+        raise HTTPException(status_code=404, detail="Data RKAS belum tersinkron ke database aplikasi.")
+
+    items_result = await db.execute(
+        select(RkasItem)
+        .where(RkasItem.rkas_anggaran_id == context.id)
+        .order_by(
+            RkasItem.activity_code,
+            RkasItem.account_code,
+            RkasItem.item_id,
+            RkasItem.month,
+        )
+    )
+    return {
+        "status": "success",
+        "context": {
+            "fiscal_year": context.fiscal_year,
+            "source_fund_id": context.source_fund_id,
+            "source_fund_name": context.source_fund_name,
+            "budget_id": context.budget_id,
+            "revision": context.revision,
+            "revision_label": format_rkas_revision(context.revision),
+        },
+        "data": [
+            {
+                "item_id": item.item_id,
+                "activity_code": item.activity_code,
+                "activity_name": item.activity_name,
+                "account_code": item.account_code,
+                "account_name": item.account_name,
+                "description": item.description,
+                "month": item.month,
+                "volume": item.volume,
+                "unit": item.unit,
+                "unit_price": item.unit_price,
+                "amount": item.amount,
+            }
+            for item in items_result.scalars().all()
+        ],
+    }
 
 
 @api_router.get("/rekap-pajak")

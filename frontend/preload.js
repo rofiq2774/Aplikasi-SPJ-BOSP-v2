@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("read-arkas-tax-recap", filters),
   readArkasActivities: filters =>
     ipcRenderer.invoke("read-arkas-activities", filters),
+  readArkasBudget: filters =>
+    ipcRenderer.invoke("read-arkas-budget", filters),
   readArkasContexts: () => ipcRenderer.invoke("read-arkas-contexts"),
   getArkasDatabaseInfo: () => ipcRenderer.invoke("get-arkas-database-info"),
   selectArkasDatabase: () => ipcRenderer.invoke("select-arkas-database"),

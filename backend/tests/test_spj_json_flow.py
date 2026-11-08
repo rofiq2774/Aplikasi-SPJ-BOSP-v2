@@ -1933,3 +1933,150 @@ def test_spj_generation_groups_receipts_per_fiscal_context(spj_client):
         and "/2-202" not in item["nomor_kwitansi"]
         for item in grouped
     )
+
+
+def test_rkas_sync_persists_context_and_monthly_items(spj_client):
+    payload = {
+        "data": [
+            {
+                "fiscal_year": 2026,
+                "source_fund_id": "1",
+                "source_fund_name": "BOSP Reguler",
+                "budget_id": "budget-2026-1",
+                "revision": 200,
+                "items": [
+                    {
+                        "item_id": "rapbs-1",
+                        "activity_code": "02.01",
+                        "activity_name": "Kegiatan",
+                        "account_code": "5.1.02",
+                        "account_name": "Belanja Barang",
+                        "description": "Alat tulis",
+                        "month": 1,
+                        "volume": 2,
+                        "unit": "paket",
+                        "unit_price": 100000,
+                        "amount": 200000,
+                    },
+                    {
+                        "item_id": "rapbs-1",
+                        "activity_code": "02.01",
+                        "activity_name": "Kegiatan",
+                        "account_code": "5.1.02",
+                        "account_name": "Belanja Barang",
+                        "description": "Alat tulis",
+                        "month": 2,
+                        "volume": 1,
+                        "unit": "paket",
+                        "unit_price": 50000,
+                        "amount": 50000,
+                    },
+                    {
+                        "item_id": "rapbs-1",
+                        "activity_code": "02.01",
+                        "activity_name": "Kegiatan",
+                        "account_code": "5.1.02",
+                        "account_name": "Belanja Barang",
+                        "description": "Alat tulis tambahan",
+                        "month": 1,
+                        "volume": 1,
+                        "unit": "paket",
+                        "unit_price": 30000,
+                        "amount": 30000,
+                    },
+                ],
+            }
+        ]
+    }
+
+    synced = spj_client.post("/api/rkas/sync", json=payload)
+    assert synced.status_code == 200
+    assert synced.json()["item_count"] == 3
+    contexts = spj_client.get("/api/rkas")
+    assert contexts.status_code == 200
+    assert contexts.json()["data"] == [
+        {
+            "fiscal_year": 2026,
+            "source_fund_id": "1",
+            "source_fund_name": "BOSP Reguler",
+            "budget_id": "budget-2026-1",
+            "revision": 200,
+            "revision_label": "Perubahan ke-2",
+        }
+    ]
+
+    params = {
+        "fiscal_year": 2026,
+        "source_fund_id": "1",
+        "budget_id": "budget-2026-1",
+    }
+    details = spj_client.get("/api/rkas/items", params=params)
+    assert details.status_code == 200
+    assert [item["month"] for item in details.json()["data"]] == [1, 1, 2]
+    assert [item["amount"] for item in details.json()["data"]] == [200000, 30000, 50000]
+    assert details.json()["context"]["revision_label"] == "Perubahan ke-2"
+
+    payload["data"][0]["items"] = [payload["data"][0]["items"][1]]
+    replaced = spj_client.post("/api/rkas/sync", json=payload)
+    assert replaced.status_code == 200
+    assert replaced.json()["updated_count"] == 1
+    updated_details = spj_client.get("/api/rkas/items", params=params)
+    assert len(updated_details.json()["data"]) == 1
+    assert updated_details.json()["data"][0]["month"] == 2
+
+
+def test_rkas_revision_label_decodes_arkas_revision_counter(spj_client):
+    from main import format_rkas_revision
+
+    assert format_rkas_revision(0) == "Awal"
+    assert format_rkas_revision(100) == "Perubahan ke-1"
+    assert format_rkas_revision(500) == "Perubahan ke-5"
+    assert format_rkas_revision(103) == "Perubahan ke-1 / Pergeseran ke-3"
+
+
+def test_rkas_monthly_uniqueness_migration_allows_duplicate_source_rows(tmp_path):
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, inspect
+
+    migration_path = (
+        BACKEND_DIR
+        / "alembic"
+        / "versions"
+        / "d8f4a2c91b63_allow_duplicate_rkas_month_items.py"
+    )
+    spec = importlib.util.spec_from_file_location("rkas_item_migration", migration_path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'rkas-migration.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE rkas_item (
+                id INTEGER PRIMARY KEY,
+                rkas_anggaran_id INTEGER NOT NULL,
+                item_id VARCHAR NOT NULL,
+                month INTEGER NOT NULL,
+                CONSTRAINT uq_rkas_item_scope_month
+                    UNIQUE (rkas_anggaran_id, item_id, month)
+            )
+            """
+        )
+        context = MigrationContext.configure(connection)
+        with Operations.context(context):
+            migration.upgrade()
+
+        assert not any(
+            constraint["name"] == "uq_rkas_item_scope_month"
+            for constraint in inspect(connection).get_unique_constraints("rkas_item")
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO rkas_item (rkas_anggaran_id, item_id, month) VALUES (1, 'same-item', 5)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO rkas_item (rkas_anggaran_id, item_id, month) VALUES (1, 'same-item', 5)"
+        )
+    engine.dispose()

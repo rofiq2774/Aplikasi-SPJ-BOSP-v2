@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 
 from database import Base
 
@@ -164,6 +164,51 @@ class MasterKegiatanArkas(Base):
     nama_kegiatan = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RkasAnggaran(Base):
+    """Konteks RKAS yang disalin dari ARKAS ke database aplikasi."""
+
+    __tablename__ = "rkas_anggaran"
+    __table_args__ = (
+        UniqueConstraint(
+            "fiscal_year",
+            "source_fund_id",
+            "budget_id",
+            name="uq_rkas_anggaran_scope",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    fiscal_year = Column(Integer, nullable=False)
+    source_fund_id = Column(String, nullable=False)
+    source_fund_name = Column(String, nullable=False, default="")
+    budget_id = Column(String, nullable=False)
+    revision = Column(Integer, nullable=False, default=0)
+    synced_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RkasItem(Base):
+    """Rincian bulanan RKAS yang disimpan secara lokal."""
+
+    __tablename__ = "rkas_item"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rkas_anggaran_id = Column(
+        Integer, ForeignKey("rkas_anggaran.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    item_id = Column(String, nullable=False)
+    activity_code = Column(String, nullable=False, default="")
+    activity_name = Column(String, nullable=False, default="")
+    account_code = Column(String, nullable=False, default="")
+    account_name = Column(String, nullable=False, default="")
+    description = Column(Text, nullable=False, default="")
+    month = Column(Integer, nullable=False)
+    volume = Column(Float, nullable=False, default=0)
+    unit = Column(String, nullable=False, default="")
+    unit_price = Column(Float, nullable=False, default=0)
+    amount = Column(Float, nullable=False, default=0)
+    synced_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class MasterRekeningBelanja(Base):

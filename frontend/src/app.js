@@ -271,6 +271,11 @@ let activeTab = "identitas";
 let fiscalContexts = [];
 let arkasTaxRows = [];
 let arkasTaxLoadRequest = 0;
+let rkasContexts = [];
+let rkasItems = [];
+let rkasSelectedContext = null;
+let rkasReportView = "tahunan";
+let rkasSelectedMonth = "all";
 
 function scopeFilterValue(context) {
   return encodeURIComponent(
@@ -957,6 +962,291 @@ async function syncArkas(contextFilterId = "bku-scope-filter") {
   } catch (error) {
     showToast("Error!", error.message || "Gagal membaca database ARKAS.");
   }
+}
+
+async function syncRkasData() {
+  if (
+    !window.electronAPI ||
+    typeof window.electronAPI.readArkasContexts !== "function" ||
+    typeof window.electronAPI.readArkasBudget !== "function"
+  ) {
+    showToast("Error!", "Fitur sinkronisasi RKAS hanya tersedia di aplikasi desktop.");
+    return;
+  }
+
+  const container = document.getElementById("rkas-list");
+  if (container) {
+    container.innerHTML =
+      '<div style="padding:24px;text-align:center;color:#64748b;">Membaca database ARKAS...</div>';
+  }
+  try {
+    const catalog = await window.electronAPI.readArkasContexts();
+    if (catalog.canceled) {
+      renderRkasContexts();
+      return;
+    }
+    const contexts = catalog.contexts || [];
+    if (!contexts.length) {
+      showToast("Warning!", "Tidak ditemukan anggaran RKAS aktif di database ARKAS.");
+      return;
+    }
+    if (container) {
+      container.innerHTML =
+        `<div style="padding:24px;text-align:center;color:#64748b;">Mengambil rincian ${contexts.length} anggaran RKAS...</div>`;
+    }
+
+    const data = [];
+    for (const context of contexts) {
+      const budget = await window.electronAPI.readArkasBudget({
+        fiscalYear: context.fiscal_year,
+        sourceFundId: context.source_fund_id,
+        budgetId: context.budget_id,
+      });
+      if (budget.canceled) {
+        throw new Error(`Rincian RKAS ${scopeLabel(context)} tidak berhasil dibaca.`);
+      }
+      data.push({
+        ...context,
+        items: budget.items || [],
+      });
+    }
+
+    const response = await apiFetch(`${API_BASE}/rkas/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data }),
+    });
+    const saved = await response.json();
+    if (!response.ok || saved.status !== "success") {
+      throw new Error(saved.detail || "Gagal menyimpan data RKAS ke database aplikasi.");
+    }
+
+    await loadRkasContexts();
+    rkasSelectedContext = null;
+    rkasItems = [];
+    const report = document.getElementById("rkas-report");
+    if (report) report.innerHTML = "";
+    showToast(
+      "Berhasil!",
+      `${saved.context_count} anggaran dan ${saved.item_count} rincian RKAS tersimpan di database aplikasi.`,
+    );
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal menyinkronkan data RKAS.");
+    await loadRkasContexts();
+  }
+}
+
+async function loadRkasContexts() {
+  const container = document.getElementById("rkas-list");
+  if (container) {
+    container.innerHTML =
+      '<div style="padding:24px;text-align:center;color:#64748b;">Memuat RKAS tersimpan...</div>';
+  }
+  try {
+    const response = await apiFetch(`${API_BASE}/rkas`);
+    const result = await response.json();
+    if (!response.ok || result.status !== "success") {
+      throw new Error(result.detail || "Gagal memuat data RKAS tersimpan.");
+    }
+    rkasContexts = result.data || [];
+    renderRkasContexts();
+  } catch (error) {
+    if (container) {
+      container.innerHTML =
+        '<div style="padding:24px;text-align:center;color:#b91c1c;">Data RKAS tersimpan gagal dimuat.</div>';
+    }
+    showToast("Error!", error.message || "Gagal memuat data RKAS tersimpan.");
+  }
+}
+
+function renderRkasContexts() {
+  const container = document.getElementById("rkas-list");
+  if (!container) return;
+  if (!rkasContexts.length) {
+    container.innerHTML =
+      '<div style="padding:24px;text-align:center;color:#64748b;">Belum ada data. Klik "Sinkron Data RKAS" untuk membaca database ARKAS.</div>';
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr>
+          <th>No</th><th>Tahun</th><th>Sumber Dana / Anggaran</th><th>Revisi Anggaran</th><th>Tampilkan</th>
+        </tr></thead>
+        <tbody>${rkasContexts.map((context, index) => `
+          <tr>
+            <td>${index + 1}</td>
+            <td>${idnEscapeHtml(context.fiscal_year)}</td>
+            <td>${idnEscapeHtml(context.source_fund_name || "-")}</td>
+            <td>${idnEscapeHtml(context.revision_label || "Awal")}</td>
+            <td><button class="btn btn-primary btn-sm" onclick="showRkasBudget(${index})">${iconSvg("eye", 14)} Tampilkan</button></td>
+          </tr>`).join("")}</tbody>
+      </table>
+    </div>`;
+}
+
+async function showRkasBudget(index) {
+  const context = rkasContexts[index];
+  if (!context) return;
+
+  const report = document.getElementById("rkas-report");
+  if (report) {
+    report.innerHTML =
+      '<div class="card" style="margin-top:16px;text-align:center;color:#64748b;">Memuat rincian RKAS...</div>';
+  }
+  try {
+    const params = new URLSearchParams({
+      fiscal_year: String(context.fiscal_year),
+      source_fund_id: context.source_fund_id,
+      budget_id: context.budget_id,
+    });
+    const response = await apiFetch(`${API_BASE}/rkas/items?${params}`);
+    const result = await response.json();
+    if (!response.ok || result.status !== "success") {
+      throw new Error(result.detail || "Gagal memuat rincian RKAS tersimpan.");
+    }
+    rkasSelectedContext = result.context;
+    rkasItems = result.data || [];
+    rkasReportView = "tahunan";
+    rkasSelectedMonth = "all";
+    renderRkasReport();
+  } catch (error) {
+    if (report) report.innerHTML = "";
+    showToast("Error!", error.message || "Gagal membaca rincian RKAS.");
+  }
+}
+
+function setRkasReportView(view) {
+  if (!["tahunan", "bulanan", "rekap"].includes(view)) return;
+  rkasReportView = view;
+  renderRkasReport();
+}
+
+function setRkasMonth(month) {
+  rkasSelectedMonth = month;
+  renderRkasReport();
+}
+
+function renderRkasReport() {
+  const container = document.getElementById("rkas-report");
+  if (!container || !rkasSelectedContext) return;
+  const months = [
+    "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+    "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+  ];
+  const monthNames = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+  ];
+  const items = new Map();
+  for (const row of rkasItems) {
+    let item = items.get(row.item_id);
+    if (!item) {
+      item = {
+        activityCode: row.activity_code,
+        activityName: row.activity_name,
+        accountCode: row.account_code,
+        accountName: row.account_name,
+        description: row.description,
+        volume: 0,
+        amount: 0,
+        unit: new Set(),
+      };
+      items.set(row.item_id, item);
+    }
+    item.volume += Number(row.volume) || 0;
+    item.amount += Number(row.amount) || 0;
+    if (row.unit) item.unit.add(row.unit);
+  }
+  const entries = [...items.values()];
+  for (const item of entries) {
+    item.unitPrice = item.volume ? item.amount / item.volume : 0;
+    item.unitLabel = [...item.unit].join(", ") || "-";
+  }
+  const contextLabel =
+    `${rkasSelectedContext.fiscal_year} • ` +
+    `${rkasSelectedContext.source_fund_name || "Sumber dana tidak tersedia"}`;
+
+  let table = "";
+  if (rkasReportView === "tahunan") {
+    table = entries.length
+      ? `<div class="table-scroll"><table class="data-table"><thead><tr>
+          <th>No</th><th>Kode Kegiatan</th><th>Kegiatan</th><th>Kode Rekening</th><th>Uraian</th><th style="text-align:right;">Volume</th><th>Satuan</th><th style="text-align:right;">Harga Satuan</th><th style="text-align:right;">Anggaran Tahunan</th>
+        </tr></thead><tbody>${entries.map((item, index) => `<tr>
+          <td>${index + 1}</td><td>${idnEscapeHtml(item.activityCode || "-")}</td>
+          <td>${idnEscapeHtml(item.activityName || "-")}</td>
+          <td>${idnEscapeHtml(item.accountCode)}${item.accountName ? `<br><small>${idnEscapeHtml(item.accountName)}</small>` : ""}</td>
+          <td>${idnEscapeHtml(item.description || "-")}</td>
+          <td style="text-align:right;white-space:nowrap;">${new Intl.NumberFormat("id-ID").format(item.volume)}</td>
+          <td>${idnEscapeHtml(item.unitLabel)}</td>
+          <td style="text-align:right;white-space:nowrap;">${formatRupiah(item.unitPrice)}</td>
+          <td style="text-align:right;white-space:nowrap;">${formatRupiah(item.amount)}</td>
+        </tr>`).join("")}</tbody></table></div>`
+      : '<div style="padding:24px;text-align:center;color:#64748b;">Tidak ada rincian RKAS untuk anggaran ini.</div>';
+  } else if (rkasReportView === "bulanan") {
+    const monthlyItems = rkasItems.filter(
+      (item) =>
+        rkasSelectedMonth === "all" ||
+        Number(item.month) === Number(rkasSelectedMonth),
+    );
+    table = monthlyItems.length
+      ? `<div class="table-scroll"><table class="data-table"><thead><tr>
+          <th>No</th><th>Bulan</th><th>Kode Kegiatan</th><th>Kegiatan</th><th>Kode Rekening</th><th>Uraian</th><th style="text-align:right;">Volume</th><th>Satuan</th><th style="text-align:right;">Harga Satuan</th><th style="text-align:right;">Anggaran</th>
+        </tr></thead><tbody>${monthlyItems.map((item, index) => `<tr>
+          <td>${index + 1}</td><td>${months[item.month - 1] || "-"}</td>
+          <td>${idnEscapeHtml(item.activity_code || "-")}</td><td>${idnEscapeHtml(item.activity_name || "-")}</td>
+          <td>${idnEscapeHtml(item.account_code)}${item.account_name ? `<br><small>${idnEscapeHtml(item.account_name)}</small>` : ""}</td>
+          <td>${idnEscapeHtml(item.description || "-")}</td>
+          <td style="text-align:right;white-space:nowrap;">${new Intl.NumberFormat("id-ID").format(Number(item.volume) || 0)}</td>
+          <td>${idnEscapeHtml(item.unit || "-")}</td>
+          <td style="text-align:right;white-space:nowrap;">${formatRupiah(Number(item.unit_price) || 0)}</td>
+          <td style="text-align:right;white-space:nowrap;font-weight:600;">${formatRupiah(Number(item.amount) || 0)}</td>
+        </tr>`).join("")}</tbody></table></div>`
+      : '<div style="padding:24px;text-align:center;color:#64748b;">Tidak ada rincian RKAS untuk anggaran ini.</div>';
+  } else {
+    const summaries = [
+      { key: "barang-jasa", label: "Barang dan Jasa" },
+      { key: "modal", label: "Modal" },
+      { key: "lainnya", label: "Lainnya" },
+    ].map((category) => {
+      const selected = entries.filter((item) =>
+        category.key === "barang-jasa"
+          ? item.accountCode.startsWith("5.1")
+          : category.key === "modal"
+            ? item.accountCode.startsWith("5.2")
+            : !item.accountCode.startsWith("5.1") && !item.accountCode.startsWith("5.2"),
+      );
+      return {
+        ...category,
+        count: selected.length,
+        amount: selected.reduce((sum, item) => sum + item.amount, 0),
+      };
+    });
+    table = `<div class="table-scroll"><table class="data-table"><thead><tr>
+      <th>No</th><th>Jenis Belanja</th><th>Jumlah Rincian</th><th style="text-align:right;">Total Anggaran</th>
+    </tr></thead><tbody>${summaries.map((summary, index) => `<tr>
+      <td>${index + 1}</td><td>${summary.label}</td><td>${summary.count}</td>
+      <td style="text-align:right;white-space:nowrap;">${formatRupiah(summary.amount)}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+  }
+
+  const views = [
+    ["tahunan", "Tahunan"],
+    ["bulanan", "Bulanan"],
+    ["rekap", "Rekap Barang/Jasa & Modal"],
+  ];
+  container.innerHTML = `
+    <div class="card" style="margin-top:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <div><h3 style="margin:0;">RKAS ${idnEscapeHtml(contextLabel)}</h3><small style="color:#64748b;">${idnEscapeHtml(rkasSelectedContext.revision_label || "Awal")}</small></div>
+        <div class="scope-filter-toolbar" style="margin:0;">
+          ${views.map(([view, label]) => `<button class="btn ${rkasReportView === view ? "btn-primary" : "btn-secondary"} btn-sm" aria-pressed="${rkasReportView === view}" onclick="setRkasReportView('${view}')">${label}</button>`).join("")}
+          ${rkasReportView === "bulanan" ? `<select class="form-control" aria-label="Filter bulan RKAS" onchange="setRkasMonth(this.value)"><option value="all"${rkasSelectedMonth === "all" ? " selected" : ""}>Semua bulan</option>${monthNames.map((month, index) => `<option value="${index + 1}"${String(index + 1) === rkasSelectedMonth ? " selected" : ""}>${month}</option>`).join("")}</select>` : ""}
+        </div>
+      </div>
+      ${table}
+    </div>`;
 }
 
 function renderBkuShopIdentity(item) {
@@ -2287,6 +2577,7 @@ const TAB_TITLES = {
   "data-bku": "Data BKU",
   kwitansi: "Daftar SPJ",
   pajak: "Rekap Pajak",
+  rkas: "RKAS",
   rekap: "Rekap Belanja",
   update: "Pembaruan Aplikasi",
   dukung: "Dukung Kami",
@@ -2313,7 +2604,7 @@ window.switchTab = function (tab) {
   const searchInputPre = document.getElementById("globalSearchInput");
   if (
     searchInputPre &&
-    ["identitas", "rekap", "pajak", "bku", "update", "dukung"].includes(tab)
+    ["identitas", "rekap", "pajak", "rkas", "bku", "update", "dukung"].includes(tab)
   ) {
     searchInputPre.value = "";
   }
@@ -2366,6 +2657,11 @@ window.switchTab = function (tab) {
       case "pajak":
         if (searchContainer) searchContainer.classList.add("hidden");
         loadRekapPajak();
+        break;
+
+      case "rkas":
+        if (searchContainer) searchContainer.classList.add("hidden");
+        loadRkasContexts();
         break;
 
       case "identitas":
@@ -6036,6 +6332,7 @@ function initApp() {
     { section: "Transaksi" },
     { tab: "master", label: "Referensi Kegiatan", icon: "book" },
     { tab: "rekening", label: "Rekening Belanja", icon: "briefcase" },
+    { tab: "rkas", label: "RKAS", icon: "calendar" },
     { tab: "bku", label: "Upload BKU", icon: "fileText" },
     { tab: "data-bku", label: "Data BKU", icon: "barChart" },
     { tab: "kwitansi", label: "Daftar SPJ", icon: "receipt" },
@@ -6576,6 +6873,22 @@ function initApp() {
     </div>
 </div>
 
+<div id="tab-rkas" class="tab-content">
+    <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+            <div>
+                <h3 style="margin:0;">${iconSvg("book", 17)} Data RKAS</h3>
+                <small style="color:#64748b;">Sinkronkan dari ARKAS untuk menyimpan anggaran dan rincian ke database aplikasi.</small>
+            </div>
+            <button class="btn btn-primary" onclick="syncRkasData()">${iconSvg("refreshCw", 15)} Sinkron Data RKAS</button>
+        </div>
+        <div id="rkas-list" class="table-container">
+            <div style="padding:24px;text-align:center;color:#64748b;">Klik "Sinkron Data RKAS" untuk membaca database ARKAS.</div>
+        </div>
+        <div id="rkas-report"></div>
+    </div>
+</div>
+
 <div id="tab-rekap" class="tab-content">
     <div class="card" style="margin-top:20px;">
         <h3 style="margin-top:0">${iconSvg("trendingUp", 17)} Rekap Belanja</h3>
@@ -6648,6 +6961,10 @@ window.switchTab = switchTab;
 window.savePengaturan = savePengaturan;
 window.uploadBKU = uploadBKU;
 window.syncArkas = syncArkas;
+window.syncRkasData = syncRkasData;
+window.showRkasBudget = showRkasBudget;
+window.setRkasReportView = setRkasReportView;
+window.setRkasMonth = setRkasMonth;
 window.changeArkasDatabase = changeArkasDatabase;
 window.syncMasterKegiatanArkas = syncMasterKegiatanArkas;
 window.saveTransaksi = saveTransaksi;

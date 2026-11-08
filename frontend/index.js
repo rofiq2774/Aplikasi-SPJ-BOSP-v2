@@ -8,6 +8,7 @@ const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
 const {
   readArkasActivities,
+  readArkasBudget,
   readArkasContexts,
   readArkasTaxRecap,
   readArkasTransactions,
@@ -729,6 +730,29 @@ ipcMain.handle("read-arkas-contexts", async (event) => {
   if (!databasePath) return { canceled: true, contexts: [] };
   const result = await readArkasContexts(databasePath);
   saveArkasDatabasePath(databasePath);
+  return {
+    canceled: false,
+    sourceName: path.basename(databasePath),
+    ...result,
+  };
+});
+
+ipcMain.handle("read-arkas-budget", async (event, filters) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  let databasePath = settings?.path;
+  if (!databasePath || !fs.existsSync(databasePath)) {
+    databasePath = await selectArkasDatabase(databasePath);
+  }
+  if (!databasePath) return { canceled: true, items: [], returned: 0 };
+
+  const result = await readArkasBudget(databasePath, filters);
+  saveArkasDatabasePath(databasePath);
+  writeAppLog(
+    "info",
+    "frontend-main",
+    `RKAS ARKAS tahun ${result.filters.fiscalYear} dibaca; ditemukan ${result.returned} rincian periode.`,
+  );
   return {
     canceled: false,
     sourceName: path.basename(databasePath),

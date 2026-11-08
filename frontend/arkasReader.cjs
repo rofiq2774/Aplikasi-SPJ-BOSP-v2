@@ -412,6 +412,127 @@ function buildActivitiesQuery(db, filters) {
   );
 }
 
+function buildRkasBudgetQuery(db, filters) {
+  const rapbsColumns = getTableColumns(db, "rapbs");
+  requireColumns("rapbs", rapbsColumns, [
+    "id_rapbs",
+    "id_anggaran",
+    "id_ref_kode",
+    "kode_rekening",
+    "uraian",
+    "soft_delete",
+  ]);
+  const periodColumns = getTableColumns(db, "rapbs_periode");
+  requireColumns("rapbs_periode", periodColumns, [
+    "id_rapbs_periode",
+    "id_rapbs",
+    "id_periode",
+    "volume",
+    "satuan",
+    "harga_satuan",
+    "jumlah",
+    "soft_delete",
+  ]);
+  const rekeningColumns = getTableColumns(db, "ref_rekening");
+  requireColumns("ref_rekening", rekeningColumns, [
+    "kode_rekening",
+    "tahun",
+    "rekening",
+  ]);
+  const kegiatanColumns = getTableColumns(db, "ref_kode");
+  requireColumns("ref_kode", kegiatanColumns, [
+    "id_ref_kode",
+    "id_kode",
+    "uraian_kode",
+  ]);
+
+  const description = rapbsColumns.has("uraian_text")
+    ? `COALESCE(NULLIF(trim(r."uraian_text"), ''), trim(r."uraian"))`
+    : `trim(r."uraian")`;
+  const activityCode = kegiatanColumns.has("id_kode")
+    ? `trim(CAST(rk."id_kode" AS TEXT))`
+    : `''`;
+
+  return db.query(
+    `SELECT r."id_rapbs" AS "itemId",
+            ${activityCode} AS "activityCode",
+            trim(COALESCE(rk."uraian_kode", '')) AS "activityName",
+            trim(r."kode_rekening") AS "accountCode",
+            trim(COALESCE(rr."rekening", '')) AS "accountName",
+            ${description} AS "description",
+            rp."id_periode" AS "periodId",
+            rp."volume" AS "volume",
+            rp."satuan" AS "unit",
+            rp."harga_satuan" AS "unitPrice",
+            rp."jumlah" AS "amount"
+       FROM "rapbs" r
+       INNER JOIN "rapbs_periode" rp
+         ON rp."id_rapbs" = r."id_rapbs"
+       LEFT JOIN "ref_kode" rk
+         ON rk."id_ref_kode" = r."id_ref_kode"
+       LEFT JOIN "ref_rekening" rr
+         ON rr."kode_rekening" = r."kode_rekening"
+        AND rr."tahun" = ?
+      WHERE r."id_anggaran" = ?
+        AND r."soft_delete" = 0
+        AND rp."soft_delete" = 0
+      ORDER BY activityCode, accountCode, "itemId", "periodId"`,
+    [filters.fiscalYear, filters.budgetId],
+  );
+}
+
+function mapArkasBudgetRows(rows) {
+  const monthByPeriodId = new Map(
+    Array.from({ length: 12 }, (_, index) => [81 + index, index + 1]),
+  );
+  return rows.map((row) => {
+    const month = monthByPeriodId.get(Number(row.periodId));
+    if (!month) {
+      throw new Error(`Periode anggaran ARKAS tidak dikenali: ${row.periodId}.`);
+    }
+    return {
+      item_id: String(row.itemId ?? ""),
+      activity_code: String(row.activityCode || "").trim(),
+      activity_name: String(row.activityName || "").trim(),
+      account_code: String(row.accountCode || "").trim(),
+      account_name: String(row.accountName || "").trim(),
+      description: String(row.description || "").trim(),
+      month,
+      volume: toAmount(row.volume),
+      unit: String(row.unit || "").trim(),
+      unit_price: toAmount(row.unitPrice),
+      amount: toAmount(row.amount),
+    };
+  });
+}
+
+async function readArkasBudget(databasePath, selectedFilters) {
+  const filters = normalizeFilters(selectedFilters);
+  if (!filters.budgetId) {
+    throw new Error("Pilih anggaran sebelum menampilkan data RKAS.");
+  }
+  sqliteInitialization ||= initSQLite();
+  const sqlite = await sqliteInitialization;
+  const module = sqlite.getModule();
+  const virtualPath = `/arkas-rkas-${randomUUID()}.db`;
+  const encrypted = !isStandardSqliteDatabase(databasePath);
+  let db;
+  try {
+    module.FS.writeFile(virtualPath, fs.readFileSync(databasePath));
+    db = openDatabase(sqlite, virtualPath, encrypted);
+    const rows = mapArkasBudgetRows(buildRkasBudgetQuery(db, filters));
+    return { items: rows, returned: rows.length, filters };
+  } finally {
+    try {
+      db?.close();
+    } finally {
+      if (module.FS.analyzePath(virtualPath).exists) {
+        module.FS.unlink(virtualPath);
+      }
+    }
+  }
+}
+
 function buildTaxRecapQuery(db, filters) {
   const kasColumns = getTableColumns(db, "kas_umum");
   requireColumns("kas_umum", kasColumns, [
@@ -866,9 +987,11 @@ async function readArkasContexts(databasePath) {
 
 module.exports = {
   readArkasActivities,
+  readArkasBudget,
   readArkasContexts,
   readArkasTaxRecap,
   readArkasTransactions,
+  mapArkasBudgetRows,
   mapTaxRecapRow,
   normalizeFilters,
 };

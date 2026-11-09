@@ -3918,6 +3918,19 @@ async def sync_rkas_data(
         for incoming, (fiscal_year, source_fund_id, budget_id) in zip(
             request.data, incoming_keys
         ):
+            unique_items = {}
+            for item in incoming.items:
+                unique_items[(item.item_id.strip(), item.month)] = item
+            if len(unique_items) != len(incoming.items):
+                logger.warning(
+                    "Duplikat rincian RKAS diabaikan saat sinkronisasi: "
+                    "tahun=%s sumber_dana=%s anggaran=%s jumlah=%s",
+                    fiscal_year,
+                    source_fund_id,
+                    budget_id,
+                    len(incoming.items) - len(unique_items),
+                )
+
             result = await db.execute(
                 select(RkasAnggaran).where(
                     RkasAnggaran.fiscal_year == fiscal_year,
@@ -3958,9 +3971,9 @@ async def sync_rkas_data(
                     unit_price=item.unit_price,
                     amount=item.amount,
                 )
-                for item in incoming.items
+                for item in unique_items.values()
             ])
-            item_count += len(incoming.items)
+            item_count += len(unique_items)
 
         await db.commit()
         return {

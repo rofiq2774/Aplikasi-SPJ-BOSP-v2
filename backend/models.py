@@ -192,6 +192,14 @@ class RkasItem(Base):
     """Rincian bulanan RKAS yang disimpan secara lokal."""
 
     __tablename__ = "rkas_item"
+    __table_args__ = (
+        UniqueConstraint(
+            "rkas_anggaran_id",
+            "item_id",
+            "month",
+            name="uq_rkas_item_scope_month",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     rkas_anggaran_id = Column(

@@ -46,6 +46,50 @@ test("maps ARKAS budget period ids to calendar months", () => {
   assert.equal(items[0].description, "Alat tulis");
 });
 
+test("keeps the newest active row for duplicate RKAS item and month", () => {
+  const items = mapArkasBudgetRows([
+    {
+      itemId: "item-1",
+      periodRowId: "period-old",
+      periodUpdatedAt: "2026-03-10 10:00:00",
+      periodId: 85,
+      volume: 2,
+      unit: "paket",
+      unitPrice: 100000,
+      amount: 200000,
+    },
+    {
+      itemId: "item-1",
+      periodRowId: "period-new",
+      periodUpdatedAt: "2026-03-10 11:00:00",
+      periodId: 85,
+      volume: 1,
+      unit: "paket",
+      unitPrice: 50000,
+      amount: 50000,
+    },
+    {
+      itemId: "item-1",
+      periodRowId: "period-dec",
+      periodUpdatedAt: "2026-03-10 12:00:00",
+      periodId: 92,
+      volume: 3,
+      unit: "paket",
+      unitPrice: 25000,
+      amount: 75000,
+    },
+  ]);
+
+  assert.equal(items.length, 2);
+  assert.deepEqual(
+    items.map(({ month, volume, amount }) => ({ month, volume, amount })),
+    [
+      { month: 5, volume: 1, amount: 50000 },
+      { month: 12, volume: 3, amount: 75000 },
+    ],
+  );
+});
+
 test("rejects ARKAS budget periods outside the known annual period range", () => {
   assert.throws(
     () => mapArkasBudgetRows([{ itemId: 1, periodId: 99 }]),

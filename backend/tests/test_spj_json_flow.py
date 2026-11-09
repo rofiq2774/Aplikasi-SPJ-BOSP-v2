@@ -1991,7 +1991,7 @@ def test_rkas_sync_persists_context_and_monthly_items(spj_client):
 
     synced = spj_client.post("/api/rkas/sync", json=payload)
     assert synced.status_code == 200
-    assert synced.json()["item_count"] == 3
+    assert synced.json()["item_count"] == 2
     contexts = spj_client.get("/api/rkas")
     assert contexts.status_code == 200
     assert contexts.json()["data"] == [
@@ -2012,8 +2012,8 @@ def test_rkas_sync_persists_context_and_monthly_items(spj_client):
     }
     details = spj_client.get("/api/rkas/items", params=params)
     assert details.status_code == 200
-    assert [item["month"] for item in details.json()["data"]] == [1, 1, 2]
-    assert [item["amount"] for item in details.json()["data"]] == [200000, 30000, 50000]
+    assert [item["month"] for item in details.json()["data"]] == [1, 2]
+    assert [item["amount"] for item in details.json()["data"]] == [30000, 50000]
     assert details.json()["context"]["revision_label"] == "Perubahan ke-2"
 
     payload["data"][0]["items"] = [payload["data"][0]["items"][1]]
@@ -2079,4 +2079,67 @@ def test_rkas_monthly_uniqueness_migration_allows_duplicate_source_rows(tmp_path
         connection.exec_driver_sql(
             "INSERT INTO rkas_item (rkas_anggaran_id, item_id, month) VALUES (1, 'same-item', 5)"
         )
+    engine.dispose()
+
+
+def test_rkas_deduplication_migration_keeps_one_row_per_month(tmp_path):
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, inspect
+    from sqlalchemy.exc import IntegrityError
+
+    migration_path = (
+        BACKEND_DIR
+        / "alembic"
+        / "versions"
+        / "e3a6c81d2f50_deduplicate_rkas_items.py"
+    )
+    spec = importlib.util.spec_from_file_location("rkas_dedup_migration", migration_path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'rkas-dedup-migration.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE rkas_item (
+                id INTEGER PRIMARY KEY,
+                rkas_anggaran_id INTEGER NOT NULL,
+                item_id VARCHAR NOT NULL,
+                month INTEGER NOT NULL,
+                amount FLOAT NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO rkas_item
+                (id, rkas_anggaran_id, item_id, month, amount)
+            VALUES
+                (1, 10, 'same-item', 5, 100),
+                (2, 10, 'same-item', 5, 200),
+                (3, 10, 'same-item', 6, 300)
+            """
+        )
+        context = MigrationContext.configure(connection)
+        with Operations.context(context):
+            migration.upgrade()
+
+        assert connection.exec_driver_sql(
+            "SELECT month, amount FROM rkas_item ORDER BY month"
+        ).all() == [(5, 200.0), (6, 300.0)]
+        assert any(
+            constraint["column_names"] == ["rkas_anggaran_id", "item_id", "month"]
+            for constraint in inspect(connection).get_unique_constraints("rkas_item")
+        )
+        with pytest.raises(IntegrityError):
+            connection.exec_driver_sql(
+                """
+                INSERT INTO rkas_item
+                    (rkas_anggaran_id, item_id, month, amount)
+                VALUES (10, 'same-item', 5, 999)
+                """
+            )
     engine.dispose()

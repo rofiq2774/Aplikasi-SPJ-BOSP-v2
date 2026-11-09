@@ -460,6 +460,8 @@ function buildRkasBudgetQuery(db, filters) {
             trim(r."kode_rekening") AS "accountCode",
             trim(COALESCE(rr."rekening", '')) AS "accountName",
             ${description} AS "description",
+            rp."id_rapbs_periode" AS "periodRowId",
+            ${selectColumn("rp", "last_update", "periodUpdatedAt", periodColumns)},
             rp."id_periode" AS "periodId",
             rp."volume" AS "volume",
             rp."satuan" AS "unit",
@@ -485,12 +487,13 @@ function mapArkasBudgetRows(rows) {
   const monthByPeriodId = new Map(
     Array.from({ length: 12 }, (_, index) => [81 + index, index + 1]),
   );
-  return rows.map((row) => {
+  const uniqueRows = new Map();
+  for (const row of rows) {
     const month = monthByPeriodId.get(Number(row.periodId));
     if (!month) {
       throw new Error(`Periode anggaran ARKAS tidak dikenali: ${row.periodId}.`);
     }
-    return {
+    const item = {
       item_id: String(row.itemId ?? ""),
       activity_code: String(row.activityCode || "").trim(),
       activity_name: String(row.activityName || "").trim(),
@@ -502,8 +505,21 @@ function mapArkasBudgetRows(rows) {
       unit: String(row.unit || "").trim(),
       unit_price: toAmount(row.unitPrice),
       amount: toAmount(row.amount),
+      source_period_id: String(row.periodRowId ?? ""),
+      source_updated_at: String(row.periodUpdatedAt || ""),
     };
-  });
+    const key = JSON.stringify([item.item_id, item.month]);
+    const existing = uniqueRows.get(key);
+    if (
+      !existing ||
+      item.source_updated_at > existing.source_updated_at ||
+      (item.source_updated_at === existing.source_updated_at &&
+        item.source_period_id.localeCompare(existing.source_period_id) > 0)
+    ) {
+      uniqueRows.set(key, item);
+    }
+  }
+  return [...uniqueRows.values()].map(({ source_period_id, source_updated_at, ...item }) => item);
 }
 
 async function readArkasBudget(databasePath, selectedFilters) {

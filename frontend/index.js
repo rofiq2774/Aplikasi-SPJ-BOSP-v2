@@ -34,7 +34,7 @@ function resolveAppLogPath() {
   return path.join(__dirname, "..", "backend", "app.log");
 }
 
-// Penanda revisi kode lifecycle backend; muncul di app.log agar jelas versi kode yang berjalan.
+// Muncul di app.log untuk memastikan revisi kode yang berjalan.
 const BACKEND_LIFECYCLE_REV = "2026-11-17-zombie-fix-r2";
 
 let APP_LOG_PATH = null;
@@ -114,11 +114,10 @@ let mainWindow = null;
 let backendShutdownPromise = null;
 let backendShutdownComplete = false;
 let backendShutdownInProgress = false;
-// Diset true begitu aplikasi mulai menutup, supaya loop startup tidak memunculkan backend baru.
+// Mencegah loop startup menjalankan backend baru saat aplikasi menutup.
 let isQuitting = false;
 
-// Jaring pengaman sinkron: dipanggil saat 'quit' dan 'exit' agar backend tidak
-// menjadi proses yatim bila stopBackend() async belum sempat selesai.
+// Mematikan backend secara sinkron bila stopBackend() belum sempat selesai.
 function killBackendSync() {
   const backend = pyProcess;
   if (!backend || !backend.pid) return;

@@ -2143,3 +2143,172 @@ def test_rkas_deduplication_migration_keeps_one_row_per_month(tmp_path):
                 """
             )
     engine.dispose()
+
+
+def test_arkas_item_references_are_saved_and_upserted_by_account_and_item(spj_client):
+    payload = {
+        "data": [
+            {
+                "fiscal_year": 2026,
+                "source_fund_id": "1",
+                "source_fund_name": "BOSP Reguler",
+                "kode_rekening": "5.1.02.01",
+                "id_barang": "item-001",
+                "nama_barang": "Kertas A4",
+                "satuan": "rim",
+                "harga_terendah": 45000,
+                "harga_tertinggi": 60000,
+            },
+            {
+                "fiscal_year": 2026,
+                "source_fund_id": "1",
+                "source_fund_name": "BOSP Reguler",
+                "kode_rekening": "5.2.02.01",
+                "id_barang": "item-001",
+                "nama_barang": "Kertas A4",
+                "satuan": "rim",
+                "harga_terendah": 45000,
+                "harga_tertinggi": 60000,
+            },
+        ]
+    }
+
+    synced = spj_client.post("/api/master-barang-arkas/sync-arkas", json=payload)
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["created_count"] == 2
+
+    update = {
+        **payload,
+        "data": [
+            {
+                **payload["data"][0],
+                "harga_terendah": 50000,
+            }
+        ],
+    }
+    synced_again = spj_client.post(
+        "/api/master-barang-arkas/sync-arkas",
+        json=update,
+    )
+    assert synced_again.status_code == 200, synced_again.text
+    assert synced_again.json()["updated_count"] == 1
+
+    response = spj_client.get(
+        "/api/master-barang-arkas",
+        params={"fiscal_year": "2026", "source_fund_id": "1"},
+    )
+    assert response.status_code == 200, response.text
+    rows = response.json()["data"]
+    assert len(rows) == 2
+    assert {
+        (row["kode_rekening"], row["id_barang"])
+        for row in rows
+    } == {
+        ("5.1.02.01", "item-001"),
+        ("5.2.02.01", "item-001"),
+    }
+    assert next(row for row in rows if row["kode_rekening"] == "5.1.02.01")[
+        "harga_terendah"
+    ] == 50000
+
+
+def test_arkas_item_reference_sync_rejects_mixed_scope(spj_client):
+    response = spj_client.post(
+        "/api/master-barang-arkas/sync-arkas",
+        json={
+            "data": [
+                {
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "id_barang": "item-001",
+                    "nama_barang": "Barang A",
+                },
+                {
+                    "fiscal_year": 2026,
+                    "source_fund_id": "2",
+                    "id_barang": "item-002",
+                    "nama_barang": "Barang B",
+                },
+            ]
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_arkas_item_reference_sync_handles_multiple_insert_batches(spj_client):
+    response = spj_client.post(
+        "/api/master-barang-arkas/sync-arkas",
+        json={
+            "data": [
+                {
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "source_fund_name": "BOSP Reguler",
+                    "kode_rekening": "5.1.02.01",
+                    "id_barang": f"item-{index}",
+                    "nama_barang": f"Barang {index}",
+                    "satuan": "buah",
+                    "harga_terendah": 1000,
+                    "harga_tertinggi": 2000,
+                }
+                for index in range(1001)
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created_count"] == 1001
+    assert response.json()["total"] == 1001
+
+
+def test_master_barang_arkas_migration_creates_scoped_unique_table(tmp_path):
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, inspect
+    from sqlalchemy.exc import IntegrityError
+
+    migration_path = (
+        BACKEND_DIR
+        / "alembic"
+        / "versions"
+        / "f4b7c92d1a63_add_master_barang_arkas.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "master_barang_arkas_migration",
+        migration_path,
+    )
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'master-barang-migration.db'}")
+    with engine.begin() as connection:
+        context = MigrationContext.configure(connection)
+        with Operations.context(context):
+            migration.upgrade()
+
+        assert "master_barang_arkas" in inspect(connection).get_table_names()
+        assert any(
+            constraint["name"] == "uq_master_barang_arkas_scope_item"
+            for constraint in inspect(connection).get_unique_constraints(
+                "master_barang_arkas"
+            )
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO master_barang_arkas
+                (fiscal_year, source_fund_id, source_fund_name, kode_rekening,
+                 id_barang, nama_barang, satuan)
+            VALUES (2026, '1', 'BOSP', '5.1', 'item-1', 'Barang', 'buah')
+            """
+        )
+        with pytest.raises(IntegrityError):
+            connection.exec_driver_sql(
+                """
+                INSERT INTO master_barang_arkas
+                    (fiscal_year, source_fund_id, source_fund_name, kode_rekening,
+                     id_barang, nama_barang, satuan)
+                VALUES (2026, '1', 'BOSP', '5.1', 'item-1', 'Barang', 'buah')
+                """
+            )
+    engine.dispose()

@@ -266,6 +266,12 @@ let pengaturan = {
   alamat_sekolah: "",
 };
 let masterKegiatan = [];
+let masterKegiatanVisible = [];
+let masterBarangArkas = [];
+let masterBarangArkasVisible = [];
+let masterBarangArkasLoaded = false;
+let masterBarangArkasPage = 0;
+const MASTER_BARANG_PAGE_SIZE = 100;
 let masterRekeningBelanja = [];
 let activeTab = "identitas";
 let fiscalContexts = [];
@@ -557,6 +563,46 @@ async function loadMasterKegiatan() {
     }
   } catch (err) {
     showToast("Error loading referensi kegiatan:", err);
+  }
+}
+
+async function loadMasterBarangArkas() {
+  try {
+    const response = await apiFetch(`${API_BASE}/master-barang-arkas`);
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || "Gagal memuat referensi barang.");
+    }
+    masterBarangArkas = result.data || [];
+    masterBarangArkasLoaded = true;
+    const scopeSelect = document.getElementById("barang-scope-filter");
+    if (scopeSelect) {
+      const previous = scopeSelect.value || "all";
+      const scopes = [
+        ...new Map(
+          masterBarangArkas.map((item) => [
+            `${item.fiscal_year}:${item.source_fund_id}`,
+            item,
+          ]),
+        ).values(),
+      ];
+      scopeSelect.replaceChildren(
+        new Option("Semua tahun / sumber dana", "all"),
+        ...scopes.map(
+          (item) =>
+            new Option(
+              `${item.fiscal_year} • ${item.source_fund_name || "Sumber dana"}`,
+              scopeFilterValue(item),
+            ),
+        ),
+      );
+      if ([...scopeSelect.options].some((option) => option.value === previous)) {
+        scopeSelect.value = previous;
+      }
+    }
+    renderMasterBarangArkas(0);
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal memuat referensi barang.");
   }
 }
 
@@ -2085,23 +2131,17 @@ async function previewKwitansi(id) {
 }
 
 async function syncMasterKegiatanArkas() {
-  if (typeof window.electronAPI?.readArkasActivities !== "function") {
+  if (
+    typeof window.electronAPI?.readArkasActivities !== "function" ||
+    typeof window.electronAPI?.readArkasActivityContexts !== "function"
+  ) {
     showToast("Error!", "Sinkron referensi ARKAS hanya tersedia di aplikasi desktop.");
     return;
   }
-  showToast("Info!", "Membaca referensi kegiatan dari ARKAS...");
+  showToast("Info!", "Membaca referensi kegiatan ARKAS, termasuk anggaran draft...");
   try {
-    const catalog = await window.electronAPI.readArkasContexts();
+    const catalog = await window.electronAPI.readArkasActivityContexts();
     if (catalog.canceled) return;
-    fiscalContexts = [
-      ...new Map(
-        [...fiscalContexts, ...(catalog.contexts || [])].map((item) => [
-          `${item.fiscal_year}:${item.source_fund_id}:${item.budget_id}`,
-          item,
-        ]),
-      ).values(),
-    ];
-    populateFiscalScopeFilters();
     const scopeOptions = [
       ...new Map(
         (catalog.contexts || []).map((item) => [
@@ -2111,7 +2151,7 @@ async function syncMasterKegiatanArkas() {
       ).values(),
     ];
     if (!scopeOptions.length) {
-      showToast("Warning!", "Tidak ditemukan tahun dan sumber dana ARKAS aktif.");
+      showToast("Warning!", "Tidak ditemukan konteks anggaran ARKAS, termasuk draft.");
       return;
     }
     let context = selectedArkasContext(
@@ -2163,10 +2203,202 @@ async function syncMasterKegiatanArkas() {
       "Berhasil!",
       `${result.created_count} kegiatan ditambahkan, ` +
         `${result.updated_count} diperbarui, ${result.unchanged_count} tetap. ` +
-        `Referensi lokal yang tidak ada di ARKAS tidak dihapus.`,
+        `Referensi lokal yang tidak ada di ARKAS tidak dihapus. Data kegiatan dari anggaran draft juga disertakan.`,
     );
   } catch (error) {
     showToast("Error!", error.message || "Gagal membaca referensi kegiatan ARKAS.");
+  }
+}
+
+function exportMasterKegiatanExcel() {
+  if (!masterKegiatanVisible.length) {
+    showToast("Warning!", "Tidak ada data referensi kegiatan untuk diekspor.");
+    return;
+  }
+
+  const rows = masterKegiatanVisible.map((item) => ({
+    "Kode Kegiatan": item.kode_kegiatan || "",
+    "Nama Kegiatan": item.nama_kegiatan || "",
+    Tahun: item.fiscal_year ?? "",
+    "Sumber Dana": item.source_fund_name || "Referensi lokal",
+  }));
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  worksheet["!cols"] = [
+    { wch: 24 },
+    { wch: 64 },
+    { wch: 12 },
+    { wch: 28 },
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Referensi Kegiatan");
+  XLSX.writeFile(
+    workbook,
+    `Referensi_Kegiatan_${new Date().toISOString().slice(0, 10)}.xlsx`,
+  );
+  showToast("Berhasil!", `${rows.length} referensi kegiatan diekspor ke Excel.`);
+}
+
+async function syncMasterBarangArkas() {
+  if (
+    typeof window.electronAPI?.readArkasActivityContexts !== "function" ||
+    typeof window.electronAPI?.readArkasReferenceBarang !== "function"
+  ) {
+    showToast("Error!", "Sinkron referensi barang ARKAS hanya tersedia di aplikasi desktop.");
+    return;
+  }
+  const syncButton = document.getElementById("btn-sync-barang-arkas");
+  const syncStatus = document.getElementById("barang-sync-status");
+  if (syncButton) syncButton.disabled = true;
+  if (syncStatus) syncStatus.textContent = "Membaca referensi barang dari database ARKAS...";
+  showToast("Info!", "Membaca referensi barang dari database ARKAS...");
+  try {
+    const catalog = await window.electronAPI.readArkasActivityContexts();
+    if (catalog.canceled) {
+      if (syncStatus) syncStatus.textContent = "Sinkronisasi dibatalkan.";
+      return;
+    }
+    const contexts = [
+      ...new Map(
+        (catalog.contexts || []).map((item) => [
+          `${item.fiscal_year}:${item.source_fund_id}`,
+          item,
+        ]),
+      ).values(),
+    ];
+    if (!contexts.length) {
+      showToast("Warning!", "Tidak ditemukan konteks tahun anggaran dan sumber dana di ARKAS.");
+      if (syncStatus) syncStatus.textContent = "Konteks anggaran ARKAS tidak ditemukan.";
+      return;
+    }
+
+    let context = selectedArkasContext(
+      "barang-scope-filter",
+      contexts,
+      false,
+    );
+    if (!context) {
+      context = await chooseArkasContext(
+        contexts,
+        "Pilih tahun dan sumber dana referensi barang",
+      );
+    }
+    if (!context) {
+      if (syncStatus) syncStatus.textContent = "Sinkronisasi dibatalkan.";
+      return;
+    }
+
+    const imported = await window.electronAPI.readArkasReferenceBarang({
+      fiscalYear: context.fiscal_year,
+      sourceFundId: context.source_fund_id,
+      sourceFundName: context.source_fund_name,
+    });
+    if (imported.canceled) {
+      if (syncStatus) syncStatus.textContent = "Sinkronisasi dibatalkan.";
+      return;
+    }
+    if (!imported.items?.length) {
+      if (syncStatus) {
+        syncStatus.textContent =
+          `Tidak ada referensi barang aktif untuk tahun ${context.fiscal_year}.`;
+      }
+      showToast(
+        "Warning!",
+        `Tidak ditemukan referensi barang aktif untuk tahun anggaran ${context.fiscal_year}.`,
+      );
+      return;
+    }
+
+    if (syncStatus) {
+      syncStatus.textContent =
+        `Menyimpan ${imported.items.length.toLocaleString("id-ID")} barang ke database aplikasi...`;
+    }
+    const response = await apiFetch(
+      `${API_BASE}/master-barang-arkas/sync-arkas`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: imported.items }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || "Gagal menyimpan referensi barang.");
+    }
+    await loadMasterBarangArkas();
+    const scopeSelect = document.getElementById("barang-scope-filter");
+    if (scopeSelect) {
+      scopeSelect.value = scopeFilterValue({ ...context, budget_id: "" });
+      renderMasterBarangArkas(0);
+    }
+    if (syncStatus) {
+      syncStatus.textContent =
+        `Sinkron selesai: ${result.total.toLocaleString("id-ID")} barang untuk ${context.fiscal_year}.`;
+    }
+    showToast(
+      "Berhasil!",
+      `${result.created_count} barang ditambahkan, ${result.updated_count} diperbarui, ` +
+        `${result.unchanged_count} tetap. Data sudah disimpan di database aplikasi.`,
+    );
+  } catch (error) {
+    if (syncStatus) {
+      syncStatus.textContent =
+        `Sinkronisasi gagal: ${error.message || "Terjadi kesalahan."}`;
+    }
+    showToast("Error!", error.message || "Gagal menyinkronkan referensi barang ARKAS.");
+  } finally {
+    if (syncButton) syncButton.disabled = false;
+  }
+}
+
+function exportMasterBarangArkasExcel() {
+  if (!masterBarangArkasVisible.length) {
+    showToast("Warning!", "Tidak ada referensi barang untuk diekspor.");
+    return;
+  }
+  const rows = masterBarangArkasVisible.map((item) => ({
+    "Tahun Anggaran": item.fiscal_year,
+    "Sumber Dana": item.source_fund_name || "",
+    "Kode Rekening": item.kode_rekening || "",
+    "ID Barang": item.id_barang || "",
+    "Nama Barang": item.nama_barang || "",
+    Satuan: item.satuan || "",
+    "Harga Terendah": item.harga_terendah ?? "",
+    "Harga Tertinggi": item.harga_tertinggi ?? "",
+  }));
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  worksheet["!cols"] = [
+    { wch: 16 },
+    { wch: 28 },
+    { wch: 20 },
+    { wch: 20 },
+    { wch: 64 },
+    { wch: 18 },
+    { wch: 20 },
+    { wch: 20 },
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Referensi Barang");
+  XLSX.writeFile(
+    workbook,
+    `Referensi_Barang_${new Date().toISOString().slice(0, 10)}.xlsx`,
+  );
+  showToast(
+    "Berhasil!",
+    `${rows.length} referensi barang diekspor ke Excel.`,
+  );
+}
+
+async function copyMasterBarangValue(button) {
+  const value = button?.dataset.copyValue || "";
+  if (!value) {
+    showToast("Warning!", "Tidak ada nilai untuk disalin.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    showToast("Berhasil!", `${value} disalin.`);
+  } catch (error) {
+    showToast("Error!", `Gagal menyalin nilai: ${error.message || error}`);
   }
 }
 
@@ -2572,6 +2804,7 @@ async function deleteMasterKegiatan(kode) {
 const TAB_TITLES = {
   identitas: "Identitas Satuan Pendidikan",
   master: "Referensi Kegiatan",
+  "master-barang": "Referensi Barang",
   rekening: "Rekening Belanja",
   bku: "Upload BKU",
   "data-bku": "Data BKU",
@@ -2627,6 +2860,13 @@ window.switchTab = function (tab) {
         // Reset tabel ke data penuh (unfiltered)
         if (typeof renderMasterKegiatan === "function")
           renderMasterKegiatan(masterKegiatan);
+        break;
+
+      case "master-barang":
+        searchInput.placeholder = "Cari referensi barang...";
+        if (searchContainer) searchContainer.classList.remove("hidden");
+        if (masterBarangArkasLoaded) renderMasterBarangArkas(0);
+        else loadMasterBarangArkas();
         break;
 
       case "rekening":
@@ -2716,6 +2956,7 @@ function renderMasterKegiatan(data = null) {
   const countSpan = document.getElementById("master-count");
   if (!container) return;
   const list = data || masterKegiatan;
+  masterKegiatanVisible = list;
   countSpan.innerText = list.length;
 
   if (list.length === 0) {
@@ -2760,6 +3001,106 @@ function renderMasterKegiatan(data = null) {
 
   html += "</tbody></table></div>";
   container.innerHTML = html;
+}
+
+function renderMasterBarangArkas(page = null) {
+  const container = document.getElementById("barang-list");
+  const countSpan = document.getElementById("barang-count");
+  if (!container) return;
+  if (Number.isInteger(page)) masterBarangArkasPage = page;
+  const keyword = document.getElementById("globalSearchInput")?.value || "";
+  const filtered = filterData(masterBarangArkas, keyword, [
+    "fiscal_year",
+    "source_fund_name",
+    "kode_rekening",
+    "id_barang",
+    "nama_barang",
+    "satuan",
+    "harga_terendah",
+    "harga_tertinggi",
+  ]);
+  const selectedScope = document.getElementById("barang-scope-filter")?.value;
+  const scope =
+    selectedScope && selectedScope !== "all"
+      ? scopeFilterParams(selectedScope)
+      : null;
+  const list = scope
+    ? filtered.filter(
+        (item) =>
+          Number(item.fiscal_year) === Number(scope.fiscal_year) &&
+          String(item.source_fund_id) === String(scope.source_fund_id),
+      )
+    : filtered;
+  masterBarangArkasVisible = list;
+  if (countSpan) countSpan.textContent = String(list.length);
+
+  if (list.length === 0) {
+    masterBarangArkasPage = 0;
+    container.innerHTML =
+      "<p style='text-align:center; padding:20px;'>Belum ada data referensi barang.</p>";
+    return;
+  }
+
+  const pageCount = Math.ceil(list.length / MASTER_BARANG_PAGE_SIZE);
+  masterBarangArkasPage = Math.max(
+    0,
+    Math.min(masterBarangArkasPage, pageCount - 1),
+  );
+  const start = masterBarangArkasPage * MASTER_BARANG_PAGE_SIZE;
+  const pageItems = list.slice(start, start + MASTER_BARANG_PAGE_SIZE);
+  const formatPrice = (value) =>
+    value === null || value === undefined ? "-" : formatRupiah(value);
+  const copyButton = (value, label) => `
+    <button type="button" class="btn btn-secondary btn-sm"
+      data-copy-value="${escapeSpjFormValue(value)}"
+      aria-label="Salin ${label}" title="Salin ${label}"
+      onclick="copyMasterBarangValue(this)">
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+        <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"></path>
+      </svg>
+    </button>`;
+  const rows = pageItems
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeSpjFormValue(item.fiscal_year)}</td>
+          <td>${escapeSpjFormValue(item.source_fund_name || "-")}</td>
+          <td style="white-space:nowrap;">${escapeSpjFormValue(item.kode_rekening || "-")} ${copyButton(item.kode_rekening, "kode rekening")}</td>
+          <td style="white-space:nowrap;">${escapeSpjFormValue(item.id_barang)} ${copyButton(item.id_barang, "ID barang")}</td>
+          <td>${escapeSpjFormValue(item.nama_barang)}</td>
+          <td>${escapeSpjFormValue(item.satuan || "-")}</td>
+          <td style="text-align:right;white-space:nowrap;">${formatPrice(item.harga_terendah)}</td>
+          <td style="text-align:right;white-space:nowrap;">${formatPrice(item.harga_tertinggi)}</td>
+        </tr>`,
+    )
+    .join("");
+  container.innerHTML = `
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Tahun Anggaran</th>
+            <th>Sumber Dana</th>
+            <th>Kode Rekening</th>
+            <th>ID Barang</th>
+            <th>Nama Barang</th>
+            <th>Satuan</th>
+            <th>Harga Terendah</th>
+            <th>Harga Tertinggi</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 4px;">
+      <span>Menampilkan ${start + 1}-${Math.min(start + pageItems.length, list.length)} dari ${list.length.toLocaleString("id-ID")} barang</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-secondary btn-sm" onclick="renderMasterBarangArkas(${masterBarangArkasPage - 1})" ${masterBarangArkasPage === 0 ? "disabled" : ""}>Sebelumnya</button>
+        <span>Halaman ${masterBarangArkasPage + 1} / ${pageCount}</span>
+        <button class="btn btn-secondary btn-sm" onclick="renderMasterBarangArkas(${masterBarangArkasPage + 1})" ${masterBarangArkasPage >= pageCount - 1 ? "disabled" : ""}>Berikutnya</button>
+      </div>
+    </div>`;
 }
 
 // Render functions
@@ -6244,6 +6585,10 @@ function handleGlobalSearch(e) {
       renderMasterKegiatan(filteredKegiatan);
       break;
 
+    case "master-barang":
+      renderMasterBarangArkas(0);
+      break;
+
     case "rekening": // Rekening Belanja
       const filteredRekening = filterData(masterRekeningBelanja, keyword, [
         "kode_rekening_belanja",
@@ -6331,6 +6676,7 @@ function initApp() {
     { tab: "identitas", label: "Identitas Satuan Pendidikan", icon: "school" },
     { section: "Transaksi" },
     { tab: "master", label: "Referensi Kegiatan", icon: "book" },
+    { tab: "master-barang", label: "Referensi Barang", icon: "package" },
     { tab: "rekening", label: "Rekening Belanja", icon: "briefcase" },
     { tab: "rkas", label: "RKAS", icon: "calendar" },
     { tab: "bku", label: "Upload BKU", icon: "fileText" },
@@ -6824,11 +7170,31 @@ function initApp() {
                         <option value="all">Semua tahun / sumber dana</option>
                     </select>
                     <button class="btn btn-success" onclick="syncMasterKegiatanArkas()" title="Tambah dan perbarui kode kegiatan dari database ARKAS">Sinkron dari ARKAS</button>
+                    <button class="btn btn-primary" onclick="exportMasterKegiatanExcel()" title="Ekspor referensi kegiatan yang sedang ditampilkan ke Excel">${iconSvg("download", 15)} Ekspor Excel</button>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                     <h4 style="margin:0">Daftar Referensi Kegiatan Tersimpan (<span id="master-count">0</span>)</h4>
                 </div>
                 <div id="master-list" class="table-container"></div>
+            </div>
+        </div>
+
+        <div id="tab-master-barang" class="tab-content">
+            <div class="card">
+                <div class="scope-filter-toolbar">
+                    <h3 style="margin-top:0">${iconSvg("package", 17)} Data Referensi Barang ARKAS</h3>
+                    <label for="barang-scope-filter" style="font-size:12px;">Filter tahun / sumber dana:</label>
+                    <select id="barang-scope-filter" class="form-control" onchange="renderMasterBarangArkas(0)" style="max-width:320px;">
+                        <option value="all">Semua tahun / sumber dana</option>
+                    </select>
+                    <button id="btn-sync-barang-arkas" class="btn btn-success" onclick="syncMasterBarangArkas()" title="Salin referensi barang dari database ARKAS ke database aplikasi">Sinkron dari ARKAS</button>
+                    <button class="btn btn-primary" onclick="exportMasterBarangArkasExcel()" title="Ekspor referensi barang yang sedang ditampilkan ke Excel">${iconSvg("download", 15)} Ekspor Excel</button>
+                </div>
+                <div id="barang-sync-status" role="status" aria-live="polite" style="min-height:20px;margin-bottom:12px;color:#475569;font-size:13px;"></div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                    <h4 style="margin:0">Daftar Referensi Barang Tersimpan (<span id="barang-count">0</span>)</h4>
+                </div>
+                <div id="barang-list" class="table-container"></div>
             </div>
         </div>
 
@@ -6967,6 +7333,10 @@ window.setRkasReportView = setRkasReportView;
 window.setRkasMonth = setRkasMonth;
 window.changeArkasDatabase = changeArkasDatabase;
 window.syncMasterKegiatanArkas = syncMasterKegiatanArkas;
+window.exportMasterKegiatanExcel = exportMasterKegiatanExcel;
+window.syncMasterBarangArkas = syncMasterBarangArkas;
+window.exportMasterBarangArkasExcel = exportMasterBarangArkasExcel;
+window.copyMasterBarangValue = copyMasterBarangValue;
 window.saveTransaksi = saveTransaksi;
 window.generateKwitansi = generateKwitansi;
 window.downloadKwitansi = downloadKwitansi;
@@ -6989,6 +7359,7 @@ window.showMessage = showMessage;
 window.initApp = initApp;
 window.loadPengaturan = loadPengaturan;
 window.loadMasterKegiatan = loadMasterKegiatan;
+window.loadMasterBarangArkas = loadMasterBarangArkas;
 window.loadKwitansiList = loadKwitansiList;
 window.renderKwitansiList = renderKwitansiList;
 window.loadRekapPajak = loadRekapPajak;
@@ -6997,6 +7368,7 @@ window.generateRekapTransaksi = generateRekapTransaksi;
 window.renderRekapTransaksi = renderRekapTransaksi;
 window.renderBKUResult = renderBKUResult;
 window.renderMasterKegiatan = renderMasterKegiatan;
+window.renderMasterBarangArkas = renderMasterBarangArkas;
 window.loadDataBKU = loadDataBKU;
 window.toggleBkuSelection = toggleBkuSelection;
 window.setBkuVisibleSelection = setBkuVisibleSelection;

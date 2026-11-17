@@ -166,6 +166,34 @@ class MasterKegiatanArkas(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MasterBarangArkas(Base):
+    """Referensi barang ARKAS yang disalin per tahun dan sumber dana."""
+
+    __tablename__ = "master_barang_arkas"
+    __table_args__ = (
+        UniqueConstraint(
+            "fiscal_year",
+            "source_fund_id",
+            "kode_rekening",
+            "id_barang",
+            name="uq_master_barang_arkas_scope_item",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    fiscal_year = Column(Integer, nullable=False)
+    source_fund_id = Column(String, nullable=False, default="")
+    source_fund_name = Column(String, nullable=False, default="")
+    kode_rekening = Column(String, nullable=False, default="")
+    id_barang = Column(String, nullable=False)
+    nama_barang = Column(String, nullable=False)
+    satuan = Column(String, nullable=False, default="")
+    harga_terendah = Column(Float, nullable=True)
+    harga_tertinggi = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class RkasAnggaran(Base):
     """Konteks RKAS yang disalin dari ARKAS ke database aplikasi."""
 

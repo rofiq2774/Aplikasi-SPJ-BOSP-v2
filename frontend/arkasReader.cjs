@@ -336,14 +336,12 @@ function buildActivitiesQuery(db, filters) {
     'rk2."tahun" = ?',
     'rk1."tahun" = ?',
     'a."soft_delete" = 0',
-    'a."is_approve" = 1',
     'a."is_aktif" = 1',
     `a."is_revisi" = (
       SELECT MAX(ar."is_revisi") FROM "anggaran" ar
        WHERE ar."tahun_anggaran" = a."tahun_anggaran"
          AND ar."id_ref_sumber_dana" = a."id_ref_sumber_dana"
          AND ar."soft_delete" = 0
-         AND ar."is_approve" = 1
          AND ar."is_aktif" = 1
     )`,
     'rk3."expired_date" IS NULL',
@@ -874,6 +872,80 @@ async function readArkasTaxRecap(databasePath, selectedFilters = {}) {
   }
 }
 
+function buildArkasActivityContextsQuery(db) {
+  const anggaranColumns = getTableColumns(db, "anggaran");
+  requireColumns("anggaran", anggaranColumns, [
+    "id_anggaran",
+    "tahun_anggaran",
+    "id_ref_sumber_dana",
+    "soft_delete",
+    "is_approve",
+    "is_revisi",
+    "is_aktif",
+  ]);
+  const sourceColumns = getTableColumns(db, "ref_sumber_dana");
+  requireColumns("ref_sumber_dana", sourceColumns, [
+    "id_ref_sumber_dana",
+    "nama_sumber_dana",
+  ]);
+  return db.query(
+    `SELECT a."tahun_anggaran" AS "fiscalYear",
+            a."id_ref_sumber_dana" AS "sourceFundId",
+            rsd."nama_sumber_dana" AS "sourceFundName",
+            a."id_anggaran" AS "budgetId",
+            a."is_revisi" AS "revision",
+            a."is_approve" AS "isApproved"
+       FROM "anggaran" a
+       INNER JOIN "ref_sumber_dana" rsd
+         ON rsd."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+      WHERE a."soft_delete" = 0
+        AND a."is_aktif" = 1
+        AND a."is_revisi" = (
+          SELECT MAX(ar."is_revisi") FROM "anggaran" ar
+           WHERE ar."tahun_anggaran" = a."tahun_anggaran"
+             AND ar."id_ref_sumber_dana" = a."id_ref_sumber_dana"
+             AND ar."soft_delete" = 0
+             AND ar."is_aktif" = 1
+        )
+      ORDER BY a."tahun_anggaran" DESC,
+               rsd."nama_sumber_dana",
+               a."id_anggaran"`,
+  );
+}
+
+function buildArkasReferenceBarangQuery(db, filters) {
+  const barangColumns = getTableColumns(db, "ref_acuan_barang");
+  requireColumns("ref_acuan_barang", barangColumns, [
+    "id_barang",
+    "kode_rekening",
+    "nama_barang",
+    "satuan",
+    "batas_bawah",
+    "batas_atas",
+    "expired_date",
+    "tahun",
+  ]);
+  if (!filters.fiscalYear || !filters.sourceFundId) {
+    throw new Error("Pilih tahun anggaran dan sumber dana sebelum membaca referensi barang.");
+  }
+
+  return db.query(
+    `SELECT trim(CAST("id_barang" AS TEXT)) AS "itemId",
+            trim(COALESCE("kode_rekening", '')) AS "accountCode",
+            trim("nama_barang") AS "itemName",
+            trim(COALESCE("satuan", '')) AS "unit",
+            "batas_bawah" AS "lowestPrice",
+            "batas_atas" AS "highestPrice"
+       FROM "ref_acuan_barang"
+      WHERE "tahun" = ?
+        AND "expired_date" IS NULL
+        AND trim(CAST("id_barang" AS TEXT)) <> ''
+        AND trim("nama_barang") <> ''
+      ORDER BY "kode_rekening", "id_barang"`,
+    [filters.fiscalYear],
+  );
+}
+
 async function readArkasActivities(
   databasePath,
   selectedFilters = new Date().getFullYear(),
@@ -904,6 +976,86 @@ async function readArkasActivities(
       fiscalYear: filters.fiscalYear,
       filters,
     };
+  } finally {
+    try {
+      db?.close();
+    } finally {
+      if (module.FS.analyzePath(virtualPath).exists) {
+        module.FS.unlink(virtualPath);
+      }
+    }
+  }
+}
+
+async function readArkasReferenceBarang(databasePath, selectedFilters) {
+  const filters = normalizeFilters(selectedFilters);
+  const sourceFundName =
+    selectedFilters && typeof selectedFilters === "object"
+      ? String(
+          selectedFilters.sourceFundName ??
+            selectedFilters.source_fund_name ??
+            "",
+        ).trim()
+      : "";
+  if (!filters.fiscalYear || !filters.sourceFundId) {
+    throw new Error("Pilih tahun anggaran dan sumber dana sebelum menyinkronkan referensi barang.");
+  }
+  sqliteInitialization ||= initSQLite();
+  const sqlite = await sqliteInitialization;
+  const module = sqlite.getModule();
+  const virtualPath = `/arkas-reference-barang-${randomUUID()}.db`;
+  const encrypted = !isStandardSqliteDatabase(databasePath);
+  let db;
+  try {
+    module.FS.writeFile(virtualPath, fs.readFileSync(databasePath));
+    db = openDatabase(sqlite, virtualPath, encrypted);
+    const items = buildArkasReferenceBarangQuery(db, filters).map((row) => ({
+      fiscal_year: filters.fiscalYear,
+      source_fund_id: filters.sourceFundId,
+      source_fund_name: sourceFundName,
+      kode_rekening: String(row.accountCode || "").trim(),
+      id_barang: String(row.itemId || "").trim(),
+      nama_barang: String(row.itemName || "").trim(),
+      satuan: String(row.unit || "").trim(),
+      harga_terendah:
+        row.lowestPrice === null || row.lowestPrice === undefined
+          ? null
+          : toAmount(row.lowestPrice),
+      harga_tertinggi:
+        row.highestPrice === null || row.highestPrice === undefined
+          ? null
+          : toAmount(row.highestPrice),
+    }));
+    return { items, returned: items.length, filters };
+  } finally {
+    try {
+      db?.close();
+    } finally {
+      if (module.FS.analyzePath(virtualPath).exists) {
+        module.FS.unlink(virtualPath);
+      }
+    }
+  }
+}
+
+async function readArkasActivityContexts(databasePath) {
+  const sqlite = await (sqliteInitialization ||= initSQLite());
+  const module = sqlite.getModule();
+  const virtualPath = `/arkas-activity-contexts-${randomUUID()}.db`;
+  const encrypted = !isStandardSqliteDatabase(databasePath);
+  let db;
+  try {
+    module.FS.writeFile(virtualPath, fs.readFileSync(databasePath));
+    db = openDatabase(sqlite, virtualPath, encrypted);
+    const contexts = buildArkasActivityContextsQuery(db).map((row) => ({
+      fiscal_year: Number(row.fiscalYear),
+      source_fund_id: String(row.sourceFundId ?? ""),
+      source_fund_name: String(row.sourceFundName || "").trim(),
+      budget_id: String(row.budgetId ?? ""),
+      revision: Number(row.revision || 0),
+      is_approved: Number(row.isApproved) === 1,
+    }));
+    return { contexts };
   } finally {
     try {
       db?.close();
@@ -1003,6 +1155,8 @@ async function readArkasContexts(databasePath) {
 
 module.exports = {
   readArkasActivities,
+  readArkasActivityContexts,
+  readArkasReferenceBarang,
   readArkasBudget,
   readArkasContexts,
   readArkasTaxRecap,
@@ -1010,4 +1164,7 @@ module.exports = {
   mapArkasBudgetRows,
   mapTaxRecapRow,
   normalizeFilters,
+  buildActivitiesQuery,
+  buildArkasActivityContextsQuery,
+  buildArkasReferenceBarangQuery,
 };

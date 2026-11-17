@@ -8,6 +8,8 @@ const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
 const {
   readArkasActivities,
+  readArkasActivityContexts,
+  readArkasReferenceBarang,
   readArkasBudget,
   readArkasContexts,
   readArkasTaxRecap,
@@ -712,6 +714,52 @@ ipcMain.handle("read-arkas-activities", async (event, filters) => {
     "info",
     "frontend-main",
     `Referensi kegiatan ARKAS tahun ${result.fiscalYear} dibaca; ditemukan ${result.returned} kegiatan.`,
+  );
+  return {
+    canceled: false,
+    sourceName: path.basename(databasePath),
+    ...result,
+  };
+});
+
+ipcMain.handle("read-arkas-activity-contexts", async (event) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  let databasePath = settings?.path;
+  if (!databasePath || !fs.existsSync(databasePath)) {
+    databasePath = await selectArkasDatabase(databasePath);
+  }
+  if (!databasePath) return { canceled: true, contexts: [] };
+
+  const result = await readArkasActivityContexts(databasePath);
+  saveArkasDatabasePath(databasePath);
+  writeAppLog(
+    "info",
+    "frontend-main",
+    `Konteks referensi kegiatan ARKAS dibaca; ditemukan ${result.contexts.length} konteks, termasuk draft.`,
+  );
+  return {
+    canceled: false,
+    sourceName: path.basename(databasePath),
+    ...result,
+  };
+});
+
+ipcMain.handle("read-arkas-reference-barang", async (event, filters) => {
+  assertTrustedRenderer(event);
+  const settings = readArkasDatabaseSettings();
+  let databasePath = settings?.path;
+  if (!databasePath || !fs.existsSync(databasePath)) {
+    databasePath = await selectArkasDatabase(databasePath);
+  }
+  if (!databasePath) return { canceled: true, items: [], returned: 0 };
+
+  const result = await readArkasReferenceBarang(databasePath, filters);
+  saveArkasDatabasePath(databasePath);
+  writeAppLog(
+    "info",
+    "frontend-main",
+    `Referensi barang ARKAS tahun ${result.filters.fiscalYear} dibaca; ditemukan ${result.returned} barang.`,
   );
   return {
     canceled: false,

@@ -46,13 +46,14 @@ from reportlab.lib.utils import simpleSplit
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.cors import CORSMiddleware
 
 # 3. Local Application Imports
 from database import BASE_DIR, AsyncSessionLocal, Base, engine, get_db
 from models import (
-    IdentitasPeriode, Kwitansi, MasterKegiatan, MasterKegiatanArkas,
+    IdentitasPeriode, Kwitansi, MasterBarangArkas, MasterKegiatan, MasterKegiatanArkas,
     MasterRekeningBelanja, Pengaturan, RekapPajak, RkasAnggaran, RkasItem, Transaksi
 )
 _migrated = False
@@ -402,6 +403,22 @@ class MasterKegiatanArkasItem(BaseModel):
 
 class MasterKegiatanArkasBulkRequest(BaseModel):
     data: List[MasterKegiatanArkasItem]
+
+
+class MasterBarangArkasItem(BaseModel):
+    fiscal_year: int
+    source_fund_id: str
+    source_fund_name: str = ""
+    kode_rekening: str = ""
+    id_barang: str
+    nama_barang: str
+    satuan: str = ""
+    harga_terendah: Optional[float] = None
+    harga_tertinggi: Optional[float] = None
+
+
+class MasterBarangArkasBulkRequest(BaseModel):
+    data: List[MasterBarangArkasItem]
 
 
 class RkasItemRequest(BaseModel):
@@ -4732,6 +4749,184 @@ async def save_pengaturan(
         await db.rollback()
         logger.error(f"Error saving pengaturan: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error saving pengaturan: {str(e)}")
+
+
+# Master Barang ARKAS Routes
+@api_router.get("/master-barang-arkas")
+async def get_master_barang_arkas(
+    db: AsyncSession = Depends(get_db),
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
+):
+    try:
+        stmt = select(MasterBarangArkas)
+        if fiscal_year and fiscal_year not in ("all", "unspecified"):
+            try:
+                stmt = stmt.where(MasterBarangArkas.fiscal_year == int(fiscal_year))
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Filter tahun anggaran tidak valid.",
+                )
+        if source_fund_id and source_fund_id not in ("all", "unspecified"):
+            stmt = stmt.where(MasterBarangArkas.source_fund_id == source_fund_id)
+        elif source_fund_id == "unspecified":
+            stmt = stmt.where(MasterBarangArkas.source_fund_id == "")
+        stmt = stmt.order_by(
+            MasterBarangArkas.fiscal_year.desc(),
+            MasterBarangArkas.source_fund_name,
+            MasterBarangArkas.kode_rekening,
+            MasterBarangArkas.id_barang,
+        )
+        result = await db.execute(stmt)
+        return {
+            "status": "success",
+            "data": [
+                {
+                    "id": item.id,
+                    "fiscal_year": item.fiscal_year,
+                    "source_fund_id": item.source_fund_id,
+                    "source_fund_name": item.source_fund_name,
+                    "kode_rekening": item.kode_rekening,
+                    "id_barang": item.id_barang,
+                    "nama_barang": item.nama_barang,
+                    "satuan": item.satuan,
+                    "harga_terendah": item.harga_terendah,
+                    "harga_tertinggi": item.harga_tertinggi,
+                }
+                for item in result.scalars().all()
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Gagal mengambil referensi barang ARKAS.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal mengambil referensi barang ARKAS: {str(e)}",
+        )
+
+
+@api_router.post("/master-barang-arkas/sync-arkas")
+async def sync_master_barang_arkas(
+    request: MasterBarangArkasBulkRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    if not request.data:
+        raise HTTPException(
+            status_code=400,
+            detail="Tidak ada referensi barang ARKAS untuk disinkronkan.",
+        )
+
+    scope_keys = {
+        (item.fiscal_year, item.source_fund_id.strip())
+        for item in request.data
+    }
+    if len(scope_keys) != 1 or any(not source_fund_id for _, source_fund_id in scope_keys):
+        raise HTTPException(
+            status_code=400,
+            detail="Sinkron referensi barang harus berisi satu tahun dan satu sumber dana.",
+        )
+
+    fiscal_year, source_fund_id = next(iter(scope_keys))
+    incoming = {}
+    for item in request.data:
+        item_id = item.id_barang.strip()
+        item_name = item.nama_barang.strip()
+        if not item_id or not item_name:
+            continue
+        account_code = item.kode_rekening.strip()
+        incoming[(account_code, item_id)] = item
+    if not incoming:
+        raise HTTPException(
+            status_code=400,
+            detail="Tidak ada referensi barang ARKAS yang valid untuk disinkronkan.",
+        )
+
+    try:
+        result = await db.execute(
+            select(MasterBarangArkas).where(
+                MasterBarangArkas.fiscal_year == fiscal_year,
+                MasterBarangArkas.source_fund_id == source_fund_id,
+            )
+        )
+        existing = {
+            (item.kode_rekening, item.id_barang): item
+            for item in result.scalars().all()
+        }
+        created_count = updated_count = unchanged_count = 0
+        rows_to_write = []
+        now = datetime.utcnow()
+        for (account_code, item_id), imported in incoming.items():
+            item = existing.get((account_code, item_id))
+            values = {
+                "source_fund_name": imported.source_fund_name.strip(),
+                "nama_barang": imported.nama_barang.strip(),
+                "satuan": imported.satuan.strip(),
+                "harga_terendah": imported.harga_terendah,
+                "harga_tertinggi": imported.harga_tertinggi,
+            }
+            if item is None:
+                rows_to_write.append({
+                    "fiscal_year": fiscal_year,
+                    "source_fund_id": source_fund_id,
+                    "kode_rekening": account_code,
+                    "id_barang": item_id,
+                    **values,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+                created_count += 1
+            elif any(getattr(item, key) != value for key, value in values.items()):
+                rows_to_write.append({
+                    "fiscal_year": fiscal_year,
+                    "source_fund_id": source_fund_id,
+                    "kode_rekening": account_code,
+                    "id_barang": item_id,
+                    **values,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+                updated_count += 1
+            else:
+                unchanged_count += 1
+
+        if rows_to_write:
+            statement = sqlite_insert(MasterBarangArkas)
+            statement = statement.on_conflict_do_update(
+                index_elements=[
+                    MasterBarangArkas.fiscal_year,
+                    MasterBarangArkas.source_fund_id,
+                    MasterBarangArkas.kode_rekening,
+                    MasterBarangArkas.id_barang,
+                ],
+                set_={
+                    "source_fund_name": statement.excluded.source_fund_name,
+                    "nama_barang": statement.excluded.nama_barang,
+                    "satuan": statement.excluded.satuan,
+                    "harga_terendah": statement.excluded.harga_terendah,
+                    "harga_tertinggi": statement.excluded.harga_tertinggi,
+                    "updated_at": now,
+                },
+            )
+            await db.execute(statement, rows_to_write)
+        await db.commit()
+        return {
+            "status": "success",
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "unchanged_count": unchanged_count,
+            "total": len(incoming),
+            "fiscal_year": fiscal_year,
+            "source_fund_id": source_fund_id,
+        }
+    except Exception as e:
+        await db.rollback()
+        logger.exception("Gagal sinkron referensi barang ARKAS.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal sinkron referensi barang ARKAS: {str(e)}",
+        )
 
 
 # Master Kegiatan Routes

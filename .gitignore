@@ -6,6 +6,8 @@ frontend/node_modules/
 backend/venv/
 .vscode/
 .venv/
+.snapgent/
+.pytest_cache/
 
 # ========================
 # Environment Variables & Secrets

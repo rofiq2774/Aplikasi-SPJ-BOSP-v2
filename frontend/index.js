@@ -2,7 +2,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage } = require("elec
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { spawn, execFile } = require("child_process");
+const { spawn, spawnSync, execFile } = require("child_process");
 const http = require("http");
 const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
@@ -33,6 +33,9 @@ function resolveAppLogPath() {
   }
   return path.join(__dirname, "..", "backend", "app.log");
 }
+
+// Penanda revisi kode lifecycle backend; muncul di app.log agar jelas versi kode yang berjalan.
+const BACKEND_LIFECYCLE_REV = "2026-11-17-zombie-fix-r2";
 
 let APP_LOG_PATH = null;
 try {
@@ -74,7 +77,7 @@ function writeAppLog(level, source, message) {
 writeAppLog(
   "info",
   "frontend-main",
-  `=== Aplikasi SPJ BOSP v${app.getVersion()} dimulai (log: ${APP_LOG_PATH}) ===`,
+  `=== Aplikasi SPJ BOSP v${app.getVersion()} dimulai (rev ${BACKEND_LIFECYCLE_REV}, log: ${APP_LOG_PATH}) ===`,
 );
 
 // Capture unexpected errors in the main process to aid debugging
@@ -111,6 +114,31 @@ let mainWindow = null;
 let backendShutdownPromise = null;
 let backendShutdownComplete = false;
 let backendShutdownInProgress = false;
+// Diset true begitu aplikasi mulai menutup, supaya loop startup tidak memunculkan backend baru.
+let isQuitting = false;
+
+// Jaring pengaman sinkron: dipanggil saat 'quit' dan 'exit' agar backend tidak
+// menjadi proses yatim bila stopBackend() async belum sempat selesai.
+function killBackendSync() {
+  const backend = pyProcess;
+  if (!backend || !backend.pid) return;
+  writeAppLog(
+    "warn",
+    "frontend-main",
+    `killBackendSync (rev ${BACKEND_LIFECYCLE_REV}): backend pid=${backend.pid} masih hidup saat quit/exit, dimatikan paksa`,
+  );
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/pid", String(backend.pid), "/f", "/t"], {
+        windowsHide: true,
+      });
+    } else if (backend.exitCode === null && backend.signalCode === null) {
+      backend.kill("SIGKILL");
+    }
+  } catch (e) {}
+}
+process.on("exit", killBackendSync);
+app.on("quit", killBackendSync);
 
 // ===================== DYNAMIC PORT (child_process) =====================
 // Backend FastAPI dijalankan lewat child_process dan TIDAK lagi dipatok di port
@@ -155,8 +183,10 @@ function stopBackend() {
   const pid = backend.pid;
   backendShutdownPromise = new Promise((resolve) => {
     const finish = (error) => {
-      if (pyProcess === backend) pyProcess = null;
-      backendPort = 0;
+      if (pyProcess === backend) {
+        pyProcess = null;
+        backendPort = 0;
+      }
       if (error) {
         writeAppLog(
           "error",
@@ -215,6 +245,7 @@ function stopBackend() {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
+    isQuitting = true;
     stopBackend().finally(() => app.quit());
   });
 }
@@ -227,8 +258,12 @@ function waitForBackend(url, timeout = 20000) {
     const start = Date.now();
 
     const check = () => {
+      let settled = false;
       const req = http.get(url, (res) => {
+        res.resume();
         if (res.statusCode === 200) {
+          if (settled) return;
+          settled = true;
           resolve();
         } else {
           retry();
@@ -242,6 +277,8 @@ function waitForBackend(url, timeout = 20000) {
       });
 
       function retry() {
+        if (settled) return;
+        settled = true;
         if (Date.now() - start > timeout) {
           reject(new Error("Backend tidak siap"));
         } else {
@@ -261,6 +298,9 @@ function waitForBackend(url, timeout = 20000) {
 // Tidak ada lagi "servis localhost" statis (port 8000) — jika port dinamis
 // gagal diperoleh, proses dihentikan dengan pesan error yang jelas di app.log.
 async function spawnBackendOnPort(port) {
+  if (isQuitting) {
+    throw new Error("Aplikasi sedang ditutup, backend tidak dijalankan.");
+  }
   // Pilih executable sesuai mode, teruskan konfigurasi, lalu sambungkan log proses.
   const isDev = !app.isPackaged;
 
@@ -329,6 +369,9 @@ async function startPythonBackend() {
   const MAX_PORT_ATTEMPTS = 3;
 
   for (let attempt = 1; attempt <= MAX_PORT_ATTEMPTS; attempt++) {
+    if (isQuitting) {
+      throw new Error("Aplikasi sedang ditutup, backend tidak dijalankan.");
+    }
     let port;
     try {
       port = await getRandomPort();
@@ -358,7 +401,7 @@ async function startPythonBackend() {
         "frontend-main",
         `Backend tidak siap pada port ${port} (percobaan ${attempt}/${MAX_PORT_ATTEMPTS}): ${e.message || e}. Detail penyebab ada di app.log (output child_process).`,
       );
-      stopBackend();
+      await stopBackend();
     }
   }
 
@@ -830,7 +873,7 @@ function assertTrustedRenderer(event) {
       !rendererUrl.startsWith("http://127.0.0.1:5173/")
     )
   ) {
-    throw new Error("Permintaan pengaturan AI berasal dari renderer yang tidak dikenal.");
+    throw new Error("Permintaan IPC berasal dari renderer yang tidak dikenal.");
   }
 }
 
@@ -1005,10 +1048,11 @@ app.whenReady().then(async () => {
       `Gagal memulai backend child_process: ${e.message || e}`,
     );
   }
-  createWindow();
+  if (!isQuitting) createWindow();
 });
 
 app.on("before-quit", (event) => {
+  isQuitting = true;
   writeAppLog("info", "frontend-main", "Aplikasi ditutup (before-quit)");
   if (backendShutdownComplete || backendShutdownInProgress) return;
   backendShutdownInProgress = true;

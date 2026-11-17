@@ -16,7 +16,9 @@ Aplikasi desktop untuk membantu sekolah mengelola data transaksi BOSP, menyiapka
 
 ## Fitur
 
-- Sinkronisasi referensi kegiatan dan transaksi BPU langsung dari database ARKAS.
+- Sinkronisasi referensi kegiatan, referensi barang, RKAS, rekap pajak, dan transaksi BPU langsung dari database ARKAS (dibaca tanpa mengubah database ARKAS).
+- Atur identitas satuan pendidikan dan pejabat per periode, sehingga kop surat dan penanda tangan mengikuti tanggal dokumen.
+- Pembaruan otomatis lewat GitHub Releases pada aplikasi yang sudah terinstal.
 - Kelola data BKU, referensi kegiatan, dan SPJ dengan konteks tahun anggaran, sumber dana, dan anggaran.
 - Impor referensi rekening belanja dari Excel.
 - Catat transaksi dan olah data BKU serta data BHP/BHM sesuai kebutuhan.
@@ -107,11 +109,11 @@ Skrip build menjalankan PyInstaller untuk backend Python 3.10 64-bit, build fron
 
 ### Tes
 
-Tes PDF frontend dapat dijalankan dari folder `frontend`:
+Tes frontend (PDF dan pembaca ARKAS) dapat dijalankan dari folder `frontend`:
 
 ```powershell
 Set-Location frontend
-node --test tests\spjPdf.font.test.mjs
+node --test tests\spjPdf.font.test.mjs tests\arkasReader.rkas.test.mjs tests\arkasReader.tax.test.mjs
 ```
 
 Tes backend menggunakan `pytest` dan dependensi backend:
@@ -134,6 +136,7 @@ backend/
 frontend/
   index.js            Proses utama Electron
   preload.js          Jembatan API aman antara Electron dan antarmuka
+  arkasReader.cjs     Pembaca database ARKAS untuk proses utama Electron
   Index.html          Dokumen HTML aplikasi
   src/
     app.js            Antarmuka dan alur aplikasi

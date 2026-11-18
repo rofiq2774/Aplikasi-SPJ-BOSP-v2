@@ -4042,6 +4042,8 @@ function changeJenisBelanjaSpj() {
   window._spjLampiranDraft = data;
   const forms = document.getElementById("edit-data-lampiran");
   if (forms) forms.innerHTML = renderDataLampiranForm(jenis, data);
+  const photoArea = document.getElementById("drop-area-foto");
+  if (photoArea) photoArea.hidden = jenis === "fotokopi";
   const photoTypes = JENIS_BELANJA_SPJ[jenis]?.foto || [];
   const photoSelect = document.getElementById("jenis-foto");
   if (photoSelect) {

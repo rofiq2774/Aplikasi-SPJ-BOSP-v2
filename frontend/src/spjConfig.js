@@ -208,7 +208,7 @@ export const JENIS_BELANJA_SPJ = {
     label: "Foto copy",
     bast: true,
     rab: false,
-    foto: ["barang", "qr_master"],
+    foto: [],
     dokumen: [
       {
         key: "nota_pembelian",

@@ -1263,18 +1263,53 @@ def test_arkas_activity_sync_updates_and_preserves_local_references(spj_client):
 
 
 def test_rekap_transaksi_filters_by_fiscal_year_and_source_fund(spj_client):
-    from models import Transaksi
+    from models import Kwitansi, Transaksi
 
     async def add_scoped_transactions():
         async with spj_client.test_session_maker() as session:
+            receipt = Kwitansi(
+                nomor_kwitansi="001/KW/SPJ/VI/2025",
+                no_bukti="BPU104",
+                kode_kegiatan="K-01",
+                nama_kegiatan="Belanja BOS",
+                tanggal="30/06/2025",
+                thp="THP II",
+                tahun="2025",
+                fiscal_year=2025,
+                source_fund_id="BOS",
+                jumlah=110,
+                foto_bukti="[]",
+            )
+            october_receipt = Kwitansi(
+                nomor_kwitansi="002/KW/SPJ/VII/2025",
+                no_bukti="BPU63",
+                kode_kegiatan="K-01",
+                nama_kegiatan="Belanja BOS Oktober",
+                tanggal="01-07-2025",
+                thp="Tahap I",
+                tahun="2025",
+                fiscal_year=2025,
+                source_fund_id="BOS",
+                jumlah=50,
+                foto_bukti="[]",
+            )
+            session.add_all([receipt, october_receipt])
             session.add_all([
                 Transaksi(
-                    tanggal="2025-11-01",
+                    tanggal="30/06/2025",
                     kode_rekening="5.2.1.01.01",
-                    no_bukti="BKT-2025-BOS",
+                    no_bukti="BPU104",
                     fiscal_year=2025,
                     source_fund_id="BOS",
                     pengeluaran=110,
+                ),
+                Transaksi(
+                    tanggal="01-07-2025",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BPU63",
+                    fiscal_year=2025,
+                    source_fund_id="BOS",
+                    pengeluaran=50,
                 ),
                 Transaksi(
                     tanggal="2025-11-01",
@@ -1286,20 +1321,47 @@ def test_rekap_transaksi_filters_by_fiscal_year_and_source_fund(spj_client):
                 ),
             ])
             await session.commit()
+            return receipt.id, october_receipt.id
 
-    asyncio.run(add_scoped_transactions())
+    receipt_ids = asyncio.run(add_scoped_transactions())
     response = spj_client.get(
-        "/api/rekap-transaksi?fiscal_year=2025&source_fund_id=BOS&details=1"
+        "/api/rekap-transaksi?fiscal_year=2025&source_fund_id=BOS&thp=1&details=1"
     )
 
     assert response.status_code == 200
     data = response.json()["data"]
     assert sum(group["total_pengeluaran"] for group in data) == 110
-    assert [
+    assert {
         item["no_bukti"]
         for group in data
         for item in group["items"]
-    ] == ["BKT-2025-BOS"]
+    } == {"BPU104"}
+    bos_group = next(group for group in data if group["total_pengeluaran"] == 110)
+    assert bos_group["kwitansi_ids"] == [receipt_ids[0]]
+    assert len(bos_group["transaksi_ids"]) == 1
+
+    stage_two_response = spj_client.get(
+        "/api/rekap-transaksi?fiscal_year=2025&source_fund_id=BOS&thp=2&details=1"
+    )
+    assert stage_two_response.status_code == 200
+    stage_two_data = stage_two_response.json()["data"]
+    assert sum(group["total_pengeluaran"] for group in stage_two_data) == 50
+    assert [
+        item["no_bukti"]
+        for group in stage_two_data
+        for item in group["items"]
+    ] == ["BPU63"]
+    assert stage_two_data[0]["kwitansi_ids"] == [receipt_ids[1]]
+
+    all_stages_response = spj_client.get(
+        "/api/rekap-transaksi?fiscal_year=2025&source_fund_id=BOS&details=1"
+    )
+    assert all_stages_response.status_code == 200
+    all_stages_group = all_stages_response.json()["data"][0]
+    assert [item["no_bukti"] for item in all_stages_group["items"]] == [
+        "BPU63",
+        "BPU104",
+    ]
 
 
 def test_kwitansi_list_filters_by_thp(spj_client):
@@ -2312,3 +2374,202 @@ def test_master_barang_arkas_migration_creates_scoped_unique_table(tmp_path):
                 """
             )
     engine.dispose()
+
+
+def test_rekap_belanja_excel_exports_selected_spj_by_kwitansi_number(spj_client):
+    from io import BytesIO
+
+    import openpyxl
+    from sqlalchemy import select
+    from models import Kwitansi, Transaksi
+
+    async def add_earlier_receipt():
+        async with spj_client.test_session_maker() as session:
+            receipt = Kwitansi(
+                nomor_kwitansi="999/KW/SPJ/X/2026",
+                no_bukti="BKT-999",
+                kode_kegiatan="K-01",
+                nama_kegiatan="Pengadaan Kertas",
+                tanggal="2026-10-30",
+                thp="Tahap I",
+                tahun="2026",
+                jumlah=200000,
+                foto_bukti="[]",
+            )
+            session.add(receipt)
+            session.add(Transaksi(
+                tanggal="2026-10-30",
+                kode_kegiatan="K-01",
+                kode_rekening="5.2.1.01.01",
+                no_bukti="BKT-999",
+                uraian="Kertas A4",
+                volume=2,
+                satuan="rim",
+                harga_satuan=100000,
+                penerimaan=0,
+                pengeluaran=200000,
+                saldo=0,
+            ))
+            await session.commit()
+            return receipt.id
+
+    earlier_id = asyncio.run(add_earlier_receipt())
+    response = spj_client.post(
+        "/api/rekap-belanja/export-excel",
+        json={"kwitansi_ids": [1, earlier_id]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    workbook = openpyxl.load_workbook(BytesIO(response.content), data_only=True)
+    sheet = workbook["Rekap Belanja"]
+    assert sheet["A1"].value == "No. Urut"
+    assert sheet["J1"].value == "Jumlah Harga"
+    assert sheet["J2"].value == "Sesuai Nota/Kwitansi\n(Rp)"
+    assert sheet["C4"].value == "2026-11-05"
+    assert sheet["D4"].value == "001/KW/SPJ/XI/2026"
+    assert sheet["E4"].value == "Belanja ATK"
+    assert sheet["E5"].value == "Pulpen 1 lusin"
+    assert sheet["D6"].value == "999/KW/SPJ/X/2026"
+    assert sheet["E6"].value == "Pengadaan Kertas"
+    assert sheet["E7"].value == "Kertas A4"
+    assert sheet["A4"].value == 1
+    assert sheet["A7"].value == 4
+    assert sheet.freeze_panes == "A4"
+
+
+def test_rekap_belanja_excel_limits_items_to_selected_rekap_transactions(spj_client):
+    from io import BytesIO
+
+    import openpyxl
+    from models import Kwitansi, Transaksi
+
+    async def add_receipt_with_multiple_accounts():
+        async with spj_client.test_session_maker() as session:
+            receipt = Kwitansi(
+                nomor_kwitansi="005/KW/SPJ/IX/2026",
+                no_bukti="BKT-005",
+                kode_kegiatan="K-01",
+                nama_kegiatan="Belanja Campuran",
+                tanggal="2026-09-10",
+                thp="THP I",
+                tahun="2026",
+                jumlah=300,
+                foto_bukti="[]",
+            )
+            selected = Transaksi(
+                tanggal="2026-09-10",
+                kode_rekening="5.2.1.01.01",
+                no_bukti="BKT-005",
+                uraian="Barang pada uraian terpilih",
+                volume=1,
+                satuan="buah",
+                harga_satuan=100,
+                pengeluaran=100,
+            )
+            unselected = Transaksi(
+                tanggal="2026-09-10",
+                kode_rekening="5.2.1.02.01",
+                no_bukti="BKT-005",
+                uraian="Barang pada uraian lain",
+                volume=2,
+                satuan="buah",
+                harga_satuan=100,
+                pengeluaran=200,
+            )
+            session.add_all([receipt, selected, unselected])
+            await session.commit()
+            return receipt.id, selected.id
+
+    receipt_id, selected_transaction_id = asyncio.run(
+        add_receipt_with_multiple_accounts()
+    )
+    response = spj_client.post(
+        "/api/rekap-belanja/export-excel",
+        json={
+            "kwitansi_ids": [receipt_id],
+            "transaksi_ids": [selected_transaction_id],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    sheet = openpyxl.load_workbook(BytesIO(response.content), data_only=True)[
+        "Rekap Belanja"
+    ]
+    assert sheet["D4"].value == "005/KW/SPJ/IX/2026"
+    assert sheet["E5"].value == "Barang pada uraian terpilih"
+    assert sheet["J4"].value == 100
+    assert sheet.max_row == 5
+
+
+def test_rekap_belanja_excel_uses_natural_kwitansi_number_order(spj_client):
+    from io import BytesIO
+
+    import openpyxl
+    from models import Kwitansi, Transaksi
+
+    async def add_receipts():
+        async with spj_client.test_session_maker() as session:
+            later_number = Kwitansi(
+                nomor_kwitansi="BPU104/01/THP II/2026",
+                no_bukti="BPU104",
+                kode_kegiatan="K-01",
+                nama_kegiatan="Belanja dengan nomor 104",
+                tanggal="2026-07-01",
+                thp="THP II",
+                tahun="2026",
+                jumlah=100,
+                foto_bukti="[]",
+            )
+            earlier_number = Kwitansi(
+                nomor_kwitansi="BPU63/01/THP II/2026",
+                no_bukti="BPU63",
+                kode_kegiatan="K-01",
+                nama_kegiatan="Belanja dengan nomor 63",
+                tanggal="2026-09-01",
+                thp="THP II",
+                tahun="2026",
+                jumlah=200,
+                foto_bukti="[]",
+            )
+            session.add_all([
+                later_number,
+                earlier_number,
+                Transaksi(
+                    tanggal="2026-07-01",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BPU104",
+                    uraian="Barang BPU104",
+                    volume=1,
+                    satuan="buah",
+                    harga_satuan=100,
+                    pengeluaran=100,
+                ),
+                Transaksi(
+                    tanggal="2026-09-01",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BPU63",
+                    uraian="Barang BPU63",
+                    volume=1,
+                    satuan="buah",
+                    harga_satuan=200,
+                    pengeluaran=200,
+                ),
+            ])
+            await session.commit()
+            return later_number.id, earlier_number.id
+
+    later_id, earlier_id = asyncio.run(add_receipts())
+    response = spj_client.post(
+        "/api/rekap-belanja/export-excel",
+        json={"kwitansi_ids": [later_id, earlier_id]},
+    )
+
+    assert response.status_code == 200, response.text
+    sheet = openpyxl.load_workbook(BytesIO(response.content), data_only=True)[
+        "Rekap Belanja"
+    ]
+    assert sheet["D4"].value == "BPU63/01/THP II/2026"
+    assert sheet["D6"].value == "BPU104/01/THP II/2026"

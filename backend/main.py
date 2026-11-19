@@ -25,6 +25,7 @@ from urllib.parse import quote, unquote, urlparse
 import fitz  # PyMuPDF
 import httpx
 import openpyxl
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from alembic import command
 from alembic.config import Config
 from dateutil.parser import parse as parse_date
@@ -419,6 +420,11 @@ class MasterBarangArkasItem(BaseModel):
 
 class MasterBarangArkasBulkRequest(BaseModel):
     data: List[MasterBarangArkasItem]
+
+
+class RekapBelanjaExcelRequest(BaseModel):
+    kwitansi_ids: List[int]
+    transaksi_ids: Optional[List[int]] = None
 
 
 class RkasItemRequest(BaseModel):
@@ -997,6 +1003,22 @@ def parse_tanggal_flex(tgl) -> Optional[datetime]:
         return parse_date(s, dayfirst=True)
     except Exception:
         return None
+
+
+def natural_sort_key(value):
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in re.split(r"(\d+)", str(value or ""))
+    )
+
+
+def rekap_stage_matches(tanggal, stage: str) -> bool:
+    if stage not in ("1", "2"):
+        return True
+    parsed = parse_tanggal_flex(tanggal)
+    if parsed is None:
+        return False
+    return parsed.month <= 6 if stage == "1" else parsed.month >= 7
 
 
 def _identitas_to_dict(p: Pengaturan, sumber: str = "pengaturan") -> dict:
@@ -5287,7 +5309,38 @@ async def get_rekap_transaksi(
         # Inner join ensures only transactions with a matching master rekening are considered.
         # Exclude transactions where kode_rekening or no_bukti are null/empty
         # Build base stmt joining MasterRekening
-        base_stmt = select(Transaksi, MasterRekeningBelanja).join(
+        kwitansi_id = (
+            select(Kwitansi.id)
+            .where(Kwitansi.no_bukti == Transaksi.no_bukti)
+            .where(
+                *[
+                    or_(
+                        getattr(Kwitansi, column_name)
+                        == getattr(Transaksi, column_name),
+                        and_(
+                            or_(
+                                getattr(Kwitansi, column_name).is_(None),
+                                getattr(Kwitansi, column_name) == "",
+                            ),
+                            or_(
+                                getattr(Transaksi, column_name).is_(None),
+                                getattr(Transaksi, column_name) == "",
+                            ),
+                        ),
+                    )
+                    for column_name in (
+                        "fiscal_year",
+                        "source_fund_id",
+                        "budget_id",
+                    )
+                ]
+            )
+            .order_by(Kwitansi.id.asc())
+            .limit(1)
+            .correlate(Transaksi)
+            .scalar_subquery()
+        )
+        base_stmt = select(Transaksi, MasterRekeningBelanja, kwitansi_id).join(
             MasterRekeningBelanja,
             MasterRekeningBelanja.kode_rekening_belanja == Transaksi.kode_rekening
         ).where(Transaksi.kode_rekening != None).where(Transaksi.kode_rekening != "").where(Transaksi.no_bukti != None).where(Transaksi.no_bukti != "")
@@ -5297,18 +5350,19 @@ async def get_rekap_transaksi(
         if source_fund_id is not None:
             base_stmt = base_stmt.where(Transaksi.source_fund_id == source_fund_id)
 
-        # If thp filter is specified (1 or 2), join Kwitansi and filter by its `thp` column
-        if str(thp).strip() in ("1", "2"):
-            thp_map = {"1": "THP I", "2": "THP II"}
-            target_thp = thp_map[str(thp).strip()]
-            base_stmt = base_stmt.join(Kwitansi, Kwitansi.no_bukti == Transaksi.no_bukti).where(Kwitansi.thp == target_thp)
-
+        base_stmt = base_stmt.order_by(Transaksi.id)
         result = await db.execute(base_stmt)
         rows = result.all()
+        stage = str(thp).strip()
+        if stage in ("1", "2"):
+            rows = [
+                row for row in rows
+                if rekap_stage_matches(row[0].tanggal, stage)
+            ]
 
         groups = {}
 
-        for trans, master in rows:
+        for trans, master, receipt_id in rows:
             # base rekap from master
             base_rekap = (master.rekap_rekening_belanja or "").strip()
 
@@ -5330,9 +5384,15 @@ async def get_rekap_transaksi(
                     "count": 0,
                     "total_pengeluaran": 0.0,
                     "kode_rekening_breakdown": {},
-                    "items": []
+                    "items": [],
+                    "kwitansi_ids": set(),
+                    "transaksi_ids": set(),
                 }
                 groups[label] = g
+
+            if receipt_id is not None:
+                g["kwitansi_ids"].add(receipt_id)
+                g["transaksi_ids"].add(trans.id)
 
             pel = float(trans.pengeluaran or 0)
             g["count"] += 1
@@ -5353,11 +5413,248 @@ async def get_rekap_transaksi(
 
         # Convert to list and sort by rekap name
         data = sorted(list(groups.values()), key=lambda x: x.get("rekap") or "")
+        for group in data:
+            group["kwitansi_ids"] = sorted(group["kwitansi_ids"])
+            group["transaksi_ids"] = sorted(group["transaksi_ids"])
+            group["items"].sort(
+                key=lambda item: natural_sort_key(item.get("no_bukti"))
+            )
         return {"status": "success", "data": data}
 
     except Exception as e:
         logger.error(f"Error generating rekap transaksi: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating rekap transaksi: {str(e)}")
+
+
+@api_router.post("/rekap-belanja/export-excel")
+async def export_rekap_belanja_excel(
+    request: RekapBelanjaExcelRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    kwitansi_ids = list(dict.fromkeys(request.kwitansi_ids))
+    if not kwitansi_ids:
+        raise HTTPException(status_code=400, detail="Pilih setidaknya satu SPJ untuk diekspor.")
+    if len(kwitansi_ids) > 5000:
+        raise HTTPException(status_code=400, detail="Maksimal 5.000 SPJ per file Excel.")
+
+    try:
+        result = await db.execute(
+            select(Kwitansi)
+            .where(Kwitansi.id.in_(kwitansi_ids))
+            .order_by(Kwitansi.id)
+        )
+        receipts = result.scalars().all()
+        if len(receipts) != len(kwitansi_ids):
+            raise HTTPException(
+                status_code=404,
+                detail="Sebagian SPJ yang dipilih sudah tidak tersedia. Muat ulang daftar SPJ.",
+            )
+        receipts.sort(
+            key=lambda receipt: (
+                natural_sort_key(receipt.nomor_kwitansi),
+                receipt.id,
+            )
+        )
+
+        receipt_ids = {receipt.id for receipt in receipts}
+        selected_transaction_ids = set(request.transaksi_ids or [])
+        item_stmt = (
+            select(Kwitansi, Transaksi)
+            .outerjoin(
+                Transaksi,
+                and_(
+                    Transaksi.no_bukti == Kwitansi.no_bukti,
+                    *[
+                        or_(
+                            getattr(Transaksi, column_name)
+                            == getattr(Kwitansi, column_name),
+                            and_(
+                                or_(
+                                    getattr(Transaksi, column_name).is_(None),
+                                    getattr(Transaksi, column_name) == "",
+                                ),
+                                or_(
+                                    getattr(Kwitansi, column_name).is_(None),
+                                    getattr(Kwitansi, column_name) == "",
+                                ),
+                            ),
+                        )
+                        for column_name in (
+                            "fiscal_year",
+                            "source_fund_id",
+                            "budget_id",
+                        )
+                    ],
+                ),
+            )
+            .where(Kwitansi.id.in_(receipt_ids))
+            .order_by(
+                Kwitansi.tanggal.asc(),
+                Kwitansi.no_bukti.asc(),
+                Kwitansi.id.asc(),
+                Transaksi.id.asc(),
+            )
+        )
+        item_result = await db.execute(item_stmt)
+        receipt_items = {receipt.id: [] for receipt in receipts}
+        found_transaction_ids = set()
+        for receipt, transaction in item_result.all():
+            if transaction is not None and (
+                not selected_transaction_ids
+                or transaction.id in selected_transaction_ids
+            ):
+                receipt_items[receipt.id].append(transaction)
+                found_transaction_ids.add(transaction.id)
+
+        if selected_transaction_ids and found_transaction_ids != selected_transaction_ids:
+            raise HTTPException(
+                status_code=404,
+                detail="Sebagian rincian rekap yang dipilih sudah tidak tersedia. Generate ulang data rekap.",
+            )
+        if selected_transaction_ids:
+            receipts = [
+                receipt for receipt in receipts if receipt_items[receipt.id]
+            ]
+
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "Rekap Belanja"
+        sheet.append([
+            "No. Urut",
+            "Kode Rekening Belanja",
+            "Tanggal Bukti Kwitansi",
+            "No. Bukti Kwitansi",
+            "Nama Persediaan",
+            "Jumlah Barang",
+            "Satuan Barang",
+            "Harga Satuan (Rp)",
+            "Harga (Rp)",
+            "Jumlah Harga",
+            None,
+            "Keterangan",
+        ])
+        for column in range(1, 10):
+            sheet.merge_cells(start_row=1, start_column=column, end_row=2, end_column=column)
+        sheet.merge_cells("J1:K1")
+        sheet.merge_cells("L1:L2")
+        sheet["A1"] = "No. Urut"
+        sheet["B1"] = "Kode Rekening Belanja"
+        sheet["C1"] = "Tanggal Bukti Kwitansi"
+        sheet["D1"] = "No. Bukti Kwitansi"
+        sheet["E1"] = "Nama Persediaan"
+        sheet["F1"] = "Jumlah Barang"
+        sheet["G1"] = "Satuan Barang"
+        sheet["H1"] = "Harga Satuan\n(Rp)"
+        sheet["I1"] = "Harga\n(Rp)"
+        sheet["J1"] = "Jumlah Harga"
+        sheet["J2"] = "Sesuai Nota/Kwitansi\n(Rp)"
+        sheet["K2"] = "Diluar Beban\nPersediaan (Rp)"
+        sheet["L1"] = "Keterangan"
+        sheet.append([
+            "a", "b", "e", "f", "g", "h", "i", "j", "k = (h x i)", "l", "m", "n",
+        ])
+
+        sequence = 1
+        for receipt in receipts:
+            transactions = receipt_items[receipt.id]
+            receipt_total = (
+                sum(float(item.pengeluaran or 0) for item in transactions)
+                if selected_transaction_ids
+                else float(receipt.jumlah or 0)
+            )
+            if receipt_total <= 0:
+                receipt_total = sum(float(item.pengeluaran or 0) for item in transactions)
+            sheet.append([
+                sequence,
+                None,
+                receipt.tanggal or "",
+                receipt.nomor_kwitansi or "",
+                receipt.nama_kegiatan or "",
+                None,
+                None,
+                None,
+                None,
+                receipt_total,
+                None,
+                "Kwitansi",
+            ])
+            sequence += 1
+            for item in transactions:
+                sheet.append([
+                    sequence,
+                    item.kode_rekening or "",
+                    receipt.tanggal or "",
+                    "",
+                    item.uraian or "",
+                    float(item.volume or 0),
+                    item.satuan or "",
+                    float(item.harga_satuan or 0),
+                    float(item.pengeluaran or 0),
+                    None,
+                    None,
+                    "Nota",
+                ])
+                sequence += 1
+
+        header_fill = PatternFill(fill_type="solid", fgColor="FFFF00")
+        subheader_fill = PatternFill(fill_type="solid", fgColor="FFC000")
+        thin_gray = Side(style="thin", color="808080")
+        border = Border(
+            left=thin_gray,
+            right=thin_gray,
+            top=thin_gray,
+            bottom=thin_gray,
+        )
+        for row in sheet.iter_rows(min_row=1, max_row=3, min_col=1, max_col=12):
+            for cell in row:
+                cell.fill = subheader_fill if cell.row == 3 else header_fill
+                cell.font = Font(bold=True, size=9)
+                cell.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center",
+                    wrap_text=True,
+                )
+                cell.border = border
+        for row in sheet.iter_rows(min_row=4, max_row=sheet.max_row, min_col=1, max_col=12):
+            for cell in row:
+                cell.border = border
+                cell.alignment = Alignment(vertical="center")
+            for column in (6, 8, 9, 10, 11):
+                row[column - 1].number_format = '#,##0.00;[Red]-#,##0.00;–'
+            row[0].alignment = Alignment(horizontal="center", vertical="center")
+            row[2].alignment = Alignment(horizontal="center", vertical="center")
+            row[11].alignment = Alignment(horizontal="center", vertical="center")
+
+        widths = [10, 24, 20, 28, 72, 16, 18, 20, 20, 24, 24, 16]
+        for index, width in enumerate(widths, start=1):
+            sheet.column_dimensions[openpyxl.utils.get_column_letter(index)].width = width
+        sheet.row_dimensions[1].height = 30
+        sheet.row_dimensions[2].height = 30
+        sheet.row_dimensions[3].height = 18
+        sheet.freeze_panes = "A4"
+        sheet.sheet_view.showGridLines = False
+        sheet.page_setup.orientation = "landscape"
+        sheet.page_setup.fitToWidth = 1
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        filename = "Rekap_Belanja_SPJ.xlsx"
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Gagal membuat Excel rekap belanja.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal membuat Excel rekap belanja: {str(e)}",
+        )
+
 
 def generate_placeholder_code(text: str) -> str:
     """Mengubah 'Belanja Bahan-Bahan' menjadi 'BELANJA_BAHAN_BAHAN'"""
@@ -5392,13 +5689,14 @@ async def generate_rekap_excel(
         if source_fund_id is not None:
             base_stmt = base_stmt.where(Transaksi.source_fund_id == source_fund_id)
 
-        if str(thp).strip() in ("1", "2"):
-            thp_map = {"1": "THP I", "2": "THP II"}
-            target_thp = thp_map[str(thp).strip()]
-            base_stmt = base_stmt.join(Kwitansi, Kwitansi.no_bukti == Transaksi.no_bukti).where(Kwitansi.thp == target_thp)
-
         result = await db.execute(base_stmt)
         rows = result.all()
+        stage = str(thp).strip()
+        if stage in ("1", "2"):
+            rows = [
+                row for row in rows
+                if rekap_stage_matches(row[0].tanggal, stage)
+            ]
 
         # 2. === HITUNG TOTAL ===
         rekap_totals = {}

@@ -55,7 +55,10 @@ async function waitForBackendHealth(origin, maxTries = 60) {
         `Backend /health belum siap (HTTP ${res.status}) — menunggu...`,
       );
     } catch (e) {
-      appLog("warn", `Backend /health belum dapat dijangkau: ${e.message || e}`);
+      appLog(
+        "warn",
+        `Backend /health belum dapat dijangkau: ${e.message || e}`,
+      );
     }
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -68,19 +71,24 @@ async function waitForBackendHealth(origin, maxTries = 60) {
 
 async function deleteMasterKegiatanArkas(id) {
   if (
-    !(await UI.confirm("Hapus referensi kegiatan pada tahun dan sumber dana ini?", {
-      title: "Hapus Referensi ARKAS",
-      okText: "Hapus",
-      danger: true,
-    }))
-  ) return;
+    !(await UI.confirm(
+      "Hapus referensi kegiatan pada tahun dan sumber dana ini?",
+      {
+        title: "Hapus Referensi ARKAS",
+        okText: "Hapus",
+        danger: true,
+      },
+    ))
+  )
+    return;
   try {
     const response = await apiFetch(
       `${API_BASE}/master-kegiatan/arkas/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
     const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "Gagal menghapus referensi ARKAS.");
+    if (!response.ok)
+      throw new Error(result.detail || "Gagal menghapus referensi ARKAS.");
     await loadMasterKegiatan();
     await loadFiscalContexts();
     showToast("Berhasil!", result.message || "Referensi ARKAS dihapus.");
@@ -110,7 +118,9 @@ function ensureBackendReady() {
               appLog(
                 "info",
                 `Backend child_process aktif di ${_backendOrigin}` +
-                (ready ? "" : " (health check belum lolos — akan dicoba ulang)"),
+                  (ready
+                    ? ""
+                    : " (health check belum lolos — akan dicoba ulang)"),
               );
               if (!ready) {
                 // Izinkan percobaan health ulang di kemudian hari.
@@ -176,7 +186,7 @@ function appLog(level, message) {
     if (level === "error") console.error(msg);
     else if (level === "warn") console.warn(msg);
     else console.log(msg);
-  } catch (e) { }
+  } catch (e) {}
 }
 
 // Hook pembungkus fetch: catat SETIAP request API (mulai, status, error) ke app.log.
@@ -277,6 +287,8 @@ let activeTab = "identitas";
 let fiscalContexts = [];
 let arkasTaxRows = [];
 let arkasTaxLoadRequest = 0;
+let rekapDisplayedGroups = [];
+let rekapSpjScopeKey = "";
 let rkasContexts = [];
 let rkasItems = [];
 let rkasSelectedContext = null;
@@ -447,7 +459,7 @@ async function loadFiscalContexts() {
 
 // ---- Identitas Satuan Pendidikan per periode (menu terpadu: kop + surat + pejabat) ----
 let identitasPeriodeList = []; // daftar entri dari GET /identitas-periode
-let identitasAktifId = null;   // entri yang tercetak untuk tanggal uji saat ini
+let identitasAktifId = null; // entri yang tercetak untuk tanggal uji saat ini
 let identitasFormMode = "new"; // "new" | "edit"
 let identitasEditingId = null; // id entri yang sedang diedit
 
@@ -596,7 +608,9 @@ async function loadMasterBarangArkas() {
             ),
         ),
       );
-      if ([...scopeSelect.options].some((option) => option.value === previous)) {
+      if (
+        [...scopeSelect.options].some((option) => option.value === previous)
+      ) {
         scopeSelect.value = previous;
       }
     }
@@ -653,7 +667,7 @@ window.updateFileList = function () {
       showToast("Error!", "Maksimal 12 file!");
       try {
         input.value = "";
-      } catch (e) { }
+      } catch (e) {}
       return;
     }
 
@@ -820,13 +834,19 @@ function chooseArkasSyncMode(context, transactionCount, taxCount, sourceName) {
 
 async function changeArkasDatabase() {
   if (typeof window.electronAPI?.selectArkasDatabase !== "function") {
-    showToast("Error!", "Pengaturan database ARKAS hanya tersedia di aplikasi desktop.");
+    showToast(
+      "Error!",
+      "Pengaturan database ARKAS hanya tersedia di aplikasi desktop.",
+    );
     return;
   }
   try {
     const selected = await window.electronAPI.selectArkasDatabase();
     if (selected.canceled) return;
-    showToast("Berhasil!", `Lokasi database ARKAS disimpan: ${selected.sourceName}.`);
+    showToast(
+      "Berhasil!",
+      `Lokasi database ARKAS disimpan: ${selected.sourceName}.`,
+    );
   } catch (error) {
     showToast("Error!", error.message || "Gagal menyimpan database ARKAS.");
   }
@@ -891,14 +911,16 @@ function selectedArkasContext(filterId, contexts, requireBudget = true) {
   const value = document.getElementById(filterId)?.value || "all";
   if (value === "all" || value === "unspecified") return null;
   const filter = JSON.parse(decodeURIComponent(value));
-  return contexts.find(
-    (context) =>
-      String(context.fiscal_year) === String(filter.fiscal_year) &&
-      String(context.source_fund_id || "") ===
-        String(filter.source_fund_id || "") &&
-      (!requireBudget ||
-        String(context.budget_id || "") === String(filter.budget_id || "")),
-  ) || null;
+  return (
+    contexts.find(
+      (context) =>
+        String(context.fiscal_year) === String(filter.fiscal_year) &&
+        String(context.source_fund_id || "") ===
+          String(filter.source_fund_id || "") &&
+        (!requireBudget ||
+          String(context.budget_id || "") === String(filter.budget_id || "")),
+    ) || null
+  );
 }
 
 async function syncArkas(contextFilterId = "bku-scope-filter") {
@@ -907,7 +929,10 @@ async function syncArkas(contextFilterId = "bku-scope-filter") {
     typeof window.electronAPI.readArkasTransactions !== "function" ||
     typeof window.electronAPI.readArkasTaxRecap !== "function"
   ) {
-    showToast("Error!", "Fitur Sinkron ARKAS hanya tersedia di aplikasi desktop.");
+    showToast(
+      "Error!",
+      "Fitur Sinkron ARKAS hanya tersedia di aplikasi desktop.",
+    );
     return;
   }
 
@@ -917,7 +942,10 @@ async function syncArkas(contextFilterId = "bku-scope-filter") {
     if (catalog.canceled) return;
     const contexts = catalog.contexts || [];
     if (!contexts.length) {
-      showToast("Warning!", "Tidak ditemukan tahun, sumber dana, atau anggaran ARKAS aktif.");
+      showToast(
+        "Warning!",
+        "Tidak ditemukan tahun, sumber dana, atau anggaran ARKAS aktif.",
+      );
       return;
     }
     const contextIndex = new Map(
@@ -1016,7 +1044,10 @@ async function syncRkasData() {
     typeof window.electronAPI.readArkasContexts !== "function" ||
     typeof window.electronAPI.readArkasBudget !== "function"
   ) {
-    showToast("Error!", "Fitur sinkronisasi RKAS hanya tersedia di aplikasi desktop.");
+    showToast(
+      "Error!",
+      "Fitur sinkronisasi RKAS hanya tersedia di aplikasi desktop.",
+    );
     return;
   }
 
@@ -1033,12 +1064,14 @@ async function syncRkasData() {
     }
     const contexts = catalog.contexts || [];
     if (!contexts.length) {
-      showToast("Warning!", "Tidak ditemukan anggaran RKAS aktif di database ARKAS.");
+      showToast(
+        "Warning!",
+        "Tidak ditemukan anggaran RKAS aktif di database ARKAS.",
+      );
       return;
     }
     if (container) {
-      container.innerHTML =
-        `<div style="padding:24px;text-align:center;color:#64748b;">Mengambil rincian ${contexts.length} anggaran RKAS...</div>`;
+      container.innerHTML = `<div style="padding:24px;text-align:center;color:#64748b;">Mengambil rincian ${contexts.length} anggaran RKAS...</div>`;
     }
 
     const data = [];
@@ -1049,7 +1082,9 @@ async function syncRkasData() {
         budgetId: context.budget_id,
       });
       if (budget.canceled) {
-        throw new Error(`Rincian RKAS ${scopeLabel(context)} tidak berhasil dibaca.`);
+        throw new Error(
+          `Rincian RKAS ${scopeLabel(context)} tidak berhasil dibaca.`,
+        );
       }
       data.push({
         ...context,
@@ -1064,7 +1099,9 @@ async function syncRkasData() {
     });
     const saved = await response.json();
     if (!response.ok || saved.status !== "success") {
-      throw new Error(saved.detail || "Gagal menyimpan data RKAS ke database aplikasi.");
+      throw new Error(
+        saved.detail || "Gagal menyimpan data RKAS ke database aplikasi.",
+      );
     }
 
     await loadRkasContexts();
@@ -1120,14 +1157,18 @@ function renderRkasContexts() {
         <thead><tr>
           <th>No</th><th>Tahun</th><th>Sumber Dana / Anggaran</th><th>Revisi Anggaran</th><th>Tampilkan</th>
         </tr></thead>
-        <tbody>${rkasContexts.map((context, index) => `
+        <tbody>${rkasContexts
+          .map(
+            (context, index) => `
           <tr>
             <td>${index + 1}</td>
             <td>${idnEscapeHtml(context.fiscal_year)}</td>
             <td>${idnEscapeHtml(context.source_fund_name || "-")}</td>
             <td>${idnEscapeHtml(context.revision_label || "Awal")}</td>
             <td><button class="btn btn-primary btn-sm" onclick="showRkasBudget(${index})">${iconSvg("eye", 14)} Tampilkan</button></td>
-          </tr>`).join("")}</tbody>
+          </tr>`,
+          )
+          .join("")}</tbody>
       </table>
     </div>`;
 }
@@ -1178,12 +1219,32 @@ function renderRkasReport() {
   const container = document.getElementById("rkas-report");
   if (!container || !rkasSelectedContext) return;
   const months = [
-    "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
-    "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "Mei",
+    "Jun",
+    "Jul",
+    "Agu",
+    "Sep",
+    "Okt",
+    "Nov",
+    "Des",
   ];
   const monthNames = [
-    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
-    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember",
   ];
   const items = new Map();
   for (const row of rkasItems) {
@@ -1219,7 +1280,9 @@ function renderRkasReport() {
     table = entries.length
       ? `<div class="table-scroll"><table class="data-table"><thead><tr>
           <th>No</th><th>Kode Kegiatan</th><th>Kegiatan</th><th>Kode Rekening</th><th>Uraian</th><th style="text-align:right;">Volume</th><th>Satuan</th><th style="text-align:right;">Harga Satuan</th><th style="text-align:right;">Anggaran Tahunan</th>
-        </tr></thead><tbody>${entries.map((item, index) => `<tr>
+        </tr></thead><tbody>${entries
+          .map(
+            (item, index) => `<tr>
           <td>${index + 1}</td><td>${idnEscapeHtml(item.activityCode || "-")}</td>
           <td>${idnEscapeHtml(item.activityName || "-")}</td>
           <td>${idnEscapeHtml(item.accountCode)}${item.accountName ? `<br><small>${idnEscapeHtml(item.accountName)}</small>` : ""}</td>
@@ -1228,7 +1291,9 @@ function renderRkasReport() {
           <td>${idnEscapeHtml(item.unitLabel)}</td>
           <td style="text-align:right;white-space:nowrap;">${formatRupiah(item.unitPrice)}</td>
           <td style="text-align:right;white-space:nowrap;">${formatRupiah(item.amount)}</td>
-        </tr>`).join("")}</tbody></table></div>`
+        </tr>`,
+          )
+          .join("")}</tbody></table></div>`
       : '<div style="padding:24px;text-align:center;color:#64748b;">Tidak ada rincian RKAS untuk anggaran ini.</div>';
   } else if (rkasReportView === "bulanan") {
     const monthlyItems = rkasItems.filter(
@@ -1239,7 +1304,9 @@ function renderRkasReport() {
     table = monthlyItems.length
       ? `<div class="table-scroll"><table class="data-table"><thead><tr>
           <th>No</th><th>Bulan</th><th>Kode Kegiatan</th><th>Kegiatan</th><th>Kode Rekening</th><th>Uraian</th><th style="text-align:right;">Volume</th><th>Satuan</th><th style="text-align:right;">Harga Satuan</th><th style="text-align:right;">Anggaran</th>
-        </tr></thead><tbody>${monthlyItems.map((item, index) => `<tr>
+        </tr></thead><tbody>${monthlyItems
+          .map(
+            (item, index) => `<tr>
           <td>${index + 1}</td><td>${months[item.month - 1] || "-"}</td>
           <td>${idnEscapeHtml(item.activity_code || "-")}</td><td>${idnEscapeHtml(item.activity_name || "-")}</td>
           <td>${idnEscapeHtml(item.account_code)}${item.account_name ? `<br><small>${idnEscapeHtml(item.account_name)}</small>` : ""}</td>
@@ -1248,7 +1315,9 @@ function renderRkasReport() {
           <td>${idnEscapeHtml(item.unit || "-")}</td>
           <td style="text-align:right;white-space:nowrap;">${formatRupiah(Number(item.unit_price) || 0)}</td>
           <td style="text-align:right;white-space:nowrap;font-weight:600;">${formatRupiah(Number(item.amount) || 0)}</td>
-        </tr>`).join("")}</tbody></table></div>`
+        </tr>`,
+          )
+          .join("")}</tbody></table></div>`
       : '<div style="padding:24px;text-align:center;color:#64748b;">Tidak ada rincian RKAS untuk anggaran ini.</div>';
   } else {
     const summaries = [
@@ -1261,7 +1330,8 @@ function renderRkasReport() {
           ? item.accountCode.startsWith("5.1")
           : category.key === "modal"
             ? item.accountCode.startsWith("5.2")
-            : !item.accountCode.startsWith("5.1") && !item.accountCode.startsWith("5.2"),
+            : !item.accountCode.startsWith("5.1") &&
+              !item.accountCode.startsWith("5.2"),
       );
       return {
         ...category,
@@ -1271,10 +1341,14 @@ function renderRkasReport() {
     });
     table = `<div class="table-scroll"><table class="data-table"><thead><tr>
       <th>No</th><th>Jenis Belanja</th><th>Jumlah Rincian</th><th style="text-align:right;">Total Anggaran</th>
-    </tr></thead><tbody>${summaries.map((summary, index) => `<tr>
+    </tr></thead><tbody>${summaries
+      .map(
+        (summary, index) => `<tr>
       <td>${index + 1}</td><td>${summary.label}</td><td>${summary.count}</td>
       <td style="text-align:right;white-space:nowrap;">${formatRupiah(summary.amount)}</td>
-    </tr>`).join("")}</tbody></table></div>`;
+    </tr>`,
+      )
+      .join("")}</tbody></table></div>`;
   }
 
   const views = [
@@ -1329,8 +1403,7 @@ function renderFiscalContext(item) {
 function displayKwitansiNumber(item) {
   let number = String(item.nomor_kwitansi || "");
   if (item.source_fund_id || item.budget_id) {
-    const internalScopeSuffix =
-      `/${item.source_fund_id || "-"}-${item.budget_id || "-"}`;
+    const internalScopeSuffix = `/${item.source_fund_id || "-"}-${item.budget_id || "-"}`;
     if (number.endsWith(internalScopeSuffix)) {
       number = number.slice(0, -internalScopeSuffix.length);
     }
@@ -1477,7 +1550,7 @@ function resetBhpSelection() {
   if (input)
     try {
       input.value = "";
-    } catch (e) { }
+    } catch (e) {}
   if (display) display.innerHTML = "";
   const res = document.getElementById("bhp-result");
   if (res) res.innerHTML = "";
@@ -1489,7 +1562,7 @@ function resetBkuSelection() {
   if (input)
     try {
       input.value = "";
-    } catch (e) { }
+    } catch (e) {}
   if (display) display.innerHTML = "";
   const res = document.getElementById("bku-result");
   if (res) res.innerHTML = "";
@@ -1625,10 +1698,10 @@ function applyBhpToBKU(bhpItems) {
     const candidates = matches.length
       ? matches
       : bkuData.transaksi.filter(
-        (t) =>
-          normalizeNoBukti(t.no_bukti || "").includes(nb) ||
-          nb.includes(normalizeNoBukti(t.no_bukti || "")),
-      );
+          (t) =>
+            normalizeNoBukti(t.no_bukti || "").includes(nb) ||
+            nb.includes(normalizeNoBukti(t.no_bukti || "")),
+        );
 
     candidates.forEach((t) => {
       // Update tanggal (if present)
@@ -1720,8 +1793,7 @@ async function loadRekapPajak() {
   } catch (error) {
     if (requestId !== arkasTaxLoadRequest) return;
     if (list) {
-      list.innerHTML =
-        `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(error.message || "Gagal memuat rekap pajak lokal.")}</div>`;
+      list.innerHTML = `<div class="alert alert-danger" role="alert">${escapeSpjFormValue(error.message || "Gagal memuat rekap pajak lokal.")}</div>`;
     }
     showToast("Error!", error.message || "Gagal memuat rekap pajak lokal.");
   }
@@ -1760,14 +1832,15 @@ function renderRekapPajak(rows = arkasTaxRows) {
   }
 
   const rowsHtml = filteredRows.length
-    ? filteredRows.map((row, index) => {
-      const percentage =
-        row.persentase_pajak === null || row.persentase_pajak === undefined
-          ? "-"
-          : `${new Intl.NumberFormat("id-ID", {
-              maximumFractionDigits: 4,
-            }).format(Number(row.persentase_pajak))}%`;
-      return `<tr>
+    ? filteredRows
+        .map((row, index) => {
+          const percentage =
+            row.persentase_pajak === null || row.persentase_pajak === undefined
+              ? "-"
+              : `${new Intl.NumberFormat("id-ID", {
+                  maximumFractionDigits: 4,
+                }).format(Number(row.persentase_pajak))}%`;
+          return `<tr>
         <td style="text-align:center;">${index + 1}</td>
         <td>${escapeSpjFormValue(row.uraian || "-")}</td>
         <td>${escapeSpjFormValue(row.no_bukti || "-")}</td>
@@ -1778,8 +1851,8 @@ function renderRekapPajak(rows = arkasTaxRows) {
         <td>${escapeSpjFormValue(row.ntpn || "-")}</td>
         <td>${renderFiscalContext(row)}</td>
       </tr>`;
-    })
-      .join("")
+        })
+        .join("")
     : `<tr><td colspan="9" style="text-align:center;padding:32px;color:#64748b;">Tidak ada data pajak untuk filter yang dipilih.</td></tr>`;
 
   container.innerHTML = `<div class="table-scroll">
@@ -1816,8 +1889,8 @@ async function generateKwitansi() {
   const filterValue =
     document.getElementById("spj-scope-filter")?.value || "all";
   const scopeLabelText =
-    document.getElementById("spj-scope-filter")?.selectedOptions?.[0]?.textContent ||
-    "semua konteks";
+    document.getElementById("spj-scope-filter")?.selectedOptions?.[0]
+      ?.textContent || "semua konteks";
   if (
     !(await UI.confirm(
       filterValue === "all"
@@ -1869,13 +1942,15 @@ async function downloadKwitansi(id, noBukti = "") {
     if (!contentType.includes("json")) {
       throw new Error(
         `Respons backend bukan JSON (Content-Type: ${contentType || "kosong"}); ` +
-        "alur unduh SPJ hanya menerima data JSON untuk dirender di frontend",
+          "alur unduh SPJ hanya menerima data JSON untuk dirender di frontend",
       );
     }
 
     const payload = await response.json();
     if (payload.status !== "success" || !payload.data) {
-      throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
+      throw new Error(
+        payload.detail || "Backend tidak mengirim payload SPJ yang valid",
+      );
     }
 
     setBackendOriginGetter(() => _backendOrigin);
@@ -1888,11 +1963,12 @@ async function downloadKwitansi(id, noBukti = "") {
     downloadLink.href = objectUrl;
     const requestedFileName =
       noBukti || payload.data.document?.filename || String(id);
-    const safeFileName = String(requestedFileName)
-      .replace(/\.pdf$/i, "")
-      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
-      .replace(/^[. ]+/, "")
-      .slice(0, 120) || `kwitansi-${id}`;
+    const safeFileName =
+      String(requestedFileName)
+        .replace(/\.pdf$/i, "")
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+        .replace(/^[. ]+/, "")
+        .slice(0, 120) || `kwitansi-${id}`;
     downloadLink.download = `SPJ-${safeFileName}.pdf`;
 
     document.body.appendChild(downloadLink);
@@ -1944,7 +2020,10 @@ function disposeSpjPreview() {
   _spjPreviewState = null;
   if (task) {
     task.destroy().catch((err) => {
-      appLog("warn", `previewKwitansi: gagal menutup dokumen PDF: ${err.message || err}`);
+      appLog(
+        "warn",
+        `previewKwitansi: gagal menutup dokumen PDF: ${err.message || err}`,
+      );
     });
   }
 }
@@ -1959,10 +2038,22 @@ async function renderSpjPreviewPages() {
   state.renderTask?.cancel();
   container.replaceChildren();
 
-  for (let pageNumber = 1; pageNumber <= state.document.numPages; pageNumber += 1) {
-    if (state !== _spjPreviewState || renderGeneration !== state.renderGeneration) return;
+  for (
+    let pageNumber = 1;
+    pageNumber <= state.document.numPages;
+    pageNumber += 1
+  ) {
+    if (
+      state !== _spjPreviewState ||
+      renderGeneration !== state.renderGeneration
+    )
+      return;
     const page = await state.document.getPage(pageNumber);
-    if (state !== _spjPreviewState || renderGeneration !== state.renderGeneration) return;
+    if (
+      state !== _spjPreviewState ||
+      renderGeneration !== state.renderGeneration
+    )
+      return;
 
     const baseViewport = page.getViewport({ scale: 1 });
     const scale = state.zoom || 1;
@@ -1982,7 +2073,8 @@ async function renderSpjPreviewPages() {
     const renderTask = page.render({
       canvasContext: canvas.getContext("2d"),
       viewport,
-      transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
+      transform:
+        outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
     });
     state.renderTask = renderTask;
     try {
@@ -2007,7 +2099,10 @@ async function setSpjPreviewZoom(zoom) {
   } catch (error) {
     if (error?.name === "RenderingCancelledException") return;
     const message = error?.message || String(error);
-    appLog("error", `previewKwitansi: gagal merender ulang pada zoom ${state.zoom}: ${message}`);
+    appLog(
+      "error",
+      `previewKwitansi: gagal merender ulang pada zoom ${state.zoom}: ${message}`,
+    );
     showToast("Error!", `Gagal mengubah zoom preview SPJ: ${message}`);
   }
 }
@@ -2020,12 +2115,22 @@ async function fitSpjPreviewWidth() {
     const firstPage = await state.document.getPage(1);
     if (state !== _spjPreviewState) return;
     const pageWidth = firstPage.getViewport({ scale: 1 }).width;
-    const fitScale = Math.min(1.5, Math.max(0.25, (container.clientWidth - 48) / pageWidth));
+    const fitScale = Math.min(
+      1.5,
+      Math.max(0.25, (container.clientWidth - 48) / pageWidth),
+    );
     await setSpjPreviewZoom(fitScale);
   } catch (error) {
-    if (state !== _spjPreviewState || error?.name === "RenderingCancelledException") return;
+    if (
+      state !== _spjPreviewState ||
+      error?.name === "RenderingCancelledException"
+    )
+      return;
     const message = error?.message || String(error);
-    appLog("error", `previewKwitansi: gagal menyesuaikan lebar halaman: ${message}`);
+    appLog(
+      "error",
+      `previewKwitansi: gagal menyesuaikan lebar halaman: ${message}`,
+    );
     showToast("Error!", `Gagal menyesuaikan lebar preview SPJ: ${message}`);
   }
 }
@@ -2067,11 +2172,15 @@ async function previewKwitansi(id) {
 
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("json")) {
-      throw new Error(`Respons backend bukan JSON (${contentType || "kosong"})`);
+      throw new Error(
+        `Respons backend bukan JSON (${contentType || "kosong"})`,
+      );
     }
     const payload = await response.json();
     if (payload.status !== "success" || !payload.data) {
-      throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid");
+      throw new Error(
+        payload.detail || "Backend tidak mengirim payload SPJ yang valid",
+      );
     }
 
     setBackendOriginGetter(() => _backendOrigin);
@@ -2111,8 +2220,11 @@ async function previewKwitansi(id) {
       </div>
     `;
     await fitSpjPreviewWidth();
-    const subtitle = document.querySelector("#popup-overlay .popup-header small");
-    if (subtitle) subtitle.textContent = "Preview menggunakan data tersimpan terbaru.";
+    const subtitle = document.querySelector(
+      "#popup-overlay .popup-header small",
+    );
+    if (subtitle)
+      subtitle.textContent = "Preview menggunakan data tersimpan terbaru.";
     appLog(
       "info",
       `previewKwitansi: OK id=${id}, jenis=${payload.data.jenis_belanja || "umum"}, halaman=${pdfDocument.numPages}, ukuran=${blob.size} byte`,
@@ -2135,10 +2247,16 @@ async function syncMasterKegiatanArkas() {
     typeof window.electronAPI?.readArkasActivities !== "function" ||
     typeof window.electronAPI?.readArkasActivityContexts !== "function"
   ) {
-    showToast("Error!", "Sinkron referensi ARKAS hanya tersedia di aplikasi desktop.");
+    showToast(
+      "Error!",
+      "Sinkron referensi ARKAS hanya tersedia di aplikasi desktop.",
+    );
     return;
   }
-  showToast("Info!", "Membaca referensi kegiatan ARKAS, termasuk anggaran draft...");
+  showToast(
+    "Info!",
+    "Membaca referensi kegiatan ARKAS, termasuk anggaran draft...",
+  );
   try {
     const catalog = await window.electronAPI.readArkasActivityContexts();
     if (catalog.canceled) return;
@@ -2151,7 +2269,10 @@ async function syncMasterKegiatanArkas() {
       ).values(),
     ];
     if (!scopeOptions.length) {
-      showToast("Warning!", "Tidak ditemukan konteks anggaran ARKAS, termasuk draft.");
+      showToast(
+        "Warning!",
+        "Tidak ditemukan konteks anggaran ARKAS, termasuk draft.",
+      );
       return;
     }
     let context = selectedArkasContext(
@@ -2186,7 +2307,9 @@ async function syncMasterKegiatanArkas() {
     });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.detail || "Gagal menyinkronkan referensi kegiatan.");
+      throw new Error(
+        result.detail || "Gagal menyinkronkan referensi kegiatan.",
+      );
     }
     await loadFiscalContexts();
     const scopeSelect = document.getElementById("master-scope-filter");
@@ -2206,7 +2329,10 @@ async function syncMasterKegiatanArkas() {
         `Referensi lokal yang tidak ada di ARKAS tidak dihapus. Data kegiatan dari anggaran draft juga disertakan.`,
     );
   } catch (error) {
-    showToast("Error!", error.message || "Gagal membaca referensi kegiatan ARKAS.");
+    showToast(
+      "Error!",
+      error.message || "Gagal membaca referensi kegiatan ARKAS.",
+    );
   }
 }
 
@@ -2223,19 +2349,17 @@ function exportMasterKegiatanExcel() {
     "Sumber Dana": item.source_fund_name || "Referensi lokal",
   }));
   const worksheet = XLSX.utils.json_to_sheet(rows);
-  worksheet["!cols"] = [
-    { wch: 24 },
-    { wch: 64 },
-    { wch: 12 },
-    { wch: 28 },
-  ];
+  worksheet["!cols"] = [{ wch: 24 }, { wch: 64 }, { wch: 12 }, { wch: 28 }];
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Referensi Kegiatan");
   XLSX.writeFile(
     workbook,
     `Referensi_Kegiatan_${new Date().toISOString().slice(0, 10)}.xlsx`,
   );
-  showToast("Berhasil!", `${rows.length} referensi kegiatan diekspor ke Excel.`);
+  showToast(
+    "Berhasil!",
+    `${rows.length} referensi kegiatan diekspor ke Excel.`,
+  );
 }
 
 async function syncMasterBarangArkas() {
@@ -2243,13 +2367,17 @@ async function syncMasterBarangArkas() {
     typeof window.electronAPI?.readArkasActivityContexts !== "function" ||
     typeof window.electronAPI?.readArkasReferenceBarang !== "function"
   ) {
-    showToast("Error!", "Sinkron referensi barang ARKAS hanya tersedia di aplikasi desktop.");
+    showToast(
+      "Error!",
+      "Sinkron referensi barang ARKAS hanya tersedia di aplikasi desktop.",
+    );
     return;
   }
   const syncButton = document.getElementById("btn-sync-barang-arkas");
   const syncStatus = document.getElementById("barang-sync-status");
   if (syncButton) syncButton.disabled = true;
-  if (syncStatus) syncStatus.textContent = "Membaca referensi barang dari database ARKAS...";
+  if (syncStatus)
+    syncStatus.textContent = "Membaca referensi barang dari database ARKAS...";
   showToast("Info!", "Membaca referensi barang dari database ARKAS...");
   try {
     const catalog = await window.electronAPI.readArkasActivityContexts();
@@ -2266,16 +2394,16 @@ async function syncMasterBarangArkas() {
       ).values(),
     ];
     if (!contexts.length) {
-      showToast("Warning!", "Tidak ditemukan konteks tahun anggaran dan sumber dana di ARKAS.");
-      if (syncStatus) syncStatus.textContent = "Konteks anggaran ARKAS tidak ditemukan.";
+      showToast(
+        "Warning!",
+        "Tidak ditemukan konteks tahun anggaran dan sumber dana di ARKAS.",
+      );
+      if (syncStatus)
+        syncStatus.textContent = "Konteks anggaran ARKAS tidak ditemukan.";
       return;
     }
 
-    let context = selectedArkasContext(
-      "barang-scope-filter",
-      contexts,
-      false,
-    );
+    let context = selectedArkasContext("barang-scope-filter", contexts, false);
     if (!context) {
       context = await chooseArkasContext(
         contexts,
@@ -2298,8 +2426,7 @@ async function syncMasterBarangArkas() {
     }
     if (!imported.items?.length) {
       if (syncStatus) {
-        syncStatus.textContent =
-          `Tidak ada referensi barang aktif untuk tahun ${context.fiscal_year}.`;
+        syncStatus.textContent = `Tidak ada referensi barang aktif untuk tahun ${context.fiscal_year}.`;
       }
       showToast(
         "Warning!",
@@ -2309,8 +2436,7 @@ async function syncMasterBarangArkas() {
     }
 
     if (syncStatus) {
-      syncStatus.textContent =
-        `Menyimpan ${imported.items.length.toLocaleString("id-ID")} barang ke database aplikasi...`;
+      syncStatus.textContent = `Menyimpan ${imported.items.length.toLocaleString("id-ID")} barang ke database aplikasi...`;
     }
     const response = await apiFetch(
       `${API_BASE}/master-barang-arkas/sync-arkas`,
@@ -2331,8 +2457,7 @@ async function syncMasterBarangArkas() {
       renderMasterBarangArkas(0);
     }
     if (syncStatus) {
-      syncStatus.textContent =
-        `Sinkron selesai: ${result.total.toLocaleString("id-ID")} barang untuk ${context.fiscal_year}.`;
+      syncStatus.textContent = `Sinkron selesai: ${result.total.toLocaleString("id-ID")} barang untuk ${context.fiscal_year}.`;
     }
     showToast(
       "Berhasil!",
@@ -2341,10 +2466,12 @@ async function syncMasterBarangArkas() {
     );
   } catch (error) {
     if (syncStatus) {
-      syncStatus.textContent =
-        `Sinkronisasi gagal: ${error.message || "Terjadi kesalahan."}`;
+      syncStatus.textContent = `Sinkronisasi gagal: ${error.message || "Terjadi kesalahan."}`;
     }
-    showToast("Error!", error.message || "Gagal menyinkronkan referensi barang ARKAS.");
+    showToast(
+      "Error!",
+      error.message || "Gagal menyinkronkan referensi barang ARKAS.",
+    );
   } finally {
     if (syncButton) syncButton.disabled = false;
   }
@@ -2382,10 +2509,7 @@ function exportMasterBarangArkasExcel() {
     workbook,
     `Referensi_Barang_${new Date().toISOString().slice(0, 10)}.xlsx`,
   );
-  showToast(
-    "Berhasil!",
-    `${rows.length} referensi barang diekspor ke Excel.`,
-  );
+  showToast("Berhasil!", `${rows.length} referensi barang diekspor ke Excel.`);
 }
 
 async function copyMasterBarangValue(button) {
@@ -2426,15 +2550,15 @@ async function importMasterRekeningBelanja() {
       .map((row) => ({
         kode_rekening_belanja: String(
           row.kode_rekening_belanja ||
-          row["kode_rekening_belanja"] ||
-          row["kode"] ||
-          "",
+            row["kode_rekening_belanja"] ||
+            row["kode"] ||
+            "",
         ).trim(),
         nama_rekening_belanja: String(
           row.nama_rekening_belanja ||
-          row["nama_rekening_belanja"] ||
-          row["nama"] ||
-          "",
+            row["nama_rekening_belanja"] ||
+            row["nama"] ||
+            "",
         ).trim(),
         rekap_rekening_belanja: String(
           row.rekap_rekening_belanja || row["rekap_rekening_belanja"] || "",
@@ -2442,8 +2566,8 @@ async function importMasterRekeningBelanja() {
         nilai_kapitalisasi_belanja:
           parseFloat(
             row.nilai_kapitalisasi_belanja ||
-            row["nilai_kapitalisasi_belanja"] ||
-            0,
+              row["nilai_kapitalisasi_belanja"] ||
+              0,
           ) || 0,
       }))
       .filter(
@@ -2596,12 +2720,11 @@ async function generateRekapTransaksi(forceDetails = false) {
     if (scope.source_fund_id) {
       params.set("source_fund_id", scope.source_fund_id);
     }
-    const res = await apiFetch(
-      `${API_BASE}/rekap-transaksi?${params}`,
-    );
+    const res = await apiFetch(`${API_BASE}/rekap-transaksi?${params}`);
     const json = await res.json();
     if (json.status !== "success")
       throw new Error(json.detail || "Gagal memproses rekap");
+    rekapSpjScopeKey = JSON.stringify({ scope, thp });
     renderRekapTransaksi(json.data, include, scopeLabelText);
     showToast("Berhasil!", "Rekap selesai");
   } catch (err) {
@@ -2628,19 +2751,23 @@ function renderRekapTransaksi(
   if (!container) return;
 
   if (!Array.isArray(data) || data.length === 0) {
-    container.innerHTML =
-      `<p style='text-align:center; padding:20px;'>Tidak ada data rekap untuk ${escapeSpjFormValue(scopeLabelText)}.</p>`;
+    rekapDisplayedGroups = [];
+    container.innerHTML = `<p style='text-align:center; padding:20px;'>Tidak ada data rekap untuk ${escapeSpjFormValue(scopeLabelText)}.</p>`;
     return;
   }
+  rekapDisplayedGroups = data;
 
-  // Tambahkan header kolom 'Kode Template'
   let html = `
         <h4 class="rekap-scope-caption">Tahun / sumber dana: ${escapeSpjFormValue(scopeLabelText)}</h4>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0;">
+            <p id="rekap-spj-selected-count" style="color:#475569;margin:0;">Belum ada uraian dipilih.</p>
+            <button class="btn btn-success" onclick="exportRekapBelanjaSpjExcel()">${iconSvg("download", 15)} Ekspor ke Laporan Aset</button>
+        </div>
         <div class="table-container">
             <table>
                 <thead>
                     <tr>
-                        <th>Uraian Rekap</th>
+                        <th><label style="display:flex;align-items:center;gap:8px;"><input id="rekap-spj-select-all" type="checkbox" onchange="setRekapSpjSelection(this.checked)"> Uraian Rekap</label></th>
                         <th style="width:250px; background:#eef;">Kode Template (Copy Ini)</th>
                         <th style="text-align:right">Jumlah</th>
                     </tr>
@@ -2648,13 +2775,21 @@ function renderRekapTransaksi(
                 <tbody>
     `;
 
-  data.forEach((group) => {
-    // Generate kode untuk ditampilkan
+  data.forEach((group, index) => {
     const code = getPlaceholderCode(group.rekap);
+    const kwitansiIds = Array.isArray(group.kwitansi_ids)
+      ? group.kwitansi_ids
+      : [];
 
     html += `
             <tr>
-                <td><strong>${group.rekap}</strong></td>
+                <td>
+                    <label style="display:flex;align-items:center;gap:8px;">
+                        <input class="rekap-spj-checkbox" type="checkbox" data-group-index="${index}" ${kwitansiIds.length ? "" : "disabled"} onchange="updateRekapSpjSelectionCount()">
+                        <strong>${escapeSpjFormValue(group.rekap || "-")}</strong>
+                    </label>
+                    ${kwitansiIds.length ? "" : "<small style='display:block;color:#64748b;margin-left:24px;'>Tidak ada SPJ yang cocok.</small>"}
+                </td>
                 
                 <td style="background:#f4faff;">
                     <code 
@@ -2668,7 +2803,6 @@ function renderRekapTransaksi(
             </tr>
         `;
 
-    // ... (Bagian Detail di bawahnya TETAP SAMA seperti kode lama Anda) ...
     if (withDetails && Array.isArray(group.items) && group.items.length > 0) {
       html += `
                 <tr>
@@ -2699,8 +2833,10 @@ function renderRekapTransaksi(
     }
   });
 
-  html += "</tbody></table></div>";
+  html +=
+    "</tbody></table></div><small style='display:block;margin-top:8px;color:#64748b;'>Centang uraian untuk memasukkan seluruh SPJ pada kategori tersebut ke file Excel.</small>";
   container.innerHTML = html;
+  updateRekapSpjSelectionCount();
 }
 
 // 3. FUNGSI BARU: PROSES UPLOAD EXCEL
@@ -2773,6 +2909,126 @@ async function processTemplateExcel() {
   }
 }
 
+function clearRekapSpjSelection() {
+  rekapSpjScopeKey = "";
+  document
+    .querySelectorAll("#rekap-result .rekap-spj-checkbox")
+    .forEach((input) => {
+      input.checked = false;
+    });
+  updateRekapSpjSelectionCount();
+}
+
+function setRekapSpjSelection(checked) {
+  document
+    .querySelectorAll("#rekap-result .rekap-spj-checkbox:not(:disabled)")
+    .forEach((input) => {
+      input.checked = checked;
+    });
+  updateRekapSpjSelectionCount();
+}
+
+function getSelectedRekapExportSelection() {
+  const kwitansiIds = new Set();
+  const transaksiIds = new Set();
+  document
+    .querySelectorAll("#rekap-result .rekap-spj-checkbox:checked")
+    .forEach((input) => {
+      const group = rekapDisplayedGroups[Number(input.dataset.groupIndex)];
+      (group?.kwitansi_ids || []).forEach((id) => {
+        const numericId = Number(id);
+        if (Number.isInteger(numericId) && numericId > 0) {
+          kwitansiIds.add(numericId);
+        }
+      });
+      (group?.transaksi_ids || []).forEach((id) => {
+        const numericId = Number(id);
+        if (Number.isInteger(numericId) && numericId > 0) {
+          transaksiIds.add(numericId);
+        }
+      });
+    });
+  return {
+    kwitansi_ids: Array.from(kwitansiIds),
+    transaksi_ids: Array.from(transaksiIds),
+  };
+}
+
+function updateRekapSpjSelectionCount() {
+  const selectedGroups = document.querySelectorAll(
+    "#rekap-result .rekap-spj-checkbox:checked",
+  ).length;
+  const selectedCount = getSelectedRekapExportSelection().kwitansi_ids.length;
+  const count = document.getElementById("rekap-spj-selected-count");
+  if (count) {
+    count.textContent = selectedCount
+      ? `${selectedGroups} uraian dipilih, mencakup ${selectedCount} SPJ`
+      : "Belum ada uraian dipilih.";
+  }
+  const selectAll = document.getElementById("rekap-spj-select-all");
+  if (selectAll) {
+    const checkboxes = document.querySelectorAll(
+      "#rekap-result .rekap-spj-checkbox:not(:disabled)",
+    );
+    const total = checkboxes.length;
+    selectAll.checked = total > 0 && selectedGroups === total;
+    selectAll.indeterminate = selectedGroups > 0 && selectedGroups < total;
+  }
+}
+
+async function exportRekapBelanjaSpjExcel() {
+  const scope = scopeFilterParams(
+    document.getElementById("rekap-scope-filter")?.value,
+  );
+  const thp = document.getElementById("rekap-thp-select")?.value || "all";
+  if (rekapSpjScopeKey !== JSON.stringify({ scope, thp })) {
+    showToast(
+      "Warning!",
+      "Filter rekap sudah berubah. Klik Generate Data lagi sebelum mengekspor.",
+    );
+    return;
+  }
+  const selection = getSelectedRekapExportSelection();
+  const kwitansiIds = selection.kwitansi_ids;
+  if (!kwitansiIds.length) {
+    showToast(
+      "Warning!",
+      "Centang setidaknya satu uraian rekap untuk diekspor.",
+    );
+    return;
+  }
+  try {
+    showToast("Info!", `Membuat Excel untuk ${kwitansiIds.length} SPJ...`);
+    const response = await apiFetch(`${API_BASE}/rekap-belanja/export-excel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(selection),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Gagal membuat Excel rekap belanja.");
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    const year = scopeFilterParams(
+      document.getElementById("rekap-scope-filter")?.value,
+    ).fiscal_year;
+    link.download = `Rekap_Belanja_SPJ_${year || "Semua_Tahun"}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    showToast(
+      "Berhasil!",
+      `${kwitansiIds.length} SPJ diekspor sesuai uraian dan rekening yang dipilih.`,
+    );
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal membuat Excel rekap belanja.");
+  }
+}
+
 // Delete referensi kegiatan
 async function deleteMasterKegiatan(kode) {
   if (
@@ -2837,7 +3093,9 @@ window.switchTab = function (tab) {
   const searchInputPre = document.getElementById("globalSearchInput");
   if (
     searchInputPre &&
-    ["identitas", "rekap", "pajak", "rkas", "bku", "update", "dukung"].includes(tab)
+    ["identitas", "rekap", "pajak", "rkas", "bku", "update", "dukung"].includes(
+      tab,
+    )
   ) {
     searchInputPre.value = "";
   }
@@ -2985,13 +3243,17 @@ function renderMasterKegiatan(data = null) {
             <tr>
                 <td><strong>${escapeSpjFormValue(item.kode_kegiatan)}</strong></td>
                 <td>${escapeSpjFormValue(item.nama_kegiatan)}</td>
-                <td>${scoped
-                  ? `${escapeSpjFormValue(item.fiscal_year)} • ${escapeSpjFormValue(item.source_fund_name || "Nama sumber dana tidak tersedia")}`
-                  : "Referensi lokal"}</td>
+                <td>${
+                  scoped
+                    ? `${escapeSpjFormValue(item.fiscal_year)} • ${escapeSpjFormValue(item.source_fund_name || "Nama sumber dana tidak tersedia")}`
+                    : "Referensi lokal"
+                }</td>
                 <td style="text-align:center">
-                    <button class="btn btn-sm btn-danger" onclick="${scoped
-                      ? `deleteMasterKegiatanArkas(${Number(item.id)})`
-                      : `deleteMasterKegiatan(${JSON.stringify(String(item.kode_kegiatan))})`}">
+                    <button class="btn btn-sm btn-danger" onclick="${
+                      scoped
+                        ? `deleteMasterKegiatanArkas(${Number(item.id)})`
+                        : `deleteMasterKegiatan(${JSON.stringify(String(item.kode_kegiatan))})`
+                    }">
                     Hapus
                     </button>
                 </td>
@@ -3218,11 +3480,15 @@ function renderBKUResult(filteredData = null, isExtractMode = false) {
                 <td>${formatCurrencyLabel(item.harga_satuan || 0)}</td>
                 <td>${formatCurrencyLabel(item.pengeluaran || 0)}</td>
                 <td style="text-align:center">
-                    <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(`deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))}, ${JSON.stringify({
-                      fiscal_year: item.fiscal_year ?? "unspecified",
-                      source_fund_id: item.source_fund_id || "unspecified",
-                      budget_id: item.budget_id || "unspecified",
-                    })})`)}">Hapus</button>
+                    <button class="btn btn-danger btn-sm" onclick="${escapeSpjFormValue(
+                      `deleteTransaksi(${JSON.stringify(String(item.no_bukti || ""))}, ${JSON.stringify(
+                        {
+                          fiscal_year: item.fiscal_year ?? "unspecified",
+                          source_fund_id: item.source_fund_id || "unspecified",
+                          budget_id: item.budget_id || "unspecified",
+                        },
+                      )})`,
+                    )}">Hapus</button>
                 </td>
                 <td>${renderFiscalContext(item)}</td>
             </tr>
@@ -3355,11 +3621,11 @@ function renderKwitansiList(list) {
       const isBlank = (val) => !val || val.toString().trim() === "";
 
       const needsUpdate =
-        isBlank(k.tanggal_nota) &&
-        isBlank(k.nama_toko) &&
-        isBlank(k.alamat_toko) &&
-        isBlank(k.npwp_toko) &&
-        (!Array.isArray(k.uraian) || k.uraian.length === 0) ||
+        (isBlank(k.tanggal_nota) &&
+          isBlank(k.nama_toko) &&
+          isBlank(k.alamat_toko) &&
+          isBlank(k.npwp_toko) &&
+          (!Array.isArray(k.uraian) || k.uraian.length === 0)) ||
         !isSpjDetailComplete(k);
 
       html += `
@@ -3382,14 +3648,15 @@ function renderKwitansiList(list) {
     <button class="btn-sm btn-outline-primary" onclick="previewKwitansi(${k.id})">
         ${iconSvg("eye", 13)} Preview
     </button>
-    ${k.nomor_kwitansi
-          ? `
+    ${
+      k.nomor_kwitansi
+        ? `
             <button class="btn-sm btn-outline-primary" onclick="downloadKwitansi(${k.id}, '${k.no_bukti}')">
                   ${iconSvg("package", 13)} Unduh
             </button>
           `
-          : `<span style="color:#aaa; font-size:11px; font-style: italic;">Draft</span>`
-        }
+        : `<span style="color:#aaa; font-size:11px; font-style: italic;">Draft</span>`
+    }
 </td>
             <td>${renderFiscalContext(k)}</td>
         </tr>
@@ -3601,10 +3868,12 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
   const btnHtmlBackup = btn ? btn.innerHTML : null;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML =
-      `<span style="display:inline-block;font-size:14px;">&#8635;</span> Generating...`;
+    btn.innerHTML = `<span style="display:inline-block;font-size:14px;">&#8635;</span> Generating...`;
   }
-  showToast("Info", "Generate gambar AI sedang diproses, bisa memakan waktu hingga 1 menit...");
+  showToast(
+    "Info",
+    "Generate gambar AI sedang diproses, bisa memakan waktu hingga 1 menit...",
+  );
 
   try {
     const response = await window.electronAPI.generateAiImage(kwitansiId, {
@@ -3613,8 +3882,11 @@ window.generateGambarAIItem = async function (kwitansiId, rowIndex) {
       orientation: "landscape",
     });
 
-    if (response.status < 200 || response.status >= 300 ||
-        response.body?.status !== "success") {
+    if (
+      response.status < 200 ||
+      response.status >= 300 ||
+      response.body?.status !== "success"
+    ) {
       throw new Error(
         response.body?.detail || `Gagal generate AI (HTTP ${response.status})`,
       );
@@ -3722,7 +3994,8 @@ function configureAIImageProvider() {
       model.className = "ai-provider-control";
       model.type = "text";
       model.maxLength = 160;
-      model.value = savedSettings?.model ||
+      model.value =
+        savedSettings?.model ||
         AI_IMAGE_PROVIDER_DEFAULTS[provider.value].model;
       model.placeholder = "Nama model";
 
@@ -3771,11 +4044,13 @@ function configureAIImageProvider() {
         remove.type = "button";
         remove.textContent = "Hapus";
         remove.addEventListener("click", async () => {
-          if (!(await UI.confirm("Hapus provider dan API key AI tersimpan?", {
-            title: "Hapus pengaturan AI",
-            okText: "Hapus",
-            danger: true,
-          }))) {
+          if (
+            !(await UI.confirm("Hapus provider dan API key AI tersimpan?", {
+              title: "Hapus pengaturan AI",
+              okText: "Hapus",
+              danger: true,
+            }))
+          ) {
             return;
           }
           try {
@@ -3802,11 +4077,15 @@ function configureAIImageProvider() {
       const updateProviderFields = (previousProvider) => {
         const currentProvider = provider.value;
         endpointField.hidden = currentProvider !== "custom";
-        note.textContent = AI_IMAGE_PROVIDER_DEFAULTS[currentProvider].description;
+        note.textContent =
+          AI_IMAGE_PROVIDER_DEFAULTS[currentProvider].description;
         keyField.querySelector(".ai-provider-label").textContent =
-          currentProvider === "pollinations" ? "Secret API key (wajib)" : "API key";
+          currentProvider === "pollinations"
+            ? "Secret API key (wajib)"
+            : "API key";
         apiKey.placeholder =
-          currentProvider === savedSettings?.provider && savedSettings?.has_api_key
+          currentProvider === savedSettings?.provider &&
+          savedSettings?.has_api_key
             ? "API key tersimpan — kosongkan untuk tetap memakai"
             : currentProvider === "pollinations"
               ? "Secret key Pollinations berawalan sk_"
@@ -3832,15 +4111,21 @@ function configureAIImageProvider() {
           provider: provider.value,
           model: model.value.trim(),
           api_key: apiKey.value.trim(),
-          api_endpoint: provider.value === "custom" ? endpoint.value.trim() : "",
+          api_endpoint:
+            provider.value === "custom" ? endpoint.value.trim() : "",
         };
         if (settings.provider === "custom" && !settings.api_endpoint) {
           showToast("Error!", "URL endpoint provider kustom wajib diisi.");
           endpoint.focus();
           return;
         }
-        if (!settings.api_key &&
-            !(settings.provider === savedSettings?.provider && savedSettings?.has_api_key)) {
+        if (
+          !settings.api_key &&
+          !(
+            settings.provider === savedSettings?.provider &&
+            savedSettings?.has_api_key
+          )
+        ) {
           showToast("Error!", "API key wajib diisi untuk provider ini.");
           apiKey.focus();
           return;
@@ -3850,7 +4135,10 @@ function configureAIImageProvider() {
           settings.api_key &&
           !settings.api_key.startsWith("sk_")
         ) {
-          showToast("Error!", "Pollinations memerlukan secret key berawalan sk_, bukan App Key pk_.");
+          showToast(
+            "Error!",
+            "Pollinations memerlukan secret key berawalan sk_, bukan App Key pk_.",
+          );
           apiKey.focus();
           return;
         }
@@ -3882,13 +4170,19 @@ function configureAIImageProvider() {
       provider.focus();
     };
 
-    if (!window.electronAPI?.getAiImageSettings ||
-        !window.electronAPI?.saveAiImageSettings) {
-      showToast("Error!", "Pengaturan provider AI memerlukan aplikasi desktop.");
+    if (
+      !window.electronAPI?.getAiImageSettings ||
+      !window.electronAPI?.saveAiImageSettings
+    ) {
+      showToast(
+        "Error!",
+        "Pengaturan provider AI memerlukan aplikasi desktop.",
+      );
       resolve(null);
       return;
     }
-    window.electronAPI.getAiImageSettings()
+    window.electronAPI
+      .getAiImageSettings()
       .then(openDialog)
       .catch((err) => {
         showToast("Error!", err.message || "Gagal membaca pengaturan AI");
@@ -3902,9 +4196,17 @@ window.configureAIImageProvider = async function () {
 };
 
 function escapeSpjFormValue(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  })[char]);
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char],
+  );
 }
 
 function dateInputValue(value) {
@@ -3912,27 +4214,29 @@ function dateInputValue(value) {
   const isoDate = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (isoDate) return text;
   const localDate = text.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-  return localDate
-    ? `${localDate[3]}-${localDate[2]}-${localDate[1]}`
-    : "";
+  return localDate ? `${localDate[3]}-${localDate[2]}-${localDate[1]}` : "";
 }
 
 function renderTandaTerimaRecipientRows(data = {}, jenisBelanja) {
   const taxField = getTandaTerimaTaxField(data, jenisBelanja);
   const taxLabel = taxField === "pph23" ? "PPh 23" : "PPh 21";
-  const savedRecipients = Array.isArray(data.penerima_list) && data.penerima_list.length
-    ? data.penerima_list
-    : [{
-        nama: data.penerima_nama || "",
-        jabatan: data.penerima_jabatan || "",
-        nuptk: "",
-        npwp: "",
-        honor: "",
-        pph21: "0",
-      }];
+  const savedRecipients =
+    Array.isArray(data.penerima_list) && data.penerima_list.length
+      ? data.penerima_list
+      : [
+          {
+            nama: data.penerima_nama || "",
+            jabatan: data.penerima_jabatan || "",
+            nuptk: "",
+            npwp: "",
+            honor: "",
+            pph21: "0",
+          },
+        ];
   const rows = savedRecipients.map((recipient) => ({
     ...recipient,
-    [taxField]: recipient[taxField] ?? recipient[isSewa ? "pph21" : "pph23"] ?? "0",
+    [taxField]:
+      recipient[taxField] ?? recipient[isSewa ? "pph21" : "pph23"] ?? "0",
   }));
   const columns = [
     ["nama", "Nama", "text"],
@@ -3947,16 +4251,24 @@ function renderTandaTerimaRecipientRows(data = {}, jenisBelanja) {
       <table class="modern-table" style="min-width:920px;">
         <thead><tr>${columns.map(([, label]) => `<th>${label}</th>`).join("")}<th>Aksi</th></tr></thead>
         <tbody id="lampiran-penerima-list">
-          ${rows.map((row) => `
+          ${rows
+            .map(
+              (row) => `
             <tr class="tt-penerima-row">
-              ${columns.map(([key, label, type]) => `
+              ${columns
+                .map(
+                  ([key, label, type]) => `
                 <td><input class="form-control tt-penerima-${key}" type="${type}" ${type === "number" ? 'min="0" step="1"' : ""}
                   aria-label="${label}" placeholder="${label}" value="${escapeSpjFormValue(row[key])}"
                   ${key === "nama" || key === "honor" ? "required" : ""}></td>
-              `).join("")}
+              `,
+                )
+                .join("")}
               <td><button type="button" class="btn btn-secondary" onclick="removeTandaTerimaRecipientRow(this)">Hapus</button></td>
             </tr>
-          `).join("")}
+          `,
+            )
+            .join("")}
         </tbody>
       </table>
     </div>
@@ -3967,10 +4279,14 @@ function renderTandaTerimaRecipientRows(data = {}, jenisBelanja) {
 
 function collectDataLampiranForm() {
   const result = { ...(window._spjLampiranDraft || {}) };
-  document.querySelectorAll("input[id^='lampiran-'], textarea[id^='lampiran-']").forEach((input) => {
-    result[input.id.slice("lampiran-".length)] = input.value;
-  });
-  const recipientRows = Array.from(document.querySelectorAll(".tt-penerima-row"));
+  document
+    .querySelectorAll("input[id^='lampiran-'], textarea[id^='lampiran-']")
+    .forEach((input) => {
+      result[input.id.slice("lampiran-".length)] = input.value;
+    });
+  const recipientRows = Array.from(
+    document.querySelectorAll(".tt-penerima-row"),
+  );
   if (recipientRows.length) {
     result.penerima_list = recipientRows.map((row, index) => {
       const savedRecipient = result.penerima_list?.[index] || {};
@@ -3998,7 +4314,9 @@ function addTandaTerimaRecipientRow() {
   const template = body.querySelector(".tt-penerima-row");
   if (template) {
     const row = template.cloneNode(true);
-    row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+    row.querySelectorAll("input").forEach((input) => {
+      input.value = "";
+    });
     row.querySelector(".tt-penerima-pph21, .tt-penerima-pph23").value = "0";
     body.appendChild(row);
   }
@@ -4008,7 +4326,9 @@ function removeTandaTerimaRecipientRow(button) {
   const row = button.closest(".tt-penerima-row");
   const body = document.getElementById("lampiran-penerima-list");
   if (body?.querySelectorAll(".tt-penerima-row").length === 1) {
-    row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+    row.querySelectorAll("input").forEach((input) => {
+      input.value = "";
+    });
     row.querySelector(".tt-penerima-pph21, .tt-penerima-pph23").value = "0";
   } else {
     row?.remove();
@@ -4018,21 +4338,32 @@ function removeTandaTerimaRecipientRow(button) {
 function renderDataLampiranForm(jenis, data = {}) {
   // Tampilkan hanya isian lampiran yang ditentukan konfigurasi jenis belanja.
   const config = JENIS_BELANJA_SPJ[jenis] || JENIS_BELANJA_SPJ.umum;
-  return config.dokumen.map((dokumen) => `
+  return config.dokumen
+    .map(
+      (dokumen) => `
     <div class="form-section">
       <span class="form-section-title">${dokumen.label}${dokumen.optional ? " — Opsional" : ""}</span>
-      ${dokumen.recipientTable ? renderTandaTerimaRecipientRows(data, jenis) : `
+      ${
+        dokumen.recipientTable
+          ? renderTandaTerimaRecipientRows(data, jenis)
+          : `
       <div class="modern-grid">
-        ${dokumen.fields.map(([key, label, type, optional]) => {
-          const value = escapeSpjFormValue(data[key]);
-          const control = type === "textarea"
-            ? `<textarea id="lampiran-${key}" class="form-control" rows="3" ${dokumen.optional || optional ? "" : "required"}>${value}</textarea>`
-            : `<input id="lampiran-${key}" class="form-control" type="${type || "text"}" value="${value}" ${dokumen.optional || optional ? "" : "required"}>`;
-          return `<div class="form-group"><label for="lampiran-${key}">${label}${dokumen.optional || optional ? "" : " *"}</label>${control}</div>`;
-        }).join("")}
-      </div>`}
+        ${dokumen.fields
+          .map(([key, label, type, optional]) => {
+            const value = escapeSpjFormValue(data[key]);
+            const control =
+              type === "textarea"
+                ? `<textarea id="lampiran-${key}" class="form-control" rows="3" ${dokumen.optional || optional ? "" : "required"}>${value}</textarea>`
+                : `<input id="lampiran-${key}" class="form-control" type="${type || "text"}" value="${value}" ${dokumen.optional || optional ? "" : "required"}>`;
+            return `<div class="form-group"><label for="lampiran-${key}">${label}${dokumen.optional || optional ? "" : " *"}</label>${control}</div>`;
+          })
+          .join("")}
+      </div>`
+      }
     </div>
-  `).join("");
+  `,
+    )
+    .join("");
 }
 
 function changeJenisBelanjaSpj() {
@@ -4048,8 +4379,12 @@ function changeJenisBelanjaSpj() {
   const photoSelect = document.getElementById("jenis-foto");
   if (photoSelect) {
     photoSelect.innerHTML = photoTypes.length
-      ? photoTypes.map((type) =>
-        `<option value="${type}">${getFotoJenisLabel(type)}</option>`).join("")
+      ? photoTypes
+          .map(
+            (type) =>
+              `<option value="${type}">${getFotoJenisLabel(type)}</option>`,
+          )
+          .join("")
       : '<option value="">Tidak diperlukan</option>';
     photoSelect.disabled = photoTypes.length === 0;
     const fileInput = document.getElementById("upload-foto-kwitansi");
@@ -4059,7 +4394,8 @@ function changeJenisBelanjaSpj() {
 
 function isSpjDetailComplete(item) {
   // Periksa kolom wajib, dokumen wajib, BAST bila diperlukan, dan semua foto kategori.
-  const config = JENIS_BELANJA_SPJ[item.jenis_belanja] || JENIS_BELANJA_SPJ.umum;
+  const config =
+    JENIS_BELANJA_SPJ[item.jenis_belanja] || JENIS_BELANJA_SPJ.umum;
   const formData = item.data_lampiran || {};
   const taxField = getTandaTerimaTaxField(formData, item.jenis_belanja);
   const fieldsComplete = config.dokumen
@@ -4068,22 +4404,27 @@ function isSpjDetailComplete(item) {
       dokumen.recipientTable
         ? Array.isArray(formData.penerima_list) &&
           formData.penerima_list.length > 0 &&
-          formData.penerima_list.every((row) =>
-            String(row.nama || "").trim() &&
-            String(row.honor ?? "").trim() &&
-            Number.isFinite(Number(row.honor)) &&
-            Number(row.honor) >= 0 &&
-            Number.isFinite(Number(row[taxField] ?? row.pph21 ?? 0)) &&
-            Number(row[taxField] ?? row.pph21 ?? 0) >= 0 &&
-            Number(row[taxField] ?? row.pph21 ?? 0) <= Number(row.honor),
+          formData.penerima_list.every(
+            (row) =>
+              String(row.nama || "").trim() &&
+              String(row.honor ?? "").trim() &&
+              Number.isFinite(Number(row.honor)) &&
+              Number(row.honor) >= 0 &&
+              Number.isFinite(Number(row[taxField] ?? row.pph21 ?? 0)) &&
+              Number(row[taxField] ?? row.pph21 ?? 0) >= 0 &&
+              Number(row[taxField] ?? row.pph21 ?? 0) <= Number(row.honor),
           )
-        : dokumen.fields.every(([key, , , optional]) =>
-          optional || String(formData[key] || "").trim(),
-        ),
+        : dokumen.fields.every(
+            ([key, , , optional]) =>
+              optional || String(formData[key] || "").trim(),
+          ),
     );
-  const bastComplete = !config.bast || Boolean(String(item.no_bast || "").trim());
+  const bastComplete =
+    !config.bast || Boolean(String(item.no_bast || "").trim());
   const availablePhotos = new Set(item.jenis_foto_tersedia || []);
-  const photosComplete = config.foto.every((jenis) => availablePhotos.has(jenis));
+  const photosComplete = config.foto.every((jenis) =>
+    availablePhotos.has(jenis),
+  );
   return fieldsComplete && bastComplete && photosComplete;
 }
 
@@ -4099,9 +4440,10 @@ function openUpdateDetailPopup(kwitansiId) {
       const jenisBelanja = JENIS_BELANJA_SPJ[kw.jenis_belanja]
         ? kw.jenis_belanja
         : "umum";
-      const dataLampiran = kw.data_lampiran && typeof kw.data_lampiran === "object"
-        ? kw.data_lampiran
-        : {};
+      const dataLampiran =
+        kw.data_lampiran && typeof kw.data_lampiran === "object"
+          ? kw.data_lampiran
+          : {};
       window._spjLampiranDraft = { ...dataLampiran };
 
       // -------------------------------
@@ -4242,8 +4584,12 @@ function openUpdateDetailPopup(kwitansiId) {
                             <div class="form-group">
                                 <label for="edit-jenis-belanja">Pilih jenis belanja</label>
                                 <select id="edit-jenis-belanja" class="form-control" onchange="changeJenisBelanjaSpj()">
-                                    ${Object.entries(JENIS_BELANJA_SPJ).map(([key, config]) =>
-                                      `<option value="${key}" ${key === jenisBelanja ? "selected" : ""}>${config.label}</option>`).join("")}
+                                    ${Object.entries(JENIS_BELANJA_SPJ)
+                                      .map(
+                                        ([key, config]) =>
+                                          `<option value="${key}" ${key === jenisBelanja ? "selected" : ""}>${config.label}</option>`,
+                                      )
+                                      .join("")}
                                 </select>
                             </div>
                         </div>
@@ -4317,8 +4663,13 @@ function openUpdateDetailPopup(kwitansiId) {
                                     style="max-width:220px; margin:10px auto;">
                                 ${(JENIS_BELANJA_SPJ[jenisBelanja].foto.length
                                   ? JENIS_BELANJA_SPJ[jenisBelanja].foto
-                                  : ["kegiatan"]).map((type) =>
-                                    `<option value="${type}">${getFotoJenisLabel(type)}</option>`).join("")}
+                                  : ["kegiatan"]
+                                )
+                                  .map(
+                                    (type) =>
+                                      `<option value="${type}">${getFotoJenisLabel(type)}</option>`,
+                                  )
+                                  .join("")}
                             </select>
 
                             <input type="file"
@@ -4367,7 +4718,8 @@ function openUpdateDetailPopup(kwitansiId) {
           // karena elemen-nya hilang.
           const pasteHandler = function (event) {
             // Cek apakah input masih ada di dokumen (popup masih buka)
-            if (!document.body.contains(uploadInput) || uploadInput.disabled) return;
+            if (!document.body.contains(uploadInput) || uploadInput.disabled)
+              return;
 
             const items = (
               event.clipboardData || event.originalEvent.clipboardData
@@ -4957,7 +5309,8 @@ function parseManualKodeValue(value, listArray) {
   if (normalizedValue.includes(" - ")) {
     const enteredCode = normalizedValue.split(" - ")[0].trim();
     const exactCode = listArray.find(
-      (item) => String(item[kodeKey] || "").toLowerCase() === enteredCode.toLowerCase(),
+      (item) =>
+        String(item[kodeKey] || "").toLowerCase() === enteredCode.toLowerCase(),
     );
     return exactCode ? exactCode[kodeKey] : "";
   }
@@ -4971,8 +5324,12 @@ function parseManualKodeValue(value, listArray) {
   if (exactName) return exactName[kodeKey];
   const partialMatch = listArray.find(
     (item) =>
-      String(item[kodeKey] || "").toLowerCase().includes(lowerValue) ||
-      String(item[nameKey] || "").toLowerCase().includes(lowerValue),
+      String(item[kodeKey] || "")
+        .toLowerCase()
+        .includes(lowerValue) ||
+      String(item[nameKey] || "")
+        .toLowerCase()
+        .includes(lowerValue),
   );
   return partialMatch ? partialMatch[kodeKey] : "";
 }
@@ -5011,7 +5368,9 @@ function resolveManualRekeningRowInput(accountCodeInput) {
 async function saveManualBKU() {
   // Alur: validasi header dan setiap kode rekening, susun payload rincian, kirim multipart, lalu refresh tampilan.
   try {
-    const receiptNumber = document.getElementById("manual-no-bukti").value.trim();
+    const receiptNumber = document
+      .getElementById("manual-no-bukti")
+      .value.trim();
     if (!receiptNumber) {
       showToast("Error!", "No Bukti wajib diisi");
       return;
@@ -5031,11 +5390,15 @@ async function saveManualBKU() {
     const jenis_foto =
       document.getElementById("manual-jenis-foto").value || "barang";
 
-    const detailRows = Array.from(document.querySelectorAll(".manual-uraian-row"));
+    const detailRows = Array.from(
+      document.querySelectorAll(".manual-uraian-row"),
+    );
     const parsedDetails = detailRows
       .map((r) => {
         const nama = r.querySelector(".manual-uraian-nama").value || "";
-        const accountCodeInput = r.querySelector(".manual-uraian-kode-rekening");
+        const accountCodeInput = r.querySelector(
+          ".manual-uraian-kode-rekening",
+        );
         const accountCodeText = accountCodeInput.value.trim();
         const accountCode = parseManualKodeValue(
           accountCodeText,
@@ -5068,9 +5431,7 @@ async function saveManualBKU() {
           isAccountCodeInvalid: Boolean(accountCodeText && !accountCode),
         };
       })
-      .filter(
-        ({ detail }) => detail.nama_barang || detail.pengeluaran > 0,
-      );
+      .filter(({ detail }) => detail.nama_barang || detail.pengeluaran > 0);
 
     const rowWithInvalidAccountCode = parsedDetails.find(
       (item) => item.isAccountCodeInvalid,
@@ -5317,19 +5678,32 @@ async function saveUpdateDetail(kwitansiId) {
     const dataLampiran = collectDataLampiranForm();
     const jenisBelanja = document.getElementById("edit-jenis-belanja").value;
     const taxField = getTandaTerimaTaxField(dataLampiran, jenisBelanja);
-    if (JENIS_BELANJA_SPJ[jenisBelanja]?.dokumen.some((dokumen) => dokumen.recipientTable)) {
+    if (
+      JENIS_BELANJA_SPJ[jenisBelanja]?.dokumen.some(
+        (dokumen) => dokumen.recipientTable,
+      )
+    ) {
       const recipients = dataLampiran.penerima_list || [];
-      if (!recipients.length || recipients.some((recipient) =>
-        !recipient.nama ||
-        recipient.honor === "" ||
-        !Number.isFinite(Number(recipient.honor)) ||
-        Number(recipient.honor) < 0 ||
-        !Number.isFinite(Number(recipient[taxField] ?? recipient.pph21 ?? 0)) ||
-        Number(recipient[taxField] ?? recipient.pph21 ?? 0) < 0 ||
-        Number(recipient[taxField] ?? recipient.pph21 ?? 0) > Number(recipient.honor)
-      )) {
+      if (
+        !recipients.length ||
+        recipients.some(
+          (recipient) =>
+            !recipient.nama ||
+            recipient.honor === "" ||
+            !Number.isFinite(Number(recipient.honor)) ||
+            Number(recipient.honor) < 0 ||
+            !Number.isFinite(
+              Number(recipient[taxField] ?? recipient.pph21 ?? 0),
+            ) ||
+            Number(recipient[taxField] ?? recipient.pph21 ?? 0) < 0 ||
+            Number(recipient[taxField] ?? recipient.pph21 ?? 0) >
+              Number(recipient.honor),
+        )
+      ) {
         const taxLabel = jenisBelanja === "sewa" ? "PPh 23" : "PPh 21";
-        throw new Error(`Isi nama dan honor setiap penerima. ${taxLabel} tidak boleh melebihi honor.`);
+        throw new Error(
+          `Isi nama dan honor setiap penerima. ${taxLabel} tidak boleh melebihi honor.`,
+        );
       }
     }
     if (jenisBelanja === "jasa_tukang") {
@@ -5344,7 +5718,9 @@ async function saveUpdateDetail(kwitansiId) {
         start > end ||
         totalDays > 366
       ) {
-        throw new Error("Tanggal awal dan akhir kegiatan harus valid, berurutan, dan maksimal 366 hari.");
+        throw new Error(
+          "Tanggal awal dan akhir kegiatan harus valid, berurutan, dan maksimal 366 hari.",
+        );
       }
     }
 
@@ -5794,7 +6170,8 @@ async function loadDataPemda() {
             ? res.data.logo_pemda
             : `${assetUrl(res.data.logo_pemda)}?t=${new Date().getTime()}`;
           img.style.display = "block";
-          if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
+          if (typeof syncLogoPlaceholder === "function")
+            syncLogoPlaceholder(img);
         }
       }
 
@@ -5805,7 +6182,8 @@ async function loadDataPemda() {
             ? res.data.logo_sekolah
             : `${assetUrl(res.data.logo_sekolah)}?t=${new Date().getTime()}`;
           img.style.display = "block";
-          if (typeof syncLogoPlaceholder === "function") syncLogoPlaceholder(img);
+          if (typeof syncLogoPlaceholder === "function")
+            syncLogoPlaceholder(img);
         }
       }
 
@@ -5928,7 +6306,7 @@ function setIdnImgPreview(imgId, src) {
 async function loadIdentitasPeriode(maxRetry = 3) {
   let attempt = 0;
   let lastError = null;
-  for (; ;) {
+  for (;;) {
     attempt++;
     lastError = null;
     try {
@@ -5957,8 +6335,11 @@ async function loadIdentitasPeriode(maxRetry = 3) {
         res = null;
       }
       if (!response.ok || !res) {
-        const detail = (res && (res.detail || res.message)) || `HTTP ${response.status}`;
-        lastError = new Error(`Backend menolak permintaan daftar identitas (${detail})`);
+        const detail =
+          (res && (res.detail || res.message)) || `HTTP ${response.status}`;
+        lastError = new Error(
+          `Backend menolak permintaan daftar identitas (${detail})`,
+        );
         // 5xx dari backend yang sedang bersiap → tunggu sebentar lalu coba lagi.
         if (response.status >= 500 && attempt <= maxRetry) {
           const delay = 500 * attempt; // 500ms, 1s, 1.5s
@@ -5991,7 +6372,8 @@ async function loadIdentitasPeriode(maxRetry = 3) {
       }
     }
     // Semua percobaan habis (atau respons non-5xx yang tetap ditolak) → lapor.
-    const err = lastError || new Error("loadIdentitasPeriode: kegagalan tak terdefinisi");
+    const err =
+      lastError || new Error("loadIdentitasPeriode: kegagalan tak terdefinisi");
     appLog("error", "loadIdentitasPeriode gagal: " + err);
     showToast("Gagal!", "Tidak dapat memuat daftar identitas: " + err.message);
     return;
@@ -6094,12 +6476,24 @@ function resetIdentitasForm({ show = true } = {}) {
   if (formCard) formCard.hidden = !show;
   const form = document.getElementById("form-identitas");
   if (form) form.reset();
-  ["idn-label", "idn-tanggal-awal", "idn-tanggal-akhir", "idn-pemda", "idn-sekolah", "idn-alamat", "idn-tempat", "idn-kepala", "idn-nip-kepala", "idn-bendahara", "idn-nip-bendahara", "idn-pengurus", "idn-nip-pengurus"].forEach(
-    (id) => {
-      const el = document.getElementById(id);
-      if (el) el.value = "";
-    },
-  );
+  [
+    "idn-label",
+    "idn-tanggal-awal",
+    "idn-tanggal-akhir",
+    "idn-pemda",
+    "idn-sekolah",
+    "idn-alamat",
+    "idn-tempat",
+    "idn-kepala",
+    "idn-nip-kepala",
+    "idn-bendahara",
+    "idn-nip-bendahara",
+    "idn-pengurus",
+    "idn-nip-pengurus",
+  ].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
   const sel = document.getElementById("idn-active");
   if (sel) sel.value = "1";
   setIdnImgPreview("idn-preview-logo-pemda", "");
@@ -6161,12 +6555,14 @@ function isiFormDariIdentitas(d, { duplikat = false } = {}) {
     identitasFormMode = "new";
     identitasEditingId = null;
     const title = document.getElementById("idn-form-title");
-    if (title) title.innerHTML = `${iconSvg("plus", 17)} Tambah Identitas (hasil duplikat — sesuaikan tanggal & datanya)`;
+    if (title)
+      title.innerHTML = `${iconSvg("plus", 17)} Tambah Identitas (hasil duplikat — sesuaikan tanggal & datanya)`;
   } else {
     identitasFormMode = "edit";
     identitasEditingId = d.id;
     const title = document.getElementById("idn-form-title");
-    if (title) title.innerHTML = `${iconSvg("edit", 17)} Edit Identitas #${d.id} — ${d.nama_sekolah || "(tanpa nama)"}`;
+    if (title)
+      title.innerHTML = `${iconSvg("edit", 17)} Edit Identitas #${d.id} — ${d.nama_sekolah || "(tanpa nama)"}`;
   }
   updateIdentitasPreview();
 }
@@ -6184,7 +6580,9 @@ async function editIdentitasPeriode(id) {
       return;
     }
     isiFormDariIdentitas(res.data);
-    document.getElementById("idn-form-card")?.scrollIntoView({ behavior: "smooth" });
+    document
+      .getElementById("idn-form-card")
+      ?.scrollIntoView({ behavior: "smooth" });
   } catch (err) {
     showToast("Gagal!", "Error memuat detail: " + err.message);
   }
@@ -6199,7 +6597,9 @@ async function duplicateIdentitasPeriode(id) {
       return;
     }
     isiFormDariIdentitas(res.data, { duplikat: true });
-    document.getElementById("idn-form-card")?.scrollIntoView({ behavior: "smooth" });
+    document
+      .getElementById("idn-form-card")
+      ?.scrollIntoView({ behavior: "smooth" });
   } catch (err) {
     showToast("Gagal!", "Error menduplikat: " + err.message);
   }
@@ -6242,21 +6642,30 @@ async function saveIdentitasPeriode() {
   }
   const tanggalAkhir = val("idn-tanggal-akhir");
   if (tanggalAkhir && tanggalAkhir < tanggalAwal) {
-    showToast("Perhatian!", "Tanggal akhir tidak boleh lebih kecil dari tanggal awal.");
+    showToast(
+      "Perhatian!",
+      "Tanggal akhir tidak boleh lebih kecil dari tanggal awal.",
+    );
     return;
   }
 
   let logoPemda, logoSekolah;
   try {
-    logoPemda = await readFileAsDataUri(document.getElementById("idn-logo-pemda"));
-    logoSekolah = await readFileAsDataUri(document.getElementById("idn-logo-sekolah"));
+    logoPemda = await readFileAsDataUri(
+      document.getElementById("idn-logo-pemda"),
+    );
+    logoSekolah = await readFileAsDataUri(
+      document.getElementById("idn-logo-sekolah"),
+    );
   } catch (err) {
     showToast("Gagal!", err.message);
     return;
   }
   // Tidak ada file baru → pertahankan logo lama (kirim penanda non-empty)
-  if (!logoPemda) logoPemda = identitasFormMode === "edit" ? _idnLogoPemdaKeep || "" : "";
-  if (!logoSekolah) logoSekolah = identitasFormMode === "edit" ? _idnLogoSekolahKeep || "" : "";
+  if (!logoPemda)
+    logoPemda = identitasFormMode === "edit" ? _idnLogoPemdaKeep || "" : "";
+  if (!logoSekolah)
+    logoSekolah = identitasFormMode === "edit" ? _idnLogoSekolahKeep || "" : "";
 
   const payload = {
     id: identitasFormMode === "edit" ? identitasEditingId : null,
@@ -6326,7 +6735,9 @@ function updateIdentitasPreview() {
   const lp = document.getElementById("idn-preview-logo-pemda");
   const ls = document.getElementById("idn-preview-logo-sekolah");
   const validSrc = (img) =>
-    img && img.src && img.src !== "#" && img.style.display !== "none" ? img.src : "";
+    img && img.src && img.src !== "#" && img.style.display !== "none"
+      ? img.src
+      : "";
   setIdnImgPreview("idn-kop-logo-pemda", validSrc(lp));
   setIdnImgPreview("idn-kop-logo-sekolah", validSrc(ls));
 }
@@ -6536,7 +6947,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadFiscalContexts();
   } catch (error) {
-    showToast("Error!", error.message || "Gagal memuat pilihan tahun anggaran.");
+    showToast(
+      "Error!",
+      error.message || "Gagal memuat pilihan tahun anggaran.",
+    );
   }
   loadPengaturan();
   loadMasterKegiatan();
@@ -6652,7 +7066,7 @@ window.toggleSidebar = function () {
   const collapsed = sb.classList.toggle("collapsed");
   try {
     localStorage.setItem("spj-sidebar-collapsed", collapsed ? "1" : "0");
-  } catch (e) { }
+  } catch (e) {}
 };
 
 function restoreSidebarState() {
@@ -6661,7 +7075,7 @@ function restoreSidebarState() {
       const sb = document.getElementById("sidebar");
       if (sb) sb.classList.add("collapsed");
     }
-  } catch (e) { }
+  } catch (e) {}
 }
 
 // Initialize app
@@ -7263,12 +7677,12 @@ function initApp() {
         
         <div class="scope-filter-toolbar" style="margin-top:12px;">
             <label>
-                <select id="rekap-scope-filter" class="form-control" style="max-width:320px;">
+                <select id="rekap-scope-filter" class="form-control" style="max-width:320px;" onchange="clearRekapSpjSelection()">
                     <option value="all">Semua tahun / sumber dana</option>
                 </select>
             </label>
             <label style="display:flex; align-items:center; gap:8px;">
-                <select id="rekap-thp-select" class="form-control" style="max-width:180px;">
+                <select id="rekap-thp-select" class="form-control" style="max-width:180px;" onchange="clearRekapSpjSelection()">
                     <option value="all">Semua Tahap</option>
                     <option value="1">Tahap 1</option>
                     <option value="2">Tahap 2</option>
@@ -7411,3 +7825,7 @@ window.initUpdateListeners = initUpdateListeners;
 window.checkForUpdates = checkForUpdates;
 window.restartAndInstall = restartAndInstall;
 window.processTemplateExcel = processTemplateExcel;
+window.clearRekapSpjSelection = clearRekapSpjSelection;
+window.setRekapSpjSelection = setRekapSpjSelection;
+window.updateRekapSpjSelectionCount = updateRekapSpjSelectionCount;
+window.exportRekapBelanjaSpjExcel = exportRekapBelanjaSpjExcel;

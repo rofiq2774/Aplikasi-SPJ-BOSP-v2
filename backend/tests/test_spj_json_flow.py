@@ -1417,6 +1417,165 @@ def test_kwitansi_list_filters_by_thp(spj_client):
     ] == ["BKT-003"]
 
 
+def test_kwitansi_excel_exports_filtered_draft_details_in_kwitansi_order(spj_client):
+    from io import BytesIO
+
+    import openpyxl
+    from models import Kwitansi, Transaksi
+
+    async def add_export_rows():
+        async with spj_client.test_session_maker() as session:
+            later_number = Kwitansi(
+                nomor_kwitansi="BPU104/01/THP II/2026",
+                no_bukti="BPU104",
+                kode_kegiatan="K-02",
+                nama_kegiatan="Kegiatan nomor 104",
+                tanggal="2026-09-10",
+                tanggal_nota="2026-09-09",
+                thp="THP II",
+                tahun="2026",
+                fiscal_year=2026,
+                jumlah=350,
+                nama_toko="Toko 104",
+                foto_bukti="[]",
+            )
+            earlier_number = Kwitansi(
+                nomor_kwitansi="BPU63/01/THP II/2026",
+                no_bukti="BPU63",
+                kode_kegiatan="K-01",
+                nama_kegiatan="Kegiatan nomor 63",
+                tanggal="2026-09-12",
+                tanggal_nota="2026-09-11",
+                thp="THP II",
+                tahun="2026",
+                fiscal_year=2026,
+                jumlah=200,
+                nama_toko="Toko 63",
+                foto_bukti="[]",
+            )
+            session.add_all([
+                later_number,
+                earlier_number,
+                Transaksi(
+                    tanggal="2026-09-10",
+                    tanggal_nota="2026-09-09",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BPU104",
+                    fiscal_year=2026,
+                    uraian="Barang BPU104",
+                    volume=3,
+                    satuan="buah",
+                    harga_satuan=100,
+                    pengeluaran=300,
+                ),
+                Transaksi(
+                    tanggal="2026-09-10",
+                    tanggal_nota="2026-09-09",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BPU104",
+                    fiscal_year=2026,
+                    uraian="Barang tambahan BPU104",
+                    volume=1,
+                    satuan="pak",
+                    harga_satuan=50,
+                    pengeluaran=50,
+                ),
+                Transaksi(
+                    tanggal="2026-09-12",
+                    tanggal_nota="2026-09-11",
+                    kode_rekening="5.2.1.01.01",
+                    no_bukti="BPU63",
+                    fiscal_year=2026,
+                    uraian="Barang BPU63",
+                    volume=2,
+                    satuan="rim",
+                    harga_satuan=100,
+                    pengeluaran=200,
+                ),
+            ])
+            await session.commit()
+
+    asyncio.run(add_export_rows())
+    response = spj_client.get(
+        "/api/kwitansi/export-excel?fiscal_year=2026&thp=2&month=9"
+    )
+
+    assert response.status_code == 200, response.text
+    workbook = openpyxl.load_workbook(BytesIO(response.content), data_only=True)
+    sheet = workbook["Daftar Draft SPJ"]
+    assert [sheet.cell(1, column).value for column in range(1, 12)] == [
+        "Tanggal Nota",
+        "Tanggal Kwitansi",
+        "No Kwitansi",
+        "Kegiatan",
+        "Toko/Penerima",
+        "Uraian",
+        "Volume",
+        "Satuan",
+        "Harga Satuan (Rp)",
+        "Jumlah Harga (Rp)",
+        "Jumlah Kwitansi (Rp)",
+    ]
+    assert sheet["C2"].value == "BPU63/01/THP II/2026"
+    assert sheet["A2"].value == "11-09-2026"
+    assert sheet["B2"].value == "12-09-2026"
+    assert sheet["D2"].value == "Kegiatan nomor 63"
+    assert sheet["E2"].value == "Toko 63"
+    assert sheet["F2"].value == "Barang BPU63"
+    assert sheet["G2"].value == 2
+    assert sheet["H2"].value == "rim"
+    assert sheet["I2"].value == 100
+    assert sheet["J2"].value == 200
+    assert sheet["K2"].value == 200
+    assert sheet["C3"].value == "BPU104/01/THP II/2026"
+    assert sheet["A3"].value == "09-09-2026"
+    assert sheet["B3"].value == "10-09-2026"
+    assert sheet["D3"].value == "Kegiatan nomor 104"
+    assert sheet["E3"].value == "Toko 104"
+    assert sheet["H3"].value == "buah"
+    assert sheet["K3"].value == 350
+    assert sheet["A4"].value is None
+    assert sheet["B4"].value is None
+    assert sheet["C4"].value is None
+    assert sheet["D4"].value is None
+    assert sheet["E4"].value is None
+    assert sheet["F4"].value == "Barang tambahan BPU104"
+    assert sheet["H4"].value == "pak"
+    assert sheet["K4"].value is None
+    assert sheet.freeze_panes == "A2"
+
+
+def test_kwitansi_excel_uses_activity_name_updated_from_complete_button(spj_client):
+    from io import BytesIO
+
+    import openpyxl
+
+    update_response = spj_client.post(
+        "/api/kwitansi/1/update-detail",
+        json={
+            "nama_kegiatan": "Nama kegiatan hasil tombol Lengkapi",
+            "tanggal_nota": "2026-11-05",
+            "nama_toko": "Penyedia terbaru",
+            "jenis_belanja": "umum",
+            "data_lampiran": {},
+            "uraian": [{
+                "nama_barang": "Barang",
+                "volume": 1,
+                "satuan": "buah",
+                "harga_satuan": 150000,
+            }],
+        },
+    )
+    assert update_response.status_code == 200, update_response.text
+
+    export_response = spj_client.get("/api/kwitansi/export-excel")
+    assert export_response.status_code == 200, export_response.text
+    sheet = openpyxl.load_workbook(
+        BytesIO(export_response.content), data_only=True
+    )["Daftar Draft SPJ"]
+    assert sheet["D2"].value == "Nama kegiatan hasil tombol Lengkapi"
+
+
 def test_arkas_activity_sync_rejects_empty_data(spj_client):
     response = spj_client.post(
         "/api/master-kegiatan/sync-arkas",

@@ -1012,6 +1012,11 @@ def natural_sort_key(value):
     )
 
 
+def format_tanggal_excel(value) -> str:
+    parsed = parse_tanggal_flex(value)
+    return parsed.strftime("%d-%m-%Y") if parsed else str(value or "")
+
+
 def rekap_stage_matches(tanggal, stage: str) -> bool:
     if stage not in ("1", "2"):
         return True
@@ -4363,6 +4368,182 @@ async def get_kwitansi_final(
     except Exception as e:
         logger.error(f"Error getting kwitansi: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/kwitansi/export-excel")
+async def export_kwitansi_excel(
+    db: AsyncSession = Depends(get_db),
+    fiscal_year: Optional[str] = None,
+    source_fund_id: Optional[str] = None,
+    budget_id: Optional[str] = None,
+    thp: str = "all",
+    month: Optional[int] = Query(None, ge=1, le=12),
+):
+    try:
+        stmt = select(Kwitansi, Transaksi).outerjoin(
+            Transaksi,
+            and_(
+                Transaksi.no_bukti == Kwitansi.no_bukti,
+                *[
+                    or_(
+                        getattr(Transaksi, column_name)
+                        == getattr(Kwitansi, column_name),
+                        and_(
+                            or_(
+                                getattr(Transaksi, column_name).is_(None),
+                                getattr(Transaksi, column_name) == "",
+                            ),
+                            or_(
+                                getattr(Kwitansi, column_name).is_(None),
+                                getattr(Kwitansi, column_name) == "",
+                            ),
+                        ),
+                    )
+                    for column_name in (
+                        "fiscal_year",
+                        "source_fund_id",
+                        "budget_id",
+                    )
+                ],
+            ),
+        )
+        stmt = apply_fiscal_scope_filters(
+            stmt, Kwitansi, fiscal_year, source_fund_id, budget_id
+        )
+        thp_values = {
+            "1": ("THP I", "TAHAP I", "TAHAP 1", "1"),
+            "2": ("THP II", "TAHAP II", "TAHAP 2", "2"),
+        }.get(str(thp).strip())
+        if thp_values:
+            stmt = stmt.where(func.upper(func.trim(Kwitansi.thp)).in_(thp_values))
+        if month is not None:
+            month_text = f"{month:02d}"
+            stmt = stmt.where(
+                or_(
+                    func.substr(func.trim(Kwitansi.tanggal), 6, 2) == month_text,
+                    func.substr(func.trim(Kwitansi.tanggal), 4, 2) == month_text,
+                )
+            )
+
+        result = await db.execute(stmt.order_by(Kwitansi.id, Transaksi.id))
+        receipts = {}
+        for receipt, transaction in result.all():
+            receipts.setdefault(receipt.id, {"receipt": receipt, "items": []})
+            if transaction is not None:
+                receipts[receipt.id]["items"].append(transaction)
+
+        ordered_receipts = sorted(
+            receipts.values(),
+            key=lambda group: (
+                natural_sort_key(group["receipt"].nomor_kwitansi),
+                group["receipt"].id,
+            ),
+        )
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "Daftar Draft SPJ"
+        sheet.append([
+            "Tanggal Nota",
+            "Tanggal Kwitansi",
+            "No Kwitansi",
+            "Kegiatan",
+            "Toko/Penerima",
+            "Uraian",
+            "Volume",
+            "Satuan",
+            "Harga Satuan (Rp)",
+            "Jumlah Harga (Rp)",
+            "Jumlah Kwitansi (Rp)",
+        ])
+
+        for group in ordered_receipts:
+            receipt = group["receipt"]
+            items = group["items"]
+            total_receipt = float(receipt.jumlah or 0)
+            if total_receipt <= 0:
+                total_receipt = sum(float(item.pengeluaran or 0) for item in items)
+            if not items:
+                items = [None]
+
+            for index, item in enumerate(items):
+                item_amount = (
+                    float(item.pengeluaran or 0) if item is not None else 0
+                )
+                is_first_item = index == 0
+                sheet.append([
+                    (
+                        format_tanggal_excel(
+                            item.tanggal_nota or receipt.tanggal_nota
+                        )
+                        if item is not None
+                        else format_tanggal_excel(receipt.tanggal_nota)
+                    ) if is_first_item else None,
+                    format_tanggal_excel(receipt.tanggal)
+                    if is_first_item
+                    else None,
+                    receipt.nomor_kwitansi or "" if is_first_item else None,
+                    receipt.nama_kegiatan or "" if is_first_item else None,
+                    (
+                        (receipt.nama_toko or item.nama_toko or "")
+                        if item is not None
+                        else receipt.nama_toko or ""
+                    ) if is_first_item else None,
+                    item.uraian if item is not None else "",
+                    float(item.volume or 0) if item is not None else None,
+                    item.satuan or "" if item is not None else "",
+                    float(item.harga_satuan or 0) if item is not None else None,
+                    item_amount if item is not None else None,
+                    total_receipt if is_first_item else None,
+                ])
+
+        header_fill = PatternFill(fill_type="solid", fgColor="1D4ED8")
+        thin_gray = Side(style="thin", color="CBD5E1")
+        border = Border(
+            left=thin_gray,
+            right=thin_gray,
+            top=thin_gray,
+            bottom=thin_gray,
+        )
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = border
+                cell.alignment = Alignment(vertical="center")
+            for column in (7, 9, 10, 11):
+                row[column - 1].number_format = '#,##0.00;[Red]-#,##0.00;–'
+
+        for index, width in enumerate(
+            [16, 18, 30, 55, 30, 65, 14, 16, 22, 22, 24],
+            start=1,
+        ):
+            sheet.column_dimensions[openpyxl.utils.get_column_letter(index)].width = width
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+        sheet.sheet_view.showGridLines = False
+        sheet.page_setup.orientation = "landscape"
+        sheet.page_setup.fitToWidth = 1
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": 'attachment; filename="Daftar_Draft_SPJ.xlsx"'
+            },
+        )
+    except Exception as e:
+        logger.exception("Gagal mengekspor Daftar Draft SPJ.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal mengekspor Daftar Draft SPJ: {str(e)}",
+        )
 
 @api_router.post("/kwitansi/generate")
 async def generate_kwitansi_final(

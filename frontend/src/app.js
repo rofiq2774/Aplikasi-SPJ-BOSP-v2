@@ -1767,6 +1767,41 @@ async function loadKwitansiList() {
   }
 }
 
+async function exportKwitansiListExcel() {
+  const params = new URLSearchParams(
+    scopeFilterParams(document.getElementById("spj-scope-filter")?.value),
+  );
+  const thp = document.getElementById("spj-thp-filter")?.value || "all";
+  const month = document.getElementById("spj-month-filter")?.value || "all";
+  if (thp !== "all") params.set("thp", thp);
+  if (month !== "all") params.set("month", month);
+
+  try {
+    showToast("Info!", "Membuat Excel Daftar Draft SPJ...");
+    const query = params.toString();
+    const response = await apiFetch(
+      `${API_BASE}/kwitansi/export-excel${query ? `?${query}` : ""}`,
+    );
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "Gagal mengekspor Daftar Draft SPJ.");
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "Daftar_Draft_SPJ.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    showToast("Berhasil!", "Excel Daftar Draft SPJ berhasil diunduh.");
+  } catch (error) {
+    showToast("Error!", error.message || "Gagal mengekspor Daftar Draft SPJ.");
+  }
+}
+
 async function loadRekapPajak() {
   const list = document.getElementById("pajak-list");
   const requestId = ++arkasTaxLoadRequest;
@@ -3594,6 +3629,9 @@ function renderKwitansiList(list) {
         <div style="margin-bottom:20px">
             <button class="btn btn-primary" style="padding: 10px 20px; font-weight: bold;" onclick="generateKwitansi()">
                 ${iconSvg("zap", 16)} Generate SPJ
+            </button>
+            <button class="btn btn-success" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="exportKwitansiListExcel()">
+                ${iconSvg("download", 16)} Ekspor Excel
             </button>
         </div>
 
@@ -7777,6 +7815,7 @@ window.loadPengaturan = loadPengaturan;
 window.loadMasterKegiatan = loadMasterKegiatan;
 window.loadMasterBarangArkas = loadMasterBarangArkas;
 window.loadKwitansiList = loadKwitansiList;
+window.exportKwitansiListExcel = exportKwitansiListExcel;
 window.renderKwitansiList = renderKwitansiList;
 window.loadRekapPajak = loadRekapPajak;
 window.renderRekapPajak = renderRekapPajak;

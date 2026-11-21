@@ -11,7 +11,7 @@ frame-src 'self' blob:;
 worker-src 'self' blob:;
 style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob: http://127.0.0.1:* file:;
-connect-src 'self' http://127.0.0.1:*;
+connect-src 'self' http://127.0.0.1:* https://api.github.com;
 ">
   <!-- Backend Electron menggunakan port localhost dinamis, bukan port tetap. -->
   <title>Aplikasi SPJ BOSP</title>

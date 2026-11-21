@@ -237,6 +237,17 @@ h4 .icon-svg {
   background: rgba(148, 163, 184, 0.1);
   color: #e2e8f0;
 }
+.sidebar .tab-btn.disabled,
+.sidebar .tab-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.sidebar .tab-btn.disabled:hover,
+.sidebar .tab-btn:disabled:hover {
+  background: transparent;
+  color: #9fb0c7;
+}
 .sidebar .tab-btn.active {
   background: rgba(37, 99, 235, 0.18);
   color: #fff;

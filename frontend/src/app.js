@@ -3108,6 +3108,8 @@ const TAB_TITLES = {
 };
 
 window.switchTab = function (tab) {
+  if (tab === "bku") return;
+
   // 1. Update State Active Tab
   activeTab = tab;
   const pt = document.getElementById("pageTitle");
@@ -3627,10 +3629,10 @@ function renderKwitansiList(list) {
         </style>
         
         <div style="margin-bottom:20px">
-            <button class="btn btn-primary" style="padding: 10px 20px; font-weight: bold;" onclick="generateKwitansi()">
+            <button class="btn btn-primary" style="padding: 10px 20px; font-weight: bold;" onclick="generateKwitansi()" title="Fitur sementara dinonaktifkan" disabled>
                 ${iconSvg("zap", 16)} Generate SPJ
             </button>
-            <button class="btn btn-success" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="exportKwitansiListExcel()">
+            <button class="btn btn-primary" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="exportKwitansiListExcel()">
                 ${iconSvg("download", 16)} Ekspor Excel
             </button>
         </div>
@@ -6791,8 +6793,30 @@ function initUpdateListeners() {
   const restartBtn = document.getElementById("btn-restart");
   const navUpdateBtn = document.getElementById("nav-update-btn");
   const changelogContainer = document.getElementById("changelog-container");
+  let latestChangelogPromise = null;
 
   if (!window.electronAPI) return;
+
+  async function fetchLatestChangelog() {
+    if (!latestChangelogPromise) {
+      latestChangelogPromise = fetch(
+        "https://api.github.com/repos/rofiq2774/Aplikasi-SPJ-BOSP-v2/releases/latest",
+        {
+          headers: { Accept: "application/vnd.github+json" },
+        },
+      )
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`GitHub API ${response.status}`);
+          const release = await response.json();
+          const version = release.tag_name || release.name || "";
+          const body = String(release.body || "").trim();
+          if (!body) return version;
+          return version ? `${version}\n${body}` : body;
+        })
+        .catch(() => null);
+    }
+    return latestChangelogPromise;
+  }
 
   // --- Fungsi render changelog dinamis (DIPERBAIKI) ---
   function renderChangelog(notes) {
@@ -6802,10 +6826,17 @@ function initUpdateListeners() {
 
     changelogContainer.innerHTML = ""; // Bersihkan isi lama
 
-    // Jika notes kosong/null, pakai default
-    const defaultNote =
-      "Mohon dukungannya untuk pengembangan Aplikasi SPJ BOSP dengan berdonasi melalui Bank BRI Nomor Rekening 6237 0103 6885 534 atas nama MUH. ROFIQ. Terima kasih telah menggunakan Aplikasi SPJ BOSP.";
-    if (!notes) notes = [defaultNote];
+    if (!notes) {
+      const loading = document.createElement("p");
+      loading.innerText = "Memuat catatan rilis terbaru...";
+      changelogContainer.appendChild(loading);
+      fetchLatestChangelog().then((latestNotes) => {
+        renderChangelog(
+          latestNotes || "Catatan rilis terbaru tidak tersedia.",
+        );
+      });
+      return;
+    }
 
     const card = document.createElement("div");
     card.className = "card";
@@ -6823,12 +6854,11 @@ function initUpdateListeners() {
     content.style.border = "1px solid #e2e8f0";
     content.style.fontSize = "13px";
     content.style.textAlign = "left";
+    content.style.whiteSpace = "pre-wrap";
 
     // LOGIKA BARU: Cek apakah inputnya String (Format GitHub) atau Array
     if (typeof notes === "string") {
-      // Jika dari GitHub (biasanya HTML string), masukkan sebagai innerHTML
-      // Ganti newline (\n) jadi <br> jika itu plain text, tapi biasanya GitHub kirim HTML
-      content.innerHTML = notes;
+      content.textContent = notes;
     } else if (Array.isArray(notes)) {
       // Jika format Array (manual)
       notes.forEach((note) => {
@@ -6910,6 +6940,7 @@ function initUpdateListeners() {
     console.error(err);
     msgElement.innerText = "Terjadi kesalahan koneksi saat update.";
     msgElement.style.color = "red";
+    renderChangelog();
   });
 
   // 5. TIDAK ADA UPDATE
@@ -6923,6 +6954,9 @@ function initUpdateListeners() {
     // render changelog default
     renderChangelog();
   });
+
+  // Tampilkan changelog rilis terbaru dari GitHub saat halaman pembaruan dibuka.
+  renderChangelog();
 }
 
 // Fungsi manual check (jika user klik tombol)
@@ -7133,7 +7167,12 @@ function initApp() {
     { tab: "master-barang", label: "Referensi Barang", icon: "package" },
     { tab: "rekening", label: "Rekening Belanja", icon: "briefcase" },
     { tab: "rkas", label: "RKAS", icon: "calendar" },
-    { tab: "bku", label: "Upload BKU", icon: "fileText" },
+    {
+      tab: "bku",
+      label: "Upload BKU",
+      icon: "fileText",
+      disabled: true,
+    },
     { tab: "data-bku", label: "Data BKU", icon: "barChart" },
     { tab: "kwitansi", label: "Daftar SPJ", icon: "receipt" },
     { tab: "pajak", label: "Rekap Pajak", icon: "fileText" },
@@ -7150,7 +7189,7 @@ function initApp() {
   const navHtml = NAV.map((n) =>
     n.section
       ? `<div class="sidebar-section">${n.section}</div>`
-      : `<button class="tab-btn" data-tab="${n.tab}" aria-label="${n.label}" title="${n.label}"${n.id ? ` id="${n.id}"` : ""} onclick="switchTab('${n.tab}')"><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`,
+      : `<button class="tab-btn${n.disabled ? " disabled" : ""}" data-tab="${n.tab}" aria-label="${n.label}" title="${n.disabled ? "Fitur sementara dinonaktifkan" : n.label}"${n.id ? ` id="${n.id}"` : ""}${n.disabled ? " disabled" : ""}${n.disabled ? "" : ` onclick="switchTab('${n.tab}')"`}><span class="tab-icon">${iconSvg(n.icon, 17)}</span><span class="tab-label">${n.label}</span><span class="update-dot" hidden></span></button>`,
   ).join("");
 
   // #app adalah satu-satunya elemen di <body>; dialah yang menjadi baris
@@ -7279,9 +7318,8 @@ function initApp() {
                     </select>
                     <button id="btn-hapus-bku-terpilih" class="btn btn-danger" onclick="deleteSelectedTransaksi()" disabled>Hapus Terpilih</button>
                     <button class="btn btn-primary" onclick="loadDataBKU()">${iconSvg("refreshCw", 15)} Segarkan Data</button>
-                    <button class="btn btn-success" onclick="syncArkas()" title="Impor transaksi BPU dari database ARKAS">Sinkron ARKAS</button>
-                    <button class="btn btn-outline-primary" onclick="changeArkasDatabase()" title="Pilih atau ubah lokasi database ARKAS">Ubah Database</button>
-                    <button class="btn btn-outline-primary" onclick="openManualBKUForm()" title="Tambah data BKU manual">＋ Tambah Manual</button>
+                    <button class="btn btn-success" onclick="syncArkas()" title="Impor data BKU dari database ARKAS">Sinkron ARKAS</button>
+                    <button class="btn btn-outline-primary" onclick="openManualBKUForm()" title="Fitur sementara dinonaktifkan" disabled>＋ Tambah Manual</button>
                 </div>
         </div>
                 <div class="table-scroll">
@@ -7489,6 +7527,7 @@ function initApp() {
             <div class="card" style="margin-bottom:20px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <h3 style="margin:0">${iconSvg("calendar", 17)} Daftar Periode Identitas (<span id="idn-count">0</span>)</h3>
+                    <button class="btn btn-outline-primary" onclick="changeArkasDatabase()" title="Pilih atau ubah lokasi database ARKAS">Ubah Lokasi Database ARKAS</button>
                     <button class="btn btn-primary btn-sm" onclick="resetIdentitasForm()">${iconSvg("plus", 14)} Tambah Identitas</button>
                 </div>
                 <div id="idn-list" class="table-container"></div>
@@ -7623,7 +7662,7 @@ function initApp() {
                     <select id="master-scope-filter" class="form-control" onchange="loadMasterKegiatan()" style="max-width:320px;">
                         <option value="all">Semua tahun / sumber dana</option>
                     </select>
-                    <button class="btn btn-success" onclick="syncMasterKegiatanArkas()" title="Tambah dan perbarui kode kegiatan dari database ARKAS">Sinkron dari ARKAS</button>
+                    <button class="btn btn-success" onclick="syncMasterKegiatanArkas()" title="Tambah dan perbarui kode kegiatan dari database ARKAS">Sinkron ARKAS</button>
                     <button class="btn btn-primary" onclick="exportMasterKegiatanExcel()" title="Ekspor referensi kegiatan yang sedang ditampilkan ke Excel">${iconSvg("download", 15)} Ekspor Excel</button>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -7641,7 +7680,7 @@ function initApp() {
                     <select id="barang-scope-filter" class="form-control" onchange="renderMasterBarangArkas(0)" style="max-width:320px;">
                         <option value="all">Semua tahun / sumber dana</option>
                     </select>
-                    <button id="btn-sync-barang-arkas" class="btn btn-success" onclick="syncMasterBarangArkas()" title="Salin referensi barang dari database ARKAS ke database aplikasi">Sinkron dari ARKAS</button>
+                    <button id="btn-sync-barang-arkas" class="btn btn-success" onclick="syncMasterBarangArkas()" title="Salin referensi barang dari database ARKAS ke database aplikasi">Sinkron ARKAS</button>
                     <button class="btn btn-primary" onclick="exportMasterBarangArkasExcel()" title="Ekspor referensi barang yang sedang ditampilkan ke Excel">${iconSvg("download", 15)} Ekspor Excel</button>
                 </div>
                 <div id="barang-sync-status" role="status" aria-live="polite" style="min-height:20px;margin-bottom:12px;color:#475569;font-size:13px;"></div>
@@ -7685,7 +7724,7 @@ function initApp() {
                 <option value="11">November</option>
                 <option value="12">Desember</option>
             </select>
-            <button class="btn btn-primary" onclick="syncArkas('pajak-scope-filter')">${iconSvg("refreshCw", 15)} Sinkronkan dari ARKAS</button>
+            <button class="btn btn-success" onclick="syncArkas('pajak-scope-filter')">${iconSvg("refreshCw", 15)} Sinkron ARKAS</button>
         </div>
         <div id="pajak-list" class="table-container">
             <div style="padding:24px;text-align:center;color:#64748b;">Pilih menu Rekap Pajak untuk membaca data dari ARKAS.</div>
@@ -7700,10 +7739,10 @@ function initApp() {
                 <h3 style="margin:0;">${iconSvg("book", 17)} Data RKAS</h3>
                 <small style="color:#64748b;">Sinkronkan dari ARKAS untuk menyimpan anggaran dan rincian ke database aplikasi.</small>
             </div>
-            <button class="btn btn-primary" onclick="syncRkasData()">${iconSvg("refreshCw", 15)} Sinkron Data RKAS</button>
+            <button class="btn btn-success" onclick="syncRkasData()">${iconSvg("refreshCw", 15)} Sinkron ARKAS</button>
         </div>
         <div id="rkas-list" class="table-container">
-            <div style="padding:24px;text-align:center;color:#64748b;">Klik "Sinkron Data RKAS" untuk membaca database ARKAS.</div>
+            <div style="padding:24px;text-align:center;color:#64748b;">Klik "Sinkron ARKAS" untuk membaca data RKAS pada ARKAS.</div>
         </div>
         <div id="rkas-report"></div>
     </div>

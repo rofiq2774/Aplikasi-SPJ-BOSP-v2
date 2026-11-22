@@ -544,6 +544,7 @@ def test_update_kwitansi_persists_purchase_type_and_dynamic_form_data(spj_client
     assert invalid_date.status_code == 400
     assert "YYYY-MM-DD" in invalid_date.json()["detail"]
 
+
     spj_data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]
     assert spj_data["jenis_belanja"] == "perjalanan_dinas"
     assert spj_data["data_lampiran"]["sppd_tujuan"] == "Banyuwangi"
@@ -569,6 +570,28 @@ def test_update_kwitansi_persists_purchase_type_and_dynamic_form_data(spj_client
     spj_data = spj_client.get("/api/kwitansi/1/spj-data").json()["data"]
     assert spj_data["sections"]["bast"]["status"] == "included"
     assert spj_data["sections"]["rab"]["status"] == "skip"
+
+
+def test_update_kwitansi_accepts_biaya_registrasi(spj_client):
+    response = spj_client.post(
+        "/api/kwitansi/1/update-detail",
+        json={
+            "nama_kegiatan": "Biaya Registrasi",
+            "tanggal_nota": "2026-11-05",
+            "jenis_belanja": "biaya_registrasi",
+            "data_lampiran": {},
+            "uraian": [{
+                "nama_barang": "Biaya pendaftaran",
+                "volume": 1,
+                "satuan": "paket",
+                "harga_satuan": 150000,
+            }],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    detail = spj_client.get("/api/kwitansi/1").json()["data"]
+    assert detail["jenis_belanja"] == "biaya_registrasi"
 
 
 def test_sewa_type_and_vehicle_stnk_photo_are_persisted(spj_client):

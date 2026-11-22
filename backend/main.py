@@ -1295,7 +1295,7 @@ def _prefill_tanda_terima(kwitansi, data_lampiran: dict, tax_rows: list) -> dict
 JENIS_BELANJA_VALID = {
     "honor_jasa", "makanan_minuman", "perjalanan_dinas",
     "sewa", "jasa_tukang", "fotokopi", "telepon_listrik_air", "umum",
-    "bahan_bangunan",
+    "bahan_bangunan", "biaya_registrasi",
 }
 JENIS_BELANJA_DENGAN_BAST = {"fotokopi", "umum", "bahan_bangunan"}
 JENIS_BELANJA_DENGAN_RAB = {"jasa_tukang", "bahan_bangunan"}

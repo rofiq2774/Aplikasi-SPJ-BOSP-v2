@@ -10,3 +10,11 @@ test("fotokopi does not require photo evidence", () => {
     ["nota_pembelian", "qr_master"],
   );
 });
+
+test("biaya registrasi only requires activity photo", () => {
+  assert.equal(JENIS_BELANJA_SPJ.biaya_registrasi.label, "Biaya Registrasi");
+  assert.deepEqual(JENIS_BELANJA_SPJ.biaya_registrasi.foto, ["kegiatan"]);
+  assert.deepEqual(JENIS_BELANJA_SPJ.biaya_registrasi.dokumen, []);
+  assert.equal(JENIS_BELANJA_SPJ.biaya_registrasi.bast, false);
+  assert.equal(JENIS_BELANJA_SPJ.biaya_registrasi.rab, false);
+});

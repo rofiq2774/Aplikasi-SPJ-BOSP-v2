@@ -232,6 +232,13 @@ export const JENIS_BELANJA_SPJ = {
     foto: [],
     dokumen: [],
   },
+  biaya_registrasi: {
+    label: "Registrasi / Pendaftaran",
+    bast: false,
+    rab: false,
+    foto: ["kegiatan"],
+    dokumen: [],
+  },
   umum: {
     label: "Pembelanjaan Umum",
     bast: true,

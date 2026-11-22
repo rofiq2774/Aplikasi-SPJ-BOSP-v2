@@ -6576,10 +6576,12 @@ def build_professional_prompt(item: str, jenis: str) -> str:
     Menggunakan model FLUX untuk realisme.
     """
     base_style = (
-        "realistic photo taken with smartphone camera, "
-        "poor indoor lighting, authentic amateur photography, "
-        "no filter, slight motion blur, documentary style, "
+        "Foto realistis diambil dari kamera hp android, "
+        "di dalam ruangan, fotografi amatir, "
+        "tanpa filter atau efek, tanpa blur, gaya dokumentasi, "
         "high texture, taken in Indonesia, "
+        "di sekolah, di kantor, peletakan di atas meja atau lantai dengan keramik putih "
+        "sesuaikan dengan merek yang ada di uraian"
     )
     
     if jenis == "kegiatan" or jenis == "proses":
@@ -6596,11 +6598,10 @@ def build_professional_prompt(item: str, jenis: str) -> str:
         # Prompt untuk barang (benda mati di meja)
         return (
             f"{base_style} "
-            f"close up photo of {item}, "
-            f"placed on a scratched wooden office desk, "
-            f"background is a blurry administration room wall, "
-            f"top down angle or eye level, "
-            f"sharp focus on the object, real object proportions."
+            f"Fokus pada foto {item}, "
+            f"tempatkan di meja atau lantai keramik putih, "
+            f"jangan memblur background, "
+            f"fokus pada objek, periksa proporsionalitas objek."
         )
 
 # --- 3. ENDPOINT ---

@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getArkasDatabaseInfo: () => ipcRenderer.invoke("get-arkas-database-info"),
   selectArkasDatabase: () => ipcRenderer.invoke("select-arkas-database"),
   getArialPdfFonts: () => ipcRenderer.invoke("get-arial-pdf-fonts"),
+  getPrinters: () => ipcRenderer.invoke("get-printers"),
+  printSpjHtml: (printHtml, printerName) =>
+    ipcRenderer.invoke("print-spj-html", printHtml, printerName),
   getAiImageSettings: () => ipcRenderer.invoke("get-ai-image-settings"),
   saveAiImageSettings: settings =>
     ipcRenderer.invoke("save-ai-image-settings", settings),

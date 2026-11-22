@@ -16,6 +16,14 @@ import {
 // origin belum tersedia, request ditolak dengan error yang jelas (dan dicatat
 // ke app.log), bukan menembak port mati.
 let _backendOrigin = ""; // contoh: "http://127.0.0.1:54321" (port dinamis child_process)
+let _kwitansiList = [];
+const SPJ_PRINT_SETTINGS_KEY = "spj-print-settings";
+const SPJ_PAPER_SIZES = {
+  f4: { label: "F4 (215 × 330 mm)", width: 215, height: 330 },
+  a4: { label: "A4 (210 × 297 mm)", width: 210, height: 297 },
+  legal: { label: "Legal (216 × 356 mm)", width: 216, height: 356 },
+  letter: { label: "Letter (216 × 279 mm)", width: 216, height: 279 },
+};
 setBackendOriginGetter(() => _backendOrigin);
 const API_BASE = new Proxy(
   {},
@@ -1760,6 +1768,7 @@ async function loadKwitansiList() {
         transaksi: bkuData?.transaksi || [],
         kwitansi_list: json.data,
       };
+      _kwitansiList = json.data;
       renderKwitansiList(json.data);
     }
   } catch (err) {
@@ -2023,6 +2032,231 @@ async function downloadKwitansi(id, noBukti = "") {
     console.error("downloadKwitansi gagal:", err);
     showToast("Error!", "Gagal membuat PDF SPJ: " + msg);
   }
+}
+
+function getSpjPrintSettings() {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(SPJ_PRINT_SETTINGS_KEY) || "{}",
+    );
+    return {
+      printerName: String(saved.printerName || ""),
+      paperSize: SPJ_PAPER_SIZES[saved.paperSize] ? saved.paperSize : "f4",
+    };
+  } catch (error) {
+    appLog("warn", `Pengaturan cetak SPJ tidak valid: ${error.message || error}`);
+    return { printerName: "", paperSize: "f4" };
+  }
+}
+
+async function openSpjPrintSettings() {
+  if (!window.electronAPI?.getPrinters) {
+    showToast("Error!", "Pengaturan printer hanya tersedia di aplikasi desktop.");
+    return;
+  }
+  showPopup(`
+    <div class="popup-content" style="max-width:520px;">
+      <div class="popup-header">
+        <h3 style="margin:0;">Atur Printer dan Ukuran Kertas</h3>
+        <button class="btn btn-secondary" onclick="closePopup()">Tutup</button>
+      </div>
+      <div class="popup-body">Memuat daftar printer...</div>
+    </div>
+  `);
+
+  try {
+    const [printers, settings] = await Promise.all([
+      window.electronAPI.getPrinters(),
+      Promise.resolve(getSpjPrintSettings()),
+    ]);
+    const popupBody = document.querySelector("#popup-overlay .popup-body");
+    if (!popupBody) return;
+    const printerOptions = [
+      `<option value="">Printer default sistem</option>`,
+      ...printers.map(
+        (printer) =>
+          `<option value="${escapeSpjFormValue(printer.name)}" ${
+            printer.name === settings.printerName ? "selected" : ""
+          }>${escapeSpjFormValue(printer.name)}${
+            printer.isDefault ? " (Default)" : ""
+          }</option>`,
+      ),
+    ].join("");
+    popupBody.innerHTML = `
+      <div class="form-group">
+        <label for="spj-print-printer">Printer</label>
+        <select id="spj-print-printer" class="form-control">${printerOptions}</select>
+      </div>
+      <div class="form-group">
+        <label for="spj-print-paper">Ukuran kertas</label>
+        <select id="spj-print-paper" class="form-control">
+          ${Object.entries(SPJ_PAPER_SIZES)
+            .map(
+              ([key, paper]) =>
+                `<option value="${key}" ${
+                  settings.paperSize === key ? "selected" : ""
+                }>${paper.label}</option>`,
+            )
+            .join("")}
+        </select>
+      </div>
+      ${
+        printers.length
+          ? ""
+          : `<div class="alert alert-warning">Tidak ada printer terdeteksi. Pilih printer default sistem atau sambungkan printer.</div>`
+      }
+      <div class="popup-footer" style="padding:0; border:0; background:none;">
+        <button class="btn btn-primary" onclick="saveSpjPrintSettings()">${iconSvg("check", 14)} Simpan Pengaturan</button>
+      </div>
+    `;
+  } catch (error) {
+    const message = error?.message || String(error);
+    appLog("error", `Gagal memuat printer SPJ: ${message}`);
+    showToast("Error!", `Gagal memuat daftar printer: ${message}`);
+    closePopup();
+  }
+}
+
+function saveSpjPrintSettings() {
+  const paperSize = document.getElementById("spj-print-paper")?.value;
+  if (!SPJ_PAPER_SIZES[paperSize]) {
+    showToast("Error!", "Ukuran kertas yang dipilih tidak valid.");
+    return;
+  }
+  const settings = {
+    printerName: document.getElementById("spj-print-printer")?.value || "",
+    paperSize,
+  };
+  localStorage.setItem(SPJ_PRINT_SETTINGS_KEY, JSON.stringify(settings));
+  closePopup();
+  showToast("Berhasil!", "Pengaturan printer dan ukuran kertas disimpan.");
+}
+
+async function printKwitansi(id) {
+  const item = _kwitansiList.find((kwitansi) => Number(kwitansi.id) === Number(id));
+  const label = item?.nomor_kwitansi || String(id);
+  try {
+    if (!window.electronAPI?.printSpjHtml) {
+      throw new Error("Fitur cetak hanya tersedia di aplikasi desktop.");
+    }
+    showToast("Info", `Menyiapkan SPJ ${label} untuk dicetak...`);
+    const response = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `Gagal memuat data SPJ (HTTP ${response.status})`);
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      throw new Error(`Respons backend bukan JSON (${contentType || "kosong"}).`);
+    }
+    const payload = await response.json();
+    if (payload.status !== "success" || !payload.data) {
+      throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid.");
+    }
+
+    const settings = getSpjPrintSettings();
+    const paper = SPJ_PAPER_SIZES[settings.paperSize];
+    payload.data.paper = {
+      ...(payload.data.paper || {}),
+      width_mm: paper.width,
+      height_mm: paper.height,
+    };
+    setBackendOriginGetter(() => _backendOrigin);
+    const blob = await buildSpjPdf(payload.data);
+    if (!(blob instanceof Blob) || blob.size === 0) {
+      throw new Error("Renderer frontend menghasilkan PDF kosong.");
+    }
+    const printHtml = await buildSpjPrintHtml(blob);
+    await window.electronAPI.printSpjHtml(printHtml, settings.printerName);
+    showToast("Berhasil!", `SPJ ${label} berhasil dikirim ke printer.`);
+  } catch (error) {
+    const message = error?.message || String(error);
+    appLog("error", `printKwitansi: GAGAL id=${id}: ${message}`);
+    showToast("Error!", `Gagal mencetak SPJ ${label}: ${message}`);
+    throw error;
+  }
+}
+
+async function buildSpjPrintHtml(blob) {
+  const pdfjsLib = await loadPdfJs();
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(await blob.arrayBuffer()),
+  });
+  const pdfDocument = await loadingTask.promise;
+  const pages = [];
+  const pageStyles = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const pageViewport = page.getViewport({ scale: 1 });
+      const renderScale = 2;
+      const renderViewport = page.getViewport({ scale: renderScale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(renderViewport.width);
+      canvas.height = Math.ceil(renderViewport.height);
+      const renderTask = page.render({
+        canvasContext: canvas.getContext("2d"),
+        viewport: renderViewport,
+      });
+      await renderTask.promise;
+
+      const pageWidthMm = (pageViewport.width * 25.4) / 72;
+      const pageHeightMm = (pageViewport.height * 25.4) / 72;
+      const pageName = `spj-page-${pageNumber}`;
+      const imageData = canvas.toDataURL("image/png");
+      pageStyles.push(`
+        @page ${pageName} { size: ${pageWidthMm}mm ${pageHeightMm}mm; margin: 0; }
+        .${pageName} { page: ${pageName}; width: ${pageWidthMm}mm; height: ${pageHeightMm}mm; }
+      `);
+      pages.push(
+        `<section class="page ${pageName}"><img src="${imageData}" alt="Halaman ${pageNumber}"></section>`,
+      );
+      canvas.width = 0;
+      canvas.height = 0;
+      page.cleanup();
+    }
+  } finally {
+    await loadingTask.destroy();
+  }
+
+  return `<!doctype html>
+    <html><head><meta charset="utf-8"><style>
+      ${pageStyles.join("\n")}
+      html, body { margin: 0; padding: 0; }
+      .page { display: flex; break-after: page; page-break-after: always; overflow: hidden; }
+      .page:last-child { break-after: auto; page-break-after: auto; }
+      .page img { display: block; width: 100%; height: 100%; object-fit: fill; }
+    </style></head><body>${pages.join("\n")}</body></html>`;
+}
+
+async function printAllKwitansi() {
+  const printableItems = _kwitansiList.filter((item) => item.nomor_kwitansi);
+  if (!printableItems.length) {
+    showToast("Info", "Tidak ada SPJ bernomor pada daftar yang sedang ditampilkan.");
+    return;
+  }
+  if (
+    !(await UI.confirm(
+      `Cetak ${printableItems.length} SPJ bernomor ke printer yang dipilih? Setiap dokumen akan dikirim satu per satu.`,
+      { title: "Cetak Semua SPJ", okText: "Cetak Semua" },
+    ))
+  ) {
+    return;
+  }
+  for (let index = 0; index < printableItems.length; index += 1) {
+    const item = printableItems[index];
+    showToast(
+      "Info",
+      `Mencetak SPJ ${index + 1} dari ${printableItems.length}...`,
+    );
+    try {
+      await printKwitansi(item.id);
+    } catch {
+      return;
+    }
+  }
+  showToast("Berhasil!", `${printableItems.length} SPJ berhasil dikirim ke printer.`);
 }
 
 let _spjPreviewState = null;
@@ -3635,6 +3869,12 @@ function renderKwitansiList(list) {
             <button class="btn btn-primary" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="exportKwitansiListExcel()">
                 ${iconSvg("download", 16)} Ekspor Excel
             </button>
+            <button class="btn btn-outline-primary" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="openSpjPrintSettings()">
+                ${iconSvg("settings", 16)} Atur Printer &amp; Kertas
+            </button>
+            <button class="btn btn-success" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="printAllKwitansi()">
+                ${iconSvg("printer", 16)} Cetak Semua
+            </button>
         </div>
 
         <div class="table-scroll">
@@ -3691,6 +3931,9 @@ function renderKwitansiList(list) {
     ${
       k.nomor_kwitansi
         ? `
+            <button class="btn-sm btn-outline-primary" onclick="printKwitansi(${k.id})">
+                  ${iconSvg("printer", 13)} Cetak
+            </button>
             <button class="btn-sm btn-outline-primary" onclick="downloadKwitansi(${k.id}, '${k.no_bukti}')">
                   ${iconSvg("package", 13)} Unduh
             </button>
@@ -7833,6 +8076,10 @@ window.copyMasterBarangValue = copyMasterBarangValue;
 window.saveTransaksi = saveTransaksi;
 window.generateKwitansi = generateKwitansi;
 window.downloadKwitansi = downloadKwitansi;
+window.openSpjPrintSettings = openSpjPrintSettings;
+window.saveSpjPrintSettings = saveSpjPrintSettings;
+window.printKwitansi = printKwitansi;
+window.printAllKwitansi = printAllKwitansi;
 window.previewKwitansi = previewKwitansi;
 window.setSpjPreviewZoom = setSpjPreviewZoom;
 window.adjustSpjPreviewZoom = adjustSpjPreviewZoom;

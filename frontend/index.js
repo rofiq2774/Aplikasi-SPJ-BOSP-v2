@@ -614,6 +614,78 @@ ipcMain.handle("is-dev", () => !app.isPackaged);
 // memiliki informasi child_process, jadi expose base URL backend via IPC.
 ipcMain.handle("get-backend-url", () => getBackendBaseUrl());
 
+ipcMain.handle("get-printers", async (event) => {
+  assertTrustedRenderer(event);
+  return event.sender.getPrintersAsync();
+});
+
+ipcMain.handle("print-spj-html", async (event, printHtml, printerName) => {
+  assertTrustedRenderer(event);
+  if (
+    typeof printHtml !== "string" ||
+    !printHtml.startsWith("<!doctype html>") ||
+    printHtml.length === 0
+  ) {
+    throw new Error("Dokumen SPJ untuk dicetak tidak valid.");
+  }
+
+  const printers = await event.sender.getPrintersAsync();
+  const selectedPrinter = String(printerName || "");
+  if (
+    selectedPrinter &&
+    !printers.some((printer) => printer.name === selectedPrinter)
+  ) {
+    throw new Error("Printer yang dipilih tidak lagi tersedia.");
+  }
+
+  const printDirectory = fs.mkdtempSync(
+    path.join(app.getPath("temp"), "spj-print-"),
+  );
+  const htmlPath = path.join(printDirectory, "dokumen.html");
+  let printWindow;
+  try {
+    fs.writeFileSync(htmlPath, printHtml, "utf8");
+    printWindow = new BrowserWindow({
+      show: false,
+      parent: mainWindow,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    await printWindow.loadFile(htmlPath);
+    await printWindow.webContents.executeJavaScript(
+      "Promise.all(Array.from(document.images, image => image.decode()))",
+    );
+
+    await new Promise((resolve, reject) => {
+      printWindow.webContents.print(
+        {
+          silent: true,
+          ...(selectedPrinter ? { deviceName: selectedPrinter } : {}),
+        },
+        (success, failureReason) => {
+          if (success) resolve();
+          else reject(new Error(failureReason || "Gagal mengirim PDF ke printer."));
+        },
+      );
+    });
+  } finally {
+    if (printWindow && !printWindow.isDestroyed()) printWindow.destroy();
+    try {
+      fs.unlinkSync(htmlPath);
+      fs.rmdirSync(printDirectory);
+    } catch (error) {
+      writeAppLog(
+        "warn",
+        "frontend-main",
+        `Gagal membersihkan berkas sementara cetak SPJ: ${error.message || error}`,
+      );
+    }
+  }
+});
+
 const arkasDatabaseSettingsPath = () =>
   path.join(app.getPath("userData"), "arkas-database.json");
 

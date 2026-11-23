@@ -1457,44 +1457,51 @@ tr:last-child td {
 /* Kotak berukuran tetap — logo apa pun resolusinya selalu masuk kotak,
    tidak pernah mengikuti ukuran asli sehingga menutupi layar. */
 .logo-preview-box {
-    position: relative;
-    width: 100%;
-    max-width: 260px;
-    height: 140px;
-    margin-top: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #f8fafc;
-    border: 1.5px dashed #cbd5e1;
-    border-radius: 12px;
-    overflow: hidden;
-    cursor: pointer;
-    transition: border-color .15s ease, box-shadow .15s ease;
+  position: relative;
+  width: 100%;
+  max-width: 260px;
+  height: 140px;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8fafc;
+  border: 1.5px dashed #cbd5e1;
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
-.logo-preview-box:hover { border-color: #94a3b8; box-shadow: 0 2px 8px rgba(15,23,42,.06); }
+.logo-preview-box:hover {
+  border-color: #94a3b8;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
 .logo-preview-img {
-    max-width: calc(100% - 20px);
-    max-height: calc(100% - 20px);
-    width: auto !important;
-    height: auto !important;
-    object-fit: contain;
-    display: block;
+  max-width: calc(100% - 20px);
+  max-height: calc(100% - 20px);
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain;
+  display: block;
 }
 .logo-preview-placeholder {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    color: #94a3b8;
-    font-size: 12.5px;
-    line-height: 1.6;
-    pointer-events: none;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #94a3b8;
+  font-size: 12.5px;
+  line-height: 1.6;
+  pointer-events: none;
 }
-.logo-preview-placeholder .icon-svg { opacity: .6; }
+.logo-preview-placeholder .icon-svg {
+  opacity: 0.6;
+}
 
 /* Desktop workspace polish: compact surfaces, clear hierarchy, restrained motion. */
 :root {
@@ -1534,8 +1541,14 @@ html {
 
 body {
   font-family:
-    "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont,
-    Roboto, "Helvetica Neue", Arial, sans-serif;
+    "Segoe UI Variable Text",
+    "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
@@ -1751,7 +1764,7 @@ textarea {
   font-weight: 600;
 }
 
-.spj-preview-popup {
+#popup-overlay .spj-preview-popup {
   width: 100%;
   height: 100%;
   max-width: none;
@@ -1774,10 +1787,11 @@ textarea {
   font-weight: 600;
 }
 
-.spj-preview-popup-body {
+#popup-overlay .spj-preview-popup-body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  max-height: none;
   padding: 0;
   overflow: hidden;
 }
@@ -2238,7 +2252,6 @@ tbody tr:hover td {
   .spj-preview-auto-print {
     margin-left: 0;
   }
-
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2256,7 +2269,10 @@ tbody tr:hover td {
 #popup-overlay .popup-modern {
   color: #242424;
   font-family:
-    "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Text",
+    "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
     sans-serif;
   font-size: 13px;
 }
@@ -2301,7 +2317,9 @@ tbody tr:hover td {
   font-weight: 600;
 }
 
-#popup-overlay .popup-modern input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+#popup-overlay
+  .popup-modern
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
 #popup-overlay .popup-modern select,
 #popup-overlay .popup-modern textarea,
 #popup-overlay .popup-modern .modern-table input {
@@ -2313,7 +2331,11 @@ tbody tr:hover td {
   border-radius: 4px;
   background-color: #fff;
   color: #242424;
-  font: 13px/1.35 "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font:
+    13px/1.35 "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   box-shadow: none;
 }
 
@@ -2331,14 +2353,18 @@ tbody tr:hover td {
   color: #666;
 }
 
-#popup-overlay .popup-modern input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover,
+#popup-overlay
+  .popup-modern
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover,
 #popup-overlay .popup-modern select:hover,
 #popup-overlay .popup-modern textarea:hover,
 #popup-overlay .popup-modern .modern-table input:hover {
   border-color: #8a8a8a;
 }
 
-#popup-overlay .popup-modern input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+#popup-overlay
+  .popup-modern
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 #popup-overlay .popup-modern select:focus,
 #popup-overlay .popup-modern textarea:focus,
 #popup-overlay .popup-modern .modern-table input:focus {
@@ -2356,7 +2382,11 @@ tbody tr:hover td {
   border-radius: 4px;
   background: #fff;
   color: #333;
-  font: 13px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font:
+    13px "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
 }
 
 #popup-overlay .popup-modern input[type="file"]::file-selector-button {
@@ -2425,9 +2455,15 @@ tbody tr:hover td {
   border-radius: 4px;
   background: #f7f7f7;
   color: #242424;
-  font: 600 13px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font:
+    600 13px "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   box-shadow: none;
-  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+  transition:
+    background-color 120ms ease-out,
+    border-color 120ms ease-out;
 }
 
 #popup-overlay .popup-modern .btn:not(.btn-sm):hover:not(:disabled) {
@@ -2467,7 +2503,11 @@ tbody tr:hover td {
   border-radius: 4px;
   background: #f7f7f7;
   color: #242424;
-  font: 12px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font:
+    12px "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   box-shadow: none;
 }
 
@@ -2509,7 +2549,11 @@ tbody tr:hover td {
   border-radius: 4px;
   background: #f7f7f7;
   color: #242424;
-  font: 600 13px "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  font:
+    600 13px "Segoe UI",
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
   box-shadow: none;
 }
 

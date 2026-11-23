@@ -2239,10 +2239,6 @@ tbody tr:hover td {
     margin-left: 0;
   }
 
-  .spj-preview-frame {
-    height: 68vh;
-  }
-
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1189,6 +1189,9 @@ tr:last-child td {
   padding: 24px;
   animation: overlayIn 0.18s ease;
 }
+#popup-overlay.spj-preview-overlay {
+  padding: 8px;
+}
 .popup-content {
   width: 700px;
   max-width: 96%;
@@ -1749,7 +1752,10 @@ textarea {
 }
 
 .spj-preview-popup {
-  max-height: 94vh;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
   border: 1px solid #c9cdd3;
   border-radius: 7px;
   background: #f3f3f3;
@@ -1817,8 +1823,8 @@ textarea {
 .spj-preview-frame {
   display: flex;
   width: 100%;
-  height: 70vh;
-  min-height: 320px;
+  height: auto;
+  min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
   align-items: stretch;

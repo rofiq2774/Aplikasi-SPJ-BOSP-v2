@@ -892,7 +892,11 @@ function chooseArkasContext(contexts, title = "Pilih konteks anggaran") {
     body.appendChild(select);
     const footer = document.createElement("div");
     footer.className = "ui-dialog-foot";
+    let finished = false;
     const finish = (selected) => {
+      if (finished) return;
+      finished = true;
+      document.removeEventListener("keydown", handleKeydown, true);
       overlay.remove();
       resolve(selected);
     };
@@ -909,9 +913,20 @@ function chooseArkasContext(contexts, title = "Pilih konteks anggaran") {
     cancel.textContent = "Batal";
     cancel.addEventListener("click", () => finish(null));
     footer.append(confirm, cancel);
+    function handleKeydown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(null);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        confirm.click();
+      }
+    }
     dialog.append(header, body, footer);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    document.addEventListener("keydown", handleKeydown, true);
+    select.focus();
   });
 }
 
@@ -2070,7 +2085,7 @@ async function openSpjPrintSettings() {
     <div class="popup-content" style="max-width:520px;">
       <div class="popup-header">
         <h3 style="margin:0;">Atur Printer dan Ukuran Kertas</h3>
-        <button class="btn btn-secondary" onclick="closePopup()">Tutup</button>
+        <button class="btn btn-secondary" data-keyboard-action="cancel" onclick="closePopup()">Tutup</button>
       </div>
       <div class="popup-body">Memuat daftar printer...</div>
     </div>
@@ -2118,7 +2133,7 @@ async function openSpjPrintSettings() {
           : `<div class="alert alert-warning">Tidak ada printer terdeteksi. Pilih printer default sistem atau sambungkan printer.</div>`
       }
       <div class="popup-footer" style="padding:0; border:0; background:none;">
-        <button class="btn btn-primary" onclick="saveSpjPrintSettings()">${iconSvg("check", 14)} Simpan Pengaturan</button>
+        <button class="btn btn-primary" data-keyboard-action="save" onclick="saveSpjPrintSettings()">${iconSvg("check", 14)} Simpan Pengaturan</button>
       </div>
     `;
   } catch (error) {
@@ -2340,13 +2355,13 @@ async function previewKwitansi(id, options = {}) {
   const initialAutoPrint = options.autoPrint === true;
 
   showPopup(`
-    <div class="popup-content spj-preview-popup" style="width:min(1200px,96vw); max-width:96vw;">
+    <div class="popup-content spj-preview-popup">
       <div class="popup-header">
         <div>
           <h3 style="margin:0;">Preview SPJ</h3>
           <small style="color:#666;">Memuat data terbaru...</small>
         </div>
-        <button class="btn btn-secondary" onclick="closePopup()">Tutup</button>
+        <button class="btn btn-secondary" data-keyboard-action="cancel" onclick="closePopup()">Tutup</button>
       </div>
       <div class="popup-body spj-preview-popup-body">
         <div id="spj-preview-navigation">
@@ -4413,6 +4428,9 @@ function configureAIImageProvider() {
         if (event.key === "Escape") {
           event.preventDefault();
           finish(null);
+        } else if (event.key === "Enter" && event.target.tagName !== "TEXTAREA") {
+          event.preventDefault();
+          save.click();
         }
       }
       document.addEventListener("keydown", onKey, true);
@@ -4936,8 +4954,8 @@ function openUpdateDetailPopup(kwitansiId) {
                         </div>
 
                         <div class="popup-footer">
-                            <button class="btn btn-secondary" onclick="closePopup()">Batal</button>
-                            <button class="btn btn-success" onclick="saveUpdateDetail(${kwitansiId})">
+                            <button class="btn btn-secondary" data-keyboard-action="cancel" onclick="closePopup()">Batal</button>
+                            <button class="btn btn-success" data-keyboard-action="save" onclick="saveUpdateDetail(${kwitansiId})">
                                 ${iconSvg("save", 15)} Simpan Perubahan
                             </button>
                         </div>
@@ -5299,8 +5317,8 @@ async function openManualBKUForm() {
             </div>
 
             <div class="popup-footer">
-                <button class="btn btn-secondary" onclick="closePopup()">Batal</button>
-                <button class="btn btn-success" onclick="saveManualBKU()">
+                <button class="btn btn-secondary" data-keyboard-action="cancel" onclick="closePopup()">Batal</button>
+                <button class="btn btn-success" data-keyboard-action="save" onclick="saveManualBKU()">
                     ${iconSvg("save", 15)} Simpan Data
                 </button>
             </div>
@@ -6063,6 +6081,10 @@ function showPopup(html) {
     document.body.appendChild(overlay);
   }
   overlay.innerHTML = html;
+  overlay.classList.toggle(
+    "spj-preview-overlay",
+    overlay.querySelector(".spj-preview-popup") !== null,
+  );
   overlay.style.display = "flex";
 }
 
@@ -6071,9 +6093,71 @@ function closePopup() {
   const overlay = document.getElementById("popup-overlay");
   if (overlay) {
     overlay.style.display = "none";
+    overlay.classList.remove("spj-preview-overlay");
     overlay.innerHTML = "";
   }
 }
+
+function handlePopupFormShortcuts(event) {
+  if (
+    event.defaultPrevented ||
+    (event.key !== "Enter" && event.key !== "Escape") ||
+    document.querySelector(".ui-dialog-overlay")
+  ) {
+    return;
+  }
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+
+  const popup = document.getElementById("popup-overlay");
+  if (popup && popup.style.display !== "none") {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      const cancel = popup.querySelector('[data-keyboard-action="cancel"]');
+      if (cancel) cancel.click();
+      else closePopup();
+      return;
+    }
+    if (
+      popup.contains(target) &&
+      (target.closest("textarea, select, [contenteditable='true'], button, a") ||
+        (target instanceof HTMLInputElement &&
+          ["button", "submit", "reset", "file", "checkbox", "radio", "image"].includes(
+            target.type,
+          )))
+    ) {
+      return;
+    }
+    const save = popup.querySelector('[data-keyboard-action="save"]:not(:disabled)');
+    if (save) {
+      event.preventDefault();
+      save.click();
+    }
+    return;
+  }
+
+  const form = target.closest("form");
+  if (!form) return;
+  if (event.key === "Escape") {
+    const cancel = form.querySelector('[data-keyboard-action="cancel"]');
+    if (cancel) {
+      event.preventDefault();
+      cancel.click();
+    }
+    return;
+  }
+  if (
+    target.closest("textarea, select, [contenteditable='true'], button, a") ||
+    (target instanceof HTMLInputElement &&
+      ["button", "submit", "reset", "file", "checkbox", "radio", "image"].includes(target.type))
+  ) {
+    return;
+  }
+  event.preventDefault();
+  form.requestSubmit();
+}
+
+document.addEventListener("keydown", handlePopupFormShortcuts, true);
 
 // UNTUK TAMPILAN TABEL (Label)
 function formatCurrencyLabel(amount) {
@@ -7857,8 +7941,8 @@ function initApp() {
                     </div>
 
                     <div style="display:flex; gap:10px; margin-top:16px;">
-                        <button type="submit" class="btn btn-primary" style="flex:1; padding:12px 18px; font-weight:700;">${iconSvg("save", 15)} Simpan Identitas</button>
-                        <button type="button" class="btn btn-secondary" style="padding:12px 18px;" onclick="resetIdentitasForm({show:false})">Batal</button>
+                        <button type="submit" data-keyboard-action="save" class="btn btn-primary" style="flex:1; padding:12px 18px; font-weight:700;">${iconSvg("save", 15)} Simpan Identitas</button>
+                        <button type="button" data-keyboard-action="cancel" class="btn btn-secondary" style="padding:12px 18px;" onclick="resetIdentitasForm({show:false})">Batal</button>
                     </div>
                 </form>
             </div>

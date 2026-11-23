@@ -1,7 +1,8 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, safeStorage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { randomUUID } = require("crypto");
 const { spawn, spawnSync, execFile } = require("child_process");
 const http = require("http");
 const { autoUpdater } = require("electron-updater");
@@ -15,6 +16,19 @@ const {
   readArkasTaxRecap,
   readArkasTransactions,
 } = require("./arkasReader.cjs");
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "spj-pdf",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
 
 // ===================== SATU FILE LOG: app.log (WAJIB) =====================
 // Semua kejadian frontend (main process Electron + renderer) dan backend
@@ -111,6 +125,7 @@ ipcMain.handle("get-app-version", () => {
 
 let pyProcess = null;
 let mainWindow = null;
+const spjPreviewPdfs = new Map();
 let backendShutdownPromise = null;
 let backendShutdownComplete = false;
 let backendShutdownInProgress = false;
@@ -429,6 +444,7 @@ async function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
+      plugins: true,
     },
   });
   mainWindow = win;
@@ -455,12 +471,14 @@ async function createWindow() {
       responseHeaders: {
         ...details.responseHeaders,
         "Content-Security-Policy": [
-          "default-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-            "frame-src 'self' blob:; " +
+          "default-src 'self' chrome: chrome-extension: 'unsafe-inline' 'unsafe-eval'; " +
+            "script-src 'self' chrome: chrome-extension: 'unsafe-inline' 'unsafe-eval'; " +
+            "frame-src 'self' blob: spj-pdf:; " +
+            "object-src 'self' spj-pdf:; " +
             "worker-src 'self' blob:; " +
             "img-src 'self' data: blob: http://127.0.0.1:* file:; " +
             "connect-src 'self' http://127.0.0.1:* https://api.github.com https://github.com https://objects.githubusercontent.com; " +
-            "style-src 'self' 'unsafe-inline';",
+            "style-src 'self' chrome: chrome-extension: 'unsafe-inline';",
         ],
       },
     });
@@ -619,17 +637,64 @@ ipcMain.handle("get-printers", async (event) => {
   return event.sender.getPrintersAsync();
 });
 
-ipcMain.handle("print-spj-html", async (event, printHtml, printerName) => {
+ipcMain.handle("create-spj-preview-pdf", async (event, pdfData) => {
   assertTrustedRenderer(event);
+  if (event.sender !== mainWindow?.webContents) {
+    throw new Error("Jendela utama untuk preview SPJ tidak tersedia.");
+  }
   if (
-    typeof printHtml !== "string" ||
-    !printHtml.startsWith("<!doctype html>") ||
-    printHtml.length === 0
+    !(pdfData instanceof ArrayBuffer) &&
+    !ArrayBuffer.isView(pdfData)
   ) {
-    throw new Error("Dokumen SPJ untuk dicetak tidak valid.");
+    throw new Error("Data PDF preview SPJ tidak valid.");
   }
 
-  const printers = await event.sender.getPrintersAsync();
+  const bytes = ArrayBuffer.isView(pdfData)
+    ? Buffer.from(pdfData.buffer, pdfData.byteOffset, pdfData.byteLength)
+    : Buffer.from(pdfData);
+  if (bytes.length < 5 || bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
+    throw new Error("Data preview SPJ bukan dokumen PDF yang valid.");
+  }
+
+  const id = randomUUID();
+  spjPreviewPdfs.set(id, { bytes, webContentsId: event.sender.id });
+  return { id, url: `spj-pdf://preview/${id}.pdf` };
+});
+
+ipcMain.handle("remove-spj-preview-pdf", (event, id) => {
+  assertTrustedRenderer(event);
+  const preview = spjPreviewPdfs.get(String(id));
+  if (!preview) return false;
+  if (preview.webContentsId !== event.sender.id) {
+    throw new Error("Tidak diizinkan menghapus file preview SPJ ini.");
+  }
+  spjPreviewPdfs.delete(String(id));
+  return true;
+});
+
+ipcMain.handle("print-spj-document", async (event, previewId, printerName) => {
+  assertTrustedRenderer(event);
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    throw new Error("Jendela utama untuk mencetak SPJ tidak tersedia.");
+  }
+
+  const id = String(previewId || "");
+  const preview = spjPreviewPdfs.get(id);
+  if (!preview || preview.webContentsId !== event.sender.id) {
+    throw new Error("PDF sumber untuk dicetak tidak tersedia.");
+  }
+
+  const rendererReady = await event.sender.executeJavaScript(`
+    (() => {
+      const viewer = document.getElementById("spj-native-pdf-viewer");
+      return Boolean(viewer && viewer.dataset.pdfReady === "true");
+    })()
+  `);
+  if (!rendererReady) {
+    throw new Error("PDF Preview bawaan belum selesai memuat dokumen SPJ.");
+  }
+
+  const printers = await mainWindow.webContents.getPrintersAsync();
   const selectedPrinter = String(printerName || "");
   if (
     selectedPrinter &&
@@ -638,51 +703,42 @@ ipcMain.handle("print-spj-html", async (event, printHtml, printerName) => {
     throw new Error("Printer yang dipilih tidak lagi tersedia.");
   }
 
-  const printDirectory = fs.mkdtempSync(
-    path.join(app.getPath("temp"), "spj-print-"),
-  );
-  const htmlPath = path.join(printDirectory, "dokumen.html");
-  let printWindow;
+  const printWindow = new BrowserWindow({
+    width: 1200,
+    height: 900,
+    show: false,
+    parent: mainWindow,
+    webPreferences: {
+      plugins: true,
+      backgroundThrottling: false,
+    },
+  });
   try {
-    fs.writeFileSync(htmlPath, printHtml, "utf8");
-    printWindow = new BrowserWindow({
-      show: false,
-      parent: mainWindow,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
-    await printWindow.loadFile(htmlPath);
-    await printWindow.webContents.executeJavaScript(
-      "Promise.all(Array.from(document.images, image => image.decode()))",
-    );
+    await printWindow.loadURL(`spj-pdf://preview/${encodeURIComponent(id)}.pdf`);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (printWindow.isDestroyed()) {
+      throw new Error("Jendela dokumen PDF untuk dicetak tertutup.");
+    }
 
     await new Promise((resolve, reject) => {
       printWindow.webContents.print(
         {
           silent: true,
+          printBackground: true,
+          marginsType: 0,
+          scaleFactor: 100,
+          pagesPerSheet: 1,
+          headerFooterEnabled: false,
           ...(selectedPrinter ? { deviceName: selectedPrinter } : {}),
         },
         (success, failureReason) => {
           if (success) resolve();
-          else reject(new Error(failureReason || "Gagal mengirim PDF ke printer."));
+          else reject(new Error(failureReason || "Gagal mengirim PDF SPJ ke printer."));
         },
       );
     });
   } finally {
-    if (printWindow && !printWindow.isDestroyed()) printWindow.destroy();
-    try {
-      fs.unlinkSync(htmlPath);
-      fs.rmdirSync(printDirectory);
-    } catch (error) {
-      writeAppLog(
-        "warn",
-        "frontend-main",
-        `Gagal membersihkan berkas sementara cetak SPJ: ${error.message || error}`,
-      );
-    }
+    if (!printWindow.isDestroyed()) printWindow.destroy();
   }
 });
 
@@ -1108,6 +1164,22 @@ Menu.setApplicationMenu(null);
 
 /* ===================== APP EVENTS ===================== */
 app.whenReady().then(async () => {
+  protocol.handle("spj-pdf", (request) => {
+    const url = new URL(request.url);
+    const id = url.pathname.slice(1).replace(/\.pdf$/, "");
+    const preview = url.hostname === "preview" ? spjPreviewPdfs.get(id) : null;
+    if (!preview) {
+      return new Response("PDF preview tidak ditemukan.", { status: 404 });
+    }
+    return new Response(preview.bytes, {
+      headers: {
+        "Content-Length": String(preview.bytes.length),
+        "Content-Type": "application/pdf",
+        "Cache-Control": "no-store",
+      },
+    });
+  });
+
   // Backend WAJIB siap sebagai child_process (port dinamis) sebelum jendela
   // dibuat. Tidak ada servis localhost statis untuk diandalkan.
   try {
@@ -1132,6 +1204,10 @@ app.on("before-quit", (event) => {
     backendShutdownComplete = true;
     app.quit();
   });
+});
+
+app.on("will-quit", () => {
+  spjPreviewPdfs.clear();
 });
 
 app.on("window-all-closed", () => {

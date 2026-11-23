@@ -1770,16 +1770,56 @@ textarea {
 
 .spj-preview-popup-body {
   display: flex;
+  flex-direction: column;
   min-height: 0;
   padding: 0;
   overflow: hidden;
 }
 
+.spj-preview-navigation {
+  display: flex;
+  min-height: 48px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #d5d7da;
+  background: #f7f7f7;
+}
+
+.spj-preview-select-label {
+  margin: 0;
+  color: #3a3a3a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.spj-preview-navigation select {
+  min-width: 180px;
+  max-width: 420px;
+  flex: 1 1 300px;
+}
+
+.spj-preview-auto-print {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 0 auto;
+  color: #3a3a3a;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.spj-preview-auto-print input {
+  margin: 0;
+}
+
 .spj-preview-frame {
   display: flex;
   width: 100%;
-  height: 78vh;
+  height: 70vh;
   min-height: 320px;
+  flex: 1 1 auto;
   flex-direction: column;
   align-items: stretch;
   justify-content: center;
@@ -1787,62 +1827,67 @@ textarea {
   background: #ededed;
 }
 
-.spj-preview-toolbar {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  min-height: 46px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 12px;
-  border-bottom: 1px solid #d5d7da;
-  background: #f7f7f7;
-  color: #3a3a3a;
-  font-size: 12px;
-}
-
-.spj-preview-page-count {
-  white-space: nowrap;
-}
-
-.spj-preview-zoom-controls {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.spj-preview-zoom-controls .btn {
-  min-width: 32px;
-  min-height: 28px;
-  padding: 4px 8px;
-}
-
-.spj-preview-zoom-controls .spj-preview-zoom-value {
-  min-width: 54px;
-  background: #fff;
-  color: #333;
-}
-
-.spj-preview-pages {
+.spj-native-pdf-viewer {
+  display: block;
+  width: 100%;
   min-height: 0;
   flex: 1 1 auto;
-  overflow: auto;
-  overscroll-behavior: contain;
-  background: #e6e6e6;
+  border: 0;
+  background: #ededed;
 }
 
-.spj-preview-page {
-  display: flex;
-  justify-content: center;
-  padding: 16px;
-}
+@media print {
+  html,
+  body {
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
 
-.spj-preview-canvas {
-  flex: 0 0 auto;
-  background: #fff;
-  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.24);
+  body > :not(#popup-overlay) {
+    display: none !important;
+  }
+
+  #popup-overlay {
+    position: static !important;
+    inset: auto !important;
+    display: flex !important;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    width: 100% !important;
+    height: 100% !important;
+    background: #fff !important;
+    backdrop-filter: none !important;
+  }
+
+  #popup-overlay > :not(.spj-preview-popup),
+  .spj-preview-popup > .popup-header,
+  #spj-preview-navigation {
+    display: none !important;
+  }
+
+  .spj-preview-popup {
+    width: 100% !important;
+    height: 100vh !important;
+    max-width: none !important;
+    margin: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .spj-preview-popup-body,
+  .spj-preview-frame {
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .spj-native-pdf-viewer {
+    width: 100% !important;
+    height: 100vh !important;
+  }
 }
 
 .main-area {
@@ -2167,24 +2212,31 @@ tbody tr:hover td {
     width: 175px;
   }
 
-  .spj-preview-frame {
-    height: 78vh;
-  }
-
-  .spj-preview-toolbar {
+  .spj-preview-navigation {
+    flex-wrap: wrap;
     gap: 6px;
-    padding: 6px;
+    padding: 7px;
   }
 
-  .spj-preview-zoom-controls {
-    gap: 3px;
+  .spj-preview-navigation select {
+    min-width: 130px;
+    max-width: none;
+    flex: 1 1 100%;
+    order: 1;
   }
 
-  .spj-preview-zoom-controls .btn {
-    min-width: 28px;
-    padding-right: 6px;
-    padding-left: 6px;
+  .spj-preview-select-label {
+    display: none;
   }
+
+  .spj-preview-auto-print {
+    margin-left: 0;
+  }
+
+  .spj-preview-frame {
+    height: 68vh;
+  }
+
 }
 
 @media (prefers-reduced-motion: reduce) {

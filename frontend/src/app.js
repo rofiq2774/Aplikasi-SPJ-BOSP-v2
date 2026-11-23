@@ -1997,6 +1997,12 @@ async function downloadKwitansi(id, noBukti = "") {
       );
     }
 
+    const paper = SPJ_PAPER_SIZES[getSpjPrintSettings().paperSize];
+    payload.data.paper = {
+      ...(payload.data.paper || {}),
+      width_mm: paper.width,
+      height_mm: paper.height,
+    };
     setBackendOriginGetter(() => _backendOrigin);
     const blob = await buildSpjPdf(payload.data);
     if (!(blob instanceof Blob) || blob.size === 0) {
@@ -2044,14 +2050,20 @@ function getSpjPrintSettings() {
       paperSize: SPJ_PAPER_SIZES[saved.paperSize] ? saved.paperSize : "f4",
     };
   } catch (error) {
-    appLog("warn", `Pengaturan cetak SPJ tidak valid: ${error.message || error}`);
+    appLog(
+      "warn",
+      `Pengaturan cetak SPJ tidak valid: ${error.message || error}`,
+    );
     return { printerName: "", paperSize: "f4" };
   }
 }
 
 async function openSpjPrintSettings() {
   if (!window.electronAPI?.getPrinters) {
-    showToast("Error!", "Pengaturan printer hanya tersedia di aplikasi desktop.");
+    showToast(
+      "Error!",
+      "Pengaturan printer hanya tersedia di aplikasi desktop.",
+    );
     return;
   }
   showPopup(`
@@ -2132,285 +2144,204 @@ function saveSpjPrintSettings() {
   showToast("Berhasil!", "Pengaturan printer dan ukuran kertas disimpan.");
 }
 
-async function printKwitansi(id) {
-  const item = _kwitansiList.find((kwitansi) => Number(kwitansi.id) === Number(id));
+async function printKwitansi(id, previewId = null) {
+  const item = _kwitansiList.find(
+    (kwitansi) => Number(kwitansi.id) === Number(id),
+  );
   const label = item?.nomor_kwitansi || String(id);
   try {
-    if (!window.electronAPI?.printSpjHtml) {
+    if (!window.electronAPI?.printSpjDocument) {
       throw new Error("Fitur cetak hanya tersedia di aplikasi desktop.");
     }
-    showToast("Info", `Menyiapkan SPJ ${label} untuk dicetak...`);
-    const response = await apiFetch(`${API_BASE}/kwitansi/${id}/spj-data`);
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `Gagal memuat data SPJ (HTTP ${response.status})`);
+    if (
+      !_spjPreviewState?.pdfReady ||
+      _spjPreviewState.previewId !== previewId
+    ) {
+      throw new Error(
+        "PDF Preview bawaan belum siap. Tunggu dokumen tampil lalu coba lagi.",
+      );
     }
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("json")) {
-      throw new Error(`Respons backend bukan JSON (${contentType || "kosong"}).`);
-    }
-    const payload = await response.json();
-    if (payload.status !== "success" || !payload.data) {
-      throw new Error(payload.detail || "Backend tidak mengirim payload SPJ yang valid.");
-    }
-
+    showToast("Info", `Mengirim PDF SPJ ${label} ke printer...`);
     const settings = getSpjPrintSettings();
-    const paper = SPJ_PAPER_SIZES[settings.paperSize];
-    payload.data.paper = {
-      ...(payload.data.paper || {}),
-      width_mm: paper.width,
-      height_mm: paper.height,
-    };
-    setBackendOriginGetter(() => _backendOrigin);
-    const blob = await buildSpjPdf(payload.data);
-    if (!(blob instanceof Blob) || blob.size === 0) {
-      throw new Error("Renderer frontend menghasilkan PDF kosong.");
-    }
-    const printHtml = await buildSpjPrintHtml(blob);
-    await window.electronAPI.printSpjHtml(printHtml, settings.printerName);
+    await window.electronAPI.printSpjDocument(previewId, settings.printerName);
     showToast("Berhasil!", `SPJ ${label} berhasil dikirim ke printer.`);
+    return true;
   } catch (error) {
     const message = error?.message || String(error);
+    if (/print job cancel(?:ed|led)/i.test(message)) {
+      appLog("warn", `printKwitansi: DIBATALKAN id=${id}: ${message}`);
+      showToast("Info", `Pencetakan SPJ ${label} dibatalkan.`);
+      return false;
+    }
     appLog("error", `printKwitansi: GAGAL id=${id}: ${message}`);
     showToast("Error!", `Gagal mencetak SPJ ${label}: ${message}`);
-    throw error;
+    return false;
   }
 }
 
-async function buildSpjPrintHtml(blob) {
-  const pdfjsLib = await loadPdfJs();
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(await blob.arrayBuffer()),
-  });
-  const pdfDocument = await loadingTask.promise;
-  const pages = [];
-  const pageStyles = [];
-
-  try {
-    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
-      const page = await pdfDocument.getPage(pageNumber);
-      const pageViewport = page.getViewport({ scale: 1 });
-      const renderScale = 2;
-      const renderViewport = page.getViewport({ scale: renderScale });
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.ceil(renderViewport.width);
-      canvas.height = Math.ceil(renderViewport.height);
-      const renderTask = page.render({
-        canvasContext: canvas.getContext("2d"),
-        viewport: renderViewport,
-      });
-      await renderTask.promise;
-
-      const pageWidthMm = (pageViewport.width * 25.4) / 72;
-      const pageHeightMm = (pageViewport.height * 25.4) / 72;
-      const pageName = `spj-page-${pageNumber}`;
-      const imageData = canvas.toDataURL("image/png");
-      pageStyles.push(`
-        @page ${pageName} { size: ${pageWidthMm}mm ${pageHeightMm}mm; margin: 0; }
-        .${pageName} { page: ${pageName}; width: ${pageWidthMm}mm; height: ${pageHeightMm}mm; }
-      `);
-      pages.push(
-        `<section class="page ${pageName}"><img src="${imageData}" alt="Halaman ${pageNumber}"></section>`,
-      );
-      canvas.width = 0;
-      canvas.height = 0;
-      page.cleanup();
-    }
-  } finally {
-    await loadingTask.destroy();
-  }
-
-  return `<!doctype html>
-    <html><head><meta charset="utf-8"><style>
-      ${pageStyles.join("\n")}
-      html, body { margin: 0; padding: 0; }
-      .page { display: flex; break-after: page; page-break-after: always; overflow: hidden; }
-      .page:last-child { break-after: auto; page-break-after: auto; }
-      .page img { display: block; width: 100%; height: 100%; object-fit: fill; }
-    </style></head><body>${pages.join("\n")}</body></html>`;
-}
-
-async function printAllKwitansi() {
-  const printableItems = _kwitansiList.filter((item) => item.nomor_kwitansi);
-  if (!printableItems.length) {
-    showToast("Info", "Tidak ada SPJ bernomor pada daftar yang sedang ditampilkan.");
-    return;
-  }
-  if (
-    !(await UI.confirm(
-      `Cetak ${printableItems.length} SPJ bernomor ke printer yang dipilih? Setiap dokumen akan dikirim satu per satu.`,
-      { title: "Cetak Semua SPJ", okText: "Cetak Semua" },
-    ))
-  ) {
-    return;
-  }
-  for (let index = 0; index < printableItems.length; index += 1) {
-    const item = printableItems[index];
+function openSpjPrintPreview() {
+  const items = Array.isArray(_kwitansiList) ? _kwitansiList.slice() : [];
+  const firstPrintable = items.find((item) => item.nomor_kwitansi);
+  if (!firstPrintable) {
     showToast(
       "Info",
-      `Mencetak SPJ ${index + 1} dari ${printableItems.length}...`,
+      "Tidak ada SPJ bernomor pada daftar yang sedang ditampilkan.",
     );
-    try {
-      await printKwitansi(item.id);
-    } catch {
-      return;
-    }
+    return;
   }
-  showToast("Berhasil!", `${printableItems.length} SPJ berhasil dikirim ke printer.`);
+  void previewKwitansi(firstPrintable.id, { navigationItems: items });
 }
 
 let _spjPreviewState = null;
 let _spjPreviewGeneration = 0;
-let _pdfJsPromise = null;
-
-function loadPdfJs() {
-  if (!_pdfJsPromise) {
-    _pdfJsPromise = Promise.all([
-      import("pdfjs-dist"),
-      import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
-    ])
-      .then(([pdfjsLib, worker]) => {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
-        return pdfjsLib;
-      })
-      .catch((err) => {
-        _pdfJsPromise = null;
-        throw err;
-      });
-  }
-  return _pdfJsPromise;
-}
 
 function disposeSpjPreview() {
   _spjPreviewGeneration += 1;
-  if (!_spjPreviewState) return;
-  _spjPreviewState.renderTask?.cancel();
-  const task = _spjPreviewState.loadingTask;
+  const state = _spjPreviewState;
   _spjPreviewState = null;
-  if (task) {
-    task.destroy().catch((err) => {
-      appLog(
-        "warn",
-        `previewKwitansi: gagal menutup dokumen PDF: ${err.message || err}`,
-      );
-    });
+  if (state?.previewId && window.electronAPI?.removeSpjPreviewPdf) {
+    void window.electronAPI
+      .removeSpjPreviewPdf(state.previewId)
+      .catch((error) => {
+        const message = error?.message || String(error);
+        appLog(
+          "error",
+          `Gagal menghapus file PDF preview sementara: ${message}`,
+        );
+      });
   }
 }
 
-async function renderSpjPreviewPages() {
+function buildSpjPreviewNavigation(items, selectedIndex, autoPrint, busy) {
+  const currentItem = items[selectedIndex];
+  return `
+    <div class="spj-preview-navigation">
+      <button type="button" class="btn btn-secondary btn-sm"
+        onclick="navigateSpjPreviewByOffset(-1)" ${busy || selectedIndex <= 0 ? "disabled" : ""}>
+        Sebelumnya
+      </button>
+      <label class="spj-preview-select-label" for="spj-preview-select">SPJ</label>
+      <select id="spj-preview-select" class="form-control"
+        onchange="navigateSpjPreview(this.value)" ${busy ? "disabled" : ""}>
+        ${items
+          .map((item, index) => {
+            const label = item.nomor_kwitansi
+              ? displayKwitansiNumber(item)
+              : `DRAFT ${item.id}`;
+            const detail = item.nama_kegiatan || item.nama_toko || "";
+            return `<option value="${Number(item.id)}" ${index === selectedIndex ? "selected" : ""}>${escapeSpjFormValue(`${label} - ${detail}`)}</option>`;
+          })
+          .join("")}
+      </select>
+      <button type="button" class="btn btn-secondary btn-sm"
+        onclick="navigateSpjPreviewByOffset(1)" ${busy || selectedIndex >= items.length - 1 ? "disabled" : ""}>
+        Selanjutnya
+      </button>
+      <button type="button" class="btn btn-primary btn-sm"
+        onclick="printCurrentSpjPreview()" ${busy || !currentItem?.nomor_kwitansi ? "disabled" : ""}>
+        ${iconSvg("printer", 14)} Cetak
+      </button>
+      <label class="spj-preview-auto-print">
+        <input id="spj-preview-auto-print" type="checkbox" ${autoPrint ? "checked" : ""}
+          onchange="setSpjPreviewAutoPrint(this.checked)" ${busy ? "disabled" : ""}>
+        Cetak otomatis
+      </label>
+    </div>
+  `;
+}
+
+function renderSpjPreviewNavigation(state) {
+  const navigation = document.getElementById("spj-preview-navigation");
+  if (navigation && state === _spjPreviewState) {
+    navigation.innerHTML = buildSpjPreviewNavigation(
+      state.navigationItems,
+      state.navigationIndex,
+      state.autoPrint,
+      state.busy,
+    );
+  }
+}
+
+function setSpjPreviewAutoPrint(checked) {
+  if (!_spjPreviewState) return;
+  _spjPreviewState.autoPrint = Boolean(checked);
+}
+
+async function printCurrentSpjPreview() {
   const state = _spjPreviewState;
-  const container = document.getElementById("spj-preview-pages");
-  if (!state || !container) return;
-
-  state.renderGeneration = (state.renderGeneration || 0) + 1;
-  const renderGeneration = state.renderGeneration;
-  state.renderTask?.cancel();
-  container.replaceChildren();
-
-  for (
-    let pageNumber = 1;
-    pageNumber <= state.document.numPages;
-    pageNumber += 1
-  ) {
-    if (
-      state !== _spjPreviewState ||
-      renderGeneration !== state.renderGeneration
-    )
-      return;
-    const page = await state.document.getPage(pageNumber);
-    if (
-      state !== _spjPreviewState ||
-      renderGeneration !== state.renderGeneration
-    )
-      return;
-
-    const baseViewport = page.getViewport({ scale: 1 });
-    const scale = state.zoom || 1;
-    const viewport = page.getViewport({ scale });
-    const outputScale = Math.min(window.devicePixelRatio || 1, 1.5);
-    const pageContainer = document.createElement("div");
-    pageContainer.className = "spj-preview-page";
-    const canvas = document.createElement("canvas");
-    canvas.className = "spj-preview-canvas";
-    canvas.width = Math.floor(viewport.width * outputScale);
-    canvas.height = Math.floor(viewport.height * outputScale);
-    canvas.style.width = `${Math.floor(viewport.width)}px`;
-    canvas.style.height = `${Math.floor(viewport.height)}px`;
-    pageContainer.appendChild(canvas);
-    container.appendChild(pageContainer);
-
-    const renderTask = page.render({
-      canvasContext: canvas.getContext("2d"),
-      viewport,
-      transform:
-        outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
-    });
-    state.renderTask = renderTask;
-    try {
-      await renderTask.promise;
-    } catch (error) {
-      if (error?.name === "RenderingCancelledException") return;
-      throw error;
-    } finally {
-      if (state.renderTask === renderTask) state.renderTask = null;
+  if (!state || state.busy) return;
+  const item = state.navigationItems[state.navigationIndex];
+  if (!item?.nomor_kwitansi) {
+    showToast(
+      "Info",
+      "SPJ ini belum memiliki nomor kuitansi dan tidak dapat dicetak.",
+    );
+    return;
+  }
+  state.busy = true;
+  renderSpjPreviewNavigation(state);
+  try {
+    await printKwitansi(item.id, state.previewId);
+  } finally {
+    if (_spjPreviewState === state) {
+      state.busy = false;
+      renderSpjPreviewNavigation(state);
     }
   }
 }
 
-async function setSpjPreviewZoom(zoom) {
+async function navigateSpjPreview(targetId) {
   const state = _spjPreviewState;
-  if (!state) return;
-  state.zoom = Math.min(3, Math.max(0.25, Number(zoom) || 1));
-  const zoomLabel = document.getElementById("spj-preview-zoom");
-  if (zoomLabel) zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+  if (!state || state.busy) return;
+  const targetIndex = state.navigationItems.findIndex(
+    (item) => Number(item.id) === Number(targetId),
+  );
+  if (targetIndex < 0 || targetIndex === state.navigationIndex) return;
+
+  const currentItem = state.navigationItems[state.navigationIndex];
+  state.busy = true;
+  renderSpjPreviewNavigation(state);
   try {
-    await renderSpjPreviewPages();
-  } catch (error) {
-    if (error?.name === "RenderingCancelledException") return;
-    const message = error?.message || String(error);
-    appLog(
-      "error",
-      `previewKwitansi: gagal merender ulang pada zoom ${state.zoom}: ${message}`,
-    );
-    showToast("Error!", `Gagal mengubah zoom preview SPJ: ${message}`);
+    if (state.autoPrint && currentItem?.nomor_kwitansi) {
+      await printKwitansi(currentItem.id, state.previewId);
+    }
+    await previewKwitansi(state.navigationItems[targetIndex].id, {
+      navigationItems: state.navigationItems,
+      autoPrint: state.autoPrint,
+    });
+  } finally {
+    if (_spjPreviewState === state) {
+      state.busy = false;
+      renderSpjPreviewNavigation(state);
+    }
   }
 }
 
-async function fitSpjPreviewWidth() {
+function navigateSpjPreviewByOffset(offset) {
   const state = _spjPreviewState;
-  const container = document.getElementById("spj-preview-pages");
-  if (!state || !container) return;
-  try {
-    const firstPage = await state.document.getPage(1);
-    if (state !== _spjPreviewState) return;
-    const pageWidth = firstPage.getViewport({ scale: 1 }).width;
-    const fitScale = Math.min(
-      1.5,
-      Math.max(0.25, (container.clientWidth - 48) / pageWidth),
-    );
-    await setSpjPreviewZoom(fitScale);
-  } catch (error) {
-    if (
-      state !== _spjPreviewState ||
-      error?.name === "RenderingCancelledException"
-    )
-      return;
-    const message = error?.message || String(error);
-    appLog(
-      "error",
-      `previewKwitansi: gagal menyesuaikan lebar halaman: ${message}`,
-    );
-    showToast("Error!", `Gagal menyesuaikan lebar preview SPJ: ${message}`);
-  }
+  if (!state || state.busy) return;
+  const target = state.navigationItems[state.navigationIndex + offset];
+  if (target) void navigateSpjPreview(target.id);
 }
 
-function adjustSpjPreviewZoom(delta) {
-  if (_spjPreviewState) {
-    void setSpjPreviewZoom(_spjPreviewState.zoom + delta);
+async function previewKwitansi(id, options = {}) {
+  const navigationItems = Array.isArray(options.navigationItems)
+    ? options.navigationItems.slice()
+    : Array.isArray(_kwitansiList)
+      ? _kwitansiList.slice()
+      : [];
+  let navigationIndex = navigationItems.findIndex(
+    (item) => Number(item.id) === Number(id),
+  );
+  if (navigationIndex < 0) {
+    navigationItems.push(
+      _kwitansiList.find((item) => Number(item.id) === Number(id)) || { id },
+    );
+    navigationIndex = navigationItems.length - 1;
   }
-}
+  const initialNavigationIndex = Math.max(0, navigationIndex);
+  const initialAutoPrint = options.autoPrint === true;
 
-async function previewKwitansi(id) {
   showPopup(`
     <div class="popup-content spj-preview-popup" style="width:min(1200px,96vw); max-width:96vw;">
       <div class="popup-header">
@@ -2421,6 +2352,9 @@ async function previewKwitansi(id) {
         <button class="btn btn-secondary" onclick="closePopup()">Tutup</button>
       </div>
       <div class="popup-body spj-preview-popup-body">
+        <div id="spj-preview-navigation">
+          ${buildSpjPreviewNavigation(navigationItems, initialNavigationIndex, initialAutoPrint, true)}
+        </div>
         <div id="spj-preview-frame" class="spj-preview-frame">
           Menyiapkan preview SPJ...
         </div>
@@ -2452,6 +2386,12 @@ async function previewKwitansi(id) {
       );
     }
 
+    const paper = SPJ_PAPER_SIZES[getSpjPrintSettings().paperSize];
+    payload.data.paper = {
+      ...(payload.data.paper || {}),
+      width_mm: paper.width,
+      height_mm: paper.height,
+    };
     setBackendOriginGetter(() => _backendOrigin);
     const blob = await buildSpjPdf(payload.data);
     if (!(blob instanceof Blob) || blob.size === 0) {
@@ -2460,43 +2400,66 @@ async function previewKwitansi(id) {
     const previewContainer = document.getElementById("spj-preview-frame");
     if (!previewContainer || requestId !== _spjPreviewGeneration) return;
 
-    const pdfjsLib = await loadPdfJs();
-    const loadingTask = pdfjsLib.getDocument({
-      data: new Uint8Array(await blob.arrayBuffer()),
-    });
-    const pdfDocument = await loadingTask.promise;
+    if (!window.electronAPI?.createSpjPreviewPdf) {
+      throw new Error("PDF Preview bawaan hanya tersedia di aplikasi desktop.");
+    }
+    const previewFile = await window.electronAPI.createSpjPreviewPdf(
+      await blob.arrayBuffer(),
+    );
+    if (!previewFile?.id || !previewFile.url) {
+      throw new Error("Gagal menyiapkan file lokal untuk PDF Preview bawaan.");
+    }
     if (requestId !== _spjPreviewGeneration) {
-      await loadingTask.destroy();
+      await window.electronAPI.removeSpjPreviewPdf(previewFile.id);
       return;
     }
-    _spjPreviewState = {
-      loadingTask,
-      document: pdfDocument,
-      renderTask: null,
-      zoom: 1,
+    const previewState = {
+      previewId: previewFile.id,
+      pdfUrl: previewFile.url,
+      navigationItems,
+      navigationIndex: initialNavigationIndex,
+      autoPrint: initialAutoPrint,
+      busy: true,
+      pdfReady: false,
     };
-    previewContainer.innerHTML = `
-      <div class="spj-preview-toolbar" role="toolbar" aria-label="Kontrol preview SPJ">
-        <span class="spj-preview-page-count">${pdfDocument.numPages} halaman</span>
-        <div class="spj-preview-zoom-controls">
-          <button type="button" class="btn btn-secondary btn-sm" aria-label="Perkecil preview" title="Perkecil" onclick="adjustSpjPreviewZoom(-0.1)">−</button>
-          <button type="button" id="spj-preview-zoom" class="btn btn-secondary btn-sm spj-preview-zoom-value" aria-label="Kembalikan zoom ke 100%" title="Kembalikan ke 100%" onclick="setSpjPreviewZoom(1)">100%</button>
-          <button type="button" class="btn btn-secondary btn-sm" aria-label="Perbesar preview" title="Perbesar" onclick="adjustSpjPreviewZoom(0.1)">+</button>
-          <button type="button" class="btn btn-outline-primary btn-sm" onclick="fitSpjPreviewWidth()">Lebar halaman</button>
-        </div>
-      </div>
-      <div id="spj-preview-pages" class="spj-preview-pages">
-      </div>
-    `;
-    await fitSpjPreviewWidth();
+    _spjPreviewState = previewState;
+    renderSpjPreviewNavigation(previewState);
+    const nativeViewer = document.createElement("embed");
+    nativeViewer.id = "spj-native-pdf-viewer";
+    nativeViewer.className = "spj-native-pdf-viewer";
+    nativeViewer.type = "application/pdf";
+    nativeViewer.setAttribute("aria-label", `PDF Preview SPJ ${id}`);
+    nativeViewer.addEventListener(
+      "load",
+      () => {
+        if (_spjPreviewState !== previewState) return;
+        nativeViewer.dataset.pdfReady = "true";
+        previewState.pdfReady = true;
+        previewState.busy = false;
+        renderSpjPreviewNavigation(previewState);
+        appLog("info", `previewKwitansi: PDF viewer bawaan siap id=${id}`);
+      },
+      { once: true },
+    );
+    nativeViewer.addEventListener(
+      "error",
+      () => {
+        if (_spjPreviewState !== previewState) return;
+        previewState.busy = false;
+        renderSpjPreviewNavigation(previewState);
+        showToast("Error!", "PDF Preview bawaan gagal memuat dokumen SPJ.");
+      },
+      { once: true },
+    );
+    previewContainer.replaceChildren(nativeViewer);
+    nativeViewer.src = previewFile.url;
     const subtitle = document.querySelector(
       "#popup-overlay .popup-header small",
     );
-    if (subtitle)
-      subtitle.textContent = "Preview menggunakan data tersimpan terbaru.";
+    if (subtitle) subtitle.textContent = "";
     appLog(
       "info",
-      `previewKwitansi: OK id=${id}, jenis=${payload.data.jenis_belanja || "umum"}, halaman=${pdfDocument.numPages}, ukuran=${blob.size} byte`,
+      `previewKwitansi: PDF viewer bawaan disiapkan id=${id}, ukuran=${blob.size} byte`,
     );
   } catch (err) {
     if (err?.name === "RenderingCancelledException") return;
@@ -3872,8 +3835,8 @@ function renderKwitansiList(list) {
             <button class="btn btn-outline-primary" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="openSpjPrintSettings()">
                 ${iconSvg("settings", 16)} Atur Printer &amp; Kertas
             </button>
-            <button class="btn btn-success" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="printAllKwitansi()">
-                ${iconSvg("printer", 16)} Cetak Semua
+            <button class="btn btn-success" style="padding: 10px 20px; font-weight: bold; margin-left:8px;" onclick="openSpjPrintPreview()">
+                ${iconSvg("printer", 16)} Cetak SPJ
             </button>
         </div>
 
@@ -3931,9 +3894,6 @@ function renderKwitansiList(list) {
     ${
       k.nomor_kwitansi
         ? `
-            <button class="btn-sm btn-outline-primary" onclick="printKwitansi(${k.id})">
-                  ${iconSvg("printer", 13)} Cetak
-            </button>
             <button class="btn-sm btn-outline-primary" onclick="downloadKwitansi(${k.id}, '${k.no_bukti}')">
                   ${iconSvg("package", 13)} Unduh
             </button>
@@ -7074,9 +7034,7 @@ function initUpdateListeners() {
       loading.innerText = "Memuat catatan rilis terbaru...";
       changelogContainer.appendChild(loading);
       fetchLatestChangelog().then((latestNotes) => {
-        renderChangelog(
-          latestNotes || "Catatan rilis terbaru tidak tersedia.",
-        );
+        renderChangelog(latestNotes || "Catatan rilis terbaru tidak tersedia.");
       });
       return;
     }
@@ -8079,11 +8037,12 @@ window.downloadKwitansi = downloadKwitansi;
 window.openSpjPrintSettings = openSpjPrintSettings;
 window.saveSpjPrintSettings = saveSpjPrintSettings;
 window.printKwitansi = printKwitansi;
-window.printAllKwitansi = printAllKwitansi;
+window.openSpjPrintPreview = openSpjPrintPreview;
 window.previewKwitansi = previewKwitansi;
-window.setSpjPreviewZoom = setSpjPreviewZoom;
-window.adjustSpjPreviewZoom = adjustSpjPreviewZoom;
-window.fitSpjPreviewWidth = fitSpjPreviewWidth;
+window.printCurrentSpjPreview = printCurrentSpjPreview;
+window.navigateSpjPreview = navigateSpjPreview;
+window.navigateSpjPreviewByOffset = navigateSpjPreviewByOffset;
+window.setSpjPreviewAutoPrint = setSpjPreviewAutoPrint;
 window.deleteMasterKegiatan = deleteMasterKegiatan;
 window.deleteMasterKegiatanArkas = deleteMasterKegiatanArkas;
 window.importMasterRekeningBelanja = importMasterRekeningBelanja;

@@ -86,6 +86,50 @@ function minimalPayload() {
   };
 }
 
+test("pergantian section memulai elemen pertama tanpa node page-break kosong", async () => {
+  const pm = await loadBrowserPdfMake();
+  const mod = await loadSpjPdfWith(pm);
+  const data = {
+    schema_version: 1,
+    document: {
+      order: ["kwitansi", "bast"],
+      paper: { width_mm: 215, height_mm: 330 },
+    },
+    sections: {
+      kwitansi: { status: "included" },
+      bast: { status: "included" },
+    },
+    kwitansi: {
+      nomor_kwitansi: "KW-001",
+      tanggal: "2026-11-03",
+      jumlah: 100000,
+      nama_kegiatan: "Belanja barang",
+      uraian_pembayaran: "Belanja barang",
+      terbilang: "seratus ribu rupiah",
+    },
+    bast: { items: [] },
+    identitas: {
+      nama_sekolah: "SDN Contoh",
+      nama_kepala_sekolah: "Kepala Sekolah",
+      nama_bendahara: "Bendahara",
+      nama_pengurus_barang: "Pengurus Barang",
+      tempat_surat: "Jember",
+    },
+    jenis_belanja: "umum",
+    lampiran_foto: {},
+  };
+
+  const definition = mod.buildSpjDocumentDefinition(data);
+  const bastTitleIndex = definition.content.findIndex(
+    (node) => node?.text === "FORMAT 2",
+  );
+  assert.ok(bastTitleIndex > 0, "Bagian BAST harus disertakan");
+  assert.equal(definition.content[bastTitleIndex].pageBreak, "before");
+  assert.equal(definition.content[bastTitleIndex].pageOrientation, undefined);
+  assert.notEqual(definition.content[bastTitleIndex - 1]?.text, "");
+  assert.equal(definition.pageOrientation, "portrait");
+});
+
 test("regresi: pdfMake.vfs = {...} saja menghasilkan error path lokal (bukti akar masalah)", async () => {
   const pm = await loadBrowserPdfMake();
   // Cara lama: hanya menaruh base64 di properti .vfs (tidak masuk virtualfs internal)

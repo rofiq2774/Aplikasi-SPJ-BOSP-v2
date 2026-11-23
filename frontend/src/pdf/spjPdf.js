@@ -2557,6 +2557,52 @@ export function buildRabSection(data) {
 // Rakit definisi dokumen & Async Builder
 // ---------------------------------------------------------------------------
 
+export function normalizePageBreakNodes(nodes) {
+  if (!Array.isArray(nodes)) return nodes;
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    if (!node || typeof node !== "object" || node.pageBreak !== "before") {
+      continue;
+    }
+
+    const nextNode = nodes[index + 1];
+    if (!nextNode || typeof nextNode !== "object") {
+      nodes.splice(index, 1);
+      index -= 1;
+      continue;
+    }
+
+    if (node.text === "" && Object.keys(node).every((key) =>
+      ["text", "pageBreak", "pageOrientation"].includes(key)
+    )) {
+      if (nextNode.pageBreak !== "before") {
+        nextNode.pageBreak = "before";
+      }
+      if (node.pageOrientation && !nextNode.pageOrientation) {
+        nextNode.pageOrientation = node.pageOrientation;
+      }
+      nodes.splice(index, 1);
+      index -= 1;
+    }
+  }
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    if (
+      node &&
+      typeof node === "object" &&
+      node.pageBreak === "before" &&
+      index === 0
+    ) {
+      delete node.pageBreak;
+      delete node.pageOrientation;
+    }
+  }
+
+  return nodes;
+}
+
 export function buildSpjDocumentDefinition(data) {
   validateSpjPayload(data);
 
@@ -2579,6 +2625,7 @@ export function buildSpjDocumentDefinition(data) {
   const content = [];
   const firstSection = sectionOrder.find(isSectionIncluded);
   let isFirstRenderedSection = true;
+  let currentOrientation = firstSection === "rab" ? "landscape" : "portrait";
   // Susun bagian sesuai urutan payload, lalu sisipkan jeda halaman dan lampiran.
   for (const name of sectionOrder) {
     if (!isSectionIncluded(name)) continue;
@@ -2597,11 +2644,16 @@ export function buildSpjDocumentDefinition(data) {
     }
 
     if (!isFirstRenderedSection) {
-      sectionContent.unshift({
-        text: "",
-        pageBreak: "before",
-        pageOrientation: name === "rab" ? "landscape" : "portrait",
-      });
+      const firstSectionNode = sectionContent[0];
+      if (!firstSectionNode || typeof firstSectionNode !== "object") {
+        fail(`bagian ${name} tidak memiliki elemen pertama yang valid`);
+      }
+      firstSectionNode.pageBreak = "before";
+      const sectionOrientation = name === "rab" ? "landscape" : "portrait";
+      if (sectionOrientation !== currentOrientation) {
+        firstSectionNode.pageOrientation = sectionOrientation;
+        currentOrientation = sectionOrientation;
+      }
     }
     content.push(...sectionContent);
     isFirstRenderedSection = false;
@@ -2613,6 +2665,7 @@ export function buildSpjDocumentDefinition(data) {
   } else {
     content.push(...lampiranFotoSections, ...dataLampiranSections);
   }
+  normalizePageBreakNodes(content);
   if (isFirstRenderedSection)
     fail("tidak ada bagian yang dapat dirender (semua ditandai skip)");
 

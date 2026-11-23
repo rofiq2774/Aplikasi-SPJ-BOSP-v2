@@ -28,6 +28,7 @@ backend/uploads/
 # Build Outputs & Python Caches
 # ========================
 hasil_build/
+hasil_build-spj-navigation/
 frontend/dist/
 backend/build/
 backend/dist/

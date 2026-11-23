@@ -2298,16 +2298,13 @@ async function navigateSpjPreview(targetId) {
   );
   if (targetIndex < 0 || targetIndex === state.navigationIndex) return;
 
-  const currentItem = state.navigationItems[state.navigationIndex];
   state.busy = true;
   renderSpjPreviewNavigation(state);
   try {
-    if (state.autoPrint && currentItem?.nomor_kwitansi) {
-      await printKwitansi(currentItem.id, state.previewId);
-    }
     await previewKwitansi(state.navigationItems[targetIndex].id, {
       navigationItems: state.navigationItems,
       autoPrint: state.autoPrint,
+      autoPrintOnLoad: state.autoPrint,
     });
   } finally {
     if (_spjPreviewState === state) {
@@ -2419,6 +2416,7 @@ async function previewKwitansi(id, options = {}) {
       navigationItems,
       navigationIndex: initialNavigationIndex,
       autoPrint: initialAutoPrint,
+      autoPrintOnLoad: options.autoPrintOnLoad === true,
       busy: true,
       pdfReady: false,
     };
@@ -2438,6 +2436,17 @@ async function previewKwitansi(id, options = {}) {
         previewState.busy = false;
         renderSpjPreviewNavigation(previewState);
         appLog("info", `previewKwitansi: PDF viewer bawaan siap id=${id}`);
+        const currentItem =
+          previewState.navigationItems[previewState.navigationIndex];
+        const shouldAutoPrint = previewState.autoPrintOnLoad;
+        previewState.autoPrintOnLoad = false;
+        if (
+          shouldAutoPrint &&
+          previewState.autoPrint &&
+          currentItem?.nomor_kwitansi
+        ) {
+          void printCurrentSpjPreview();
+        }
       },
       { once: true },
     );

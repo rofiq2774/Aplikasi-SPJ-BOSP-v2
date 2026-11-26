@@ -364,6 +364,8 @@ class TransaksiItem(BaseModel):
     source_fund_name: Optional[str] = None
     budget_id: Optional[str] = None
     budget_name: Optional[str] = None
+    arkas_item_id: Optional[str] = None
+    source_updated_at: Optional[str] = None
 
 
 class BKUData(BaseModel):
@@ -386,6 +388,7 @@ class ArkasTaxItem(BaseModel):
     source_fund_name: Optional[str] = None
     budget_id: Optional[str] = None
     budget_name: Optional[str] = None
+    source_updated_at: Optional[str] = None
 
 
 class ArkasImportRequest(BaseModel):
@@ -2652,6 +2655,103 @@ async def import_arkas_transactions(
             *record_scope(item),
         )
 
+    def transaction_fallback_key(item):
+        return (
+            receipt_key(item),
+            (item.kode_kegiatan or "").strip().casefold(),
+            (item.kode_rekening or "").strip().casefold(),
+            (item.uraian or "").strip().casefold(),
+        )
+
+    def transaction_fallback_group_key(item):
+        return transaction_fallback_key(item)[:3]
+
+    def timestamp_utc(value, source_local=False):
+        if not value:
+            return None
+        try:
+            parsed = (
+                value
+                if isinstance(value, datetime)
+                else parse_date(str(value), dayfirst=False)
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+        if parsed.tzinfo is None:
+            parsed = (
+                parsed.astimezone()
+                if source_local
+                else parsed.replace(tzinfo=timezone.utc)
+            )
+        return parsed.astimezone(timezone.utc)
+
+    def source_timestamp_is_newer(source_timestamp, existing):
+        source_time = timestamp_utc(source_timestamp, source_local=True)
+        if source_time is None:
+            return False
+
+        existing_source_timestamp = getattr(existing, "arkas_updated_at", None)
+        existing_time = timestamp_utc(
+            existing_source_timestamp or getattr(existing, "updated_at", None),
+            source_local=bool(existing_source_timestamp),
+        )
+        return existing_time is not None and source_time > existing_time
+
+    def transaction_values(item):
+        return {
+            "tanggal": normalize_date_backend(item.tanggal) or item.tanggal,
+            "kode_kegiatan": item.kode_kegiatan or "",
+            "kode_rekening": item.kode_rekening or "",
+            "no_bukti": item.no_bukti,
+            "uraian": item.uraian or "",
+            "volume": float(item.volume or 0),
+            "satuan": item.satuan or "",
+            "harga_satuan": float(item.harga_satuan or 0),
+            "nama_toko": item.nama_toko or "",
+            "alamat_toko": item.alamat_toko or "",
+            "no_telp_toko": item.no_telp_toko or "",
+            "npwp_toko": item.npwp_toko or "",
+            "no_nota": item.no_nota or "",
+            "tanggal_nota": (
+                normalize_date_backend(item.tanggal_nota)
+                or item.tanggal_nota
+                or ""
+            ),
+            "fiscal_year": item.fiscal_year,
+            "source_fund_id": item.source_fund_id or None,
+            "source_fund_name": item.source_fund_name or None,
+            "budget_id": item.budget_id or None,
+            "budget_name": item.budget_name or None,
+            "arkas_item_id": (item.arkas_item_id or "").strip() or None,
+            "arkas_updated_at": item.source_updated_at or None,
+            "penerimaan": float(item.penerimaan or 0),
+            "pengeluaran": float(item.pengeluaran or 0),
+            "saldo": float(item.saldo or 0),
+        }
+
+    def tax_values(item):
+        ntpn = (item.ntpn or "").strip()
+        return {
+            "arkas_id": item.arkas_id or None,
+            "tanggal": normalize_date_backend(item.tanggal) or item.tanggal,
+            "no_bukti": item.no_bukti.strip(),
+            "uraian": item.uraian or "",
+            "jenis_pajak": item.jenis_pajak.strip(),
+            "persentase_pajak": item.persentase_pajak,
+            "nominal_pajak": float(item.nominal_pajak or 0),
+            "nominal_wajib_disetor": (
+                0 if ntpn else float(item.nominal_wajib_disetor or 0)
+            ),
+            "ntpn": ntpn,
+            "fiscal_year": item.fiscal_year,
+            "source_fund_id": item.source_fund_id or None,
+            "source_fund_name": item.source_fund_name or None,
+            "budget_id": item.budget_id or None,
+            "budget_name": item.budget_name or None,
+            "arkas_updated_at": item.source_updated_at or None,
+        }
+
     def consolidate_taxes(items):
         consolidated = {}
         for item in items:
@@ -2669,6 +2769,11 @@ async def import_arkas_transactions(
                 existing.ntpn = item.ntpn
             if not existing.arkas_id and item.arkas_id:
                 existing.arkas_id = item.arkas_id
+            if item.source_updated_at and (
+                not existing.source_updated_at
+                or item.source_updated_at > existing.source_updated_at
+            ):
+                existing.source_updated_at = item.source_updated_at
         return list(consolidated.values())
 
     try:
@@ -2681,11 +2786,15 @@ async def import_arkas_transactions(
             select(RekapPajak).where(scope_conditions(RekapPajak))
         )
         existing_taxes = existing_tax_result.scalars().all()
-        incoming_receipts = {receipt_key(item) for item in transactions}
         deleted_count = 0
         deleted_tax_count = 0
         updated_tax_count = 0
+        updated_count = 0
         skipped_count = 0
+        transactions_to_insert = []
+        transactions_to_update = []
+        taxes_to_insert = []
+        taxes_to_update = []
 
         if data.mode == "replace_all":
             deleted_count = len(current_rows)
@@ -2700,161 +2809,141 @@ async def import_arkas_transactions(
             await db.execute(
                 delete(RekapPajak).where(scope_conditions(RekapPajak))
             )
-        elif data.mode == "keep":
-            existing_receipts = {
-                receipt_key(item)
-                for item in current_rows
-                if item.no_bukti
-            }
-            kept_receipts = incoming_receipts & existing_receipts
-            transactions = [
-                item
-                for item in transactions
-                if receipt_key(item) not in kept_receipts
-            ]
-            skipped_count = len(data.transaksi) - len(transactions)
-        else:
-            rows_to_update = [
-                item
-                for item in current_rows
-                if receipt_key(item) in incoming_receipts
-            ]
-            if rows_to_update:
-                await db.execute(
-                    delete(Transaksi).where(
-                        Transaksi.id.in_([item.id for item in rows_to_update])
-                    )
-                )
-                deleted_count = len(rows_to_update)
-
-        incoming_tax_receipts = {
-            normalize_no_bukti_backend(item.no_bukti)
-            for item in [*data.transaksi, *data.pajak]
+        existing_transactions_by_source = {
+            (receipt_key(item), item.arkas_item_id.strip()): item
+            for item in current_rows
+            if (item.arkas_item_id or "").strip()
         }
-        if data.mode == "update" and incoming_tax_receipts:
-            taxes_to_update = [
-                item
-                for item in existing_taxes
-                if normalize_no_bukti_backend(item.no_bukti)
-                in incoming_tax_receipts
-            ]
-            if taxes_to_update:
-                await db.execute(
-                    delete(RekapPajak).where(
-                        RekapPajak.id.in_([item.id for item in taxes_to_update])
-                    )
-                )
-                deleted_tax_count = len(taxes_to_update)
-        elif data.mode == "keep":
-            existing_taxes_by_key = {
-                tax_key(item): item
-                for item in existing_taxes
-            }
-            new_taxes = []
-            seen_tax_keys = set()
-            for item in taxes:
-                key = tax_key(item)
-                if key in seen_tax_keys:
-                    continue
-                seen_tax_keys.add(key)
-                existing_tax = existing_taxes_by_key.get(key)
-                if existing_tax is None:
-                    new_taxes.append(item)
-                    continue
+        existing_transactions_by_fallback = defaultdict(list)
+        existing_transactions_by_legacy_receipt = defaultdict(list)
+        for item in current_rows:
+            if not (item.arkas_item_id or "").strip():
+                existing_transactions_by_fallback[
+                    transaction_fallback_group_key(item)
+                ].append(item)
+                existing_transactions_by_legacy_receipt[
+                    receipt_key(item)
+                ].append(item)
 
-                ntpn = (item.ntpn or "").strip()
-                values = {
-                    "arkas_id": item.arkas_id or None,
-                    "tanggal": normalize_date_backend(item.tanggal) or item.tanggal,
-                    "no_bukti": item.no_bukti.strip(),
-                    "uraian": item.uraian or "",
-                    "jenis_pajak": item.jenis_pajak.strip(),
-                    "persentase_pajak": item.persentase_pajak,
-                    "nominal_pajak": float(item.nominal_pajak or 0),
-                    "nominal_wajib_disetor": (
-                        0 if ntpn else float(item.nominal_wajib_disetor or 0)
+        matched_transaction_ids = set()
+        seen_incoming_transactions = set()
+        for item in transactions:
+            source_item_id = (item.arkas_item_id or "").strip()
+            source_key = (receipt_key(item), source_item_id)
+            fallback_key = transaction_fallback_key(item)
+            incoming_key = source_key if source_item_id else fallback_key
+            if incoming_key in seen_incoming_transactions:
+                continue
+            seen_incoming_transactions.add(incoming_key)
+
+            existing = (
+                existing_transactions_by_source.get(source_key)
+                if source_item_id
+                else None
+            )
+            if existing is None:
+                fallback_candidates = [
+                    candidate
+                    for candidate in existing_transactions_by_fallback.get(
+                        transaction_fallback_group_key(item), []
+                    )
+                    if candidate.id not in matched_transaction_ids
+                ]
+                existing = next(
+                    (
+                        candidate
+                        for candidate in fallback_candidates
+                        if transaction_fallback_key(candidate) == fallback_key
                     ),
-                    "ntpn": ntpn,
-                    "source_fund_name": item.source_fund_name or None,
-                    "budget_name": item.budget_name or None,
-                }
-                changed = any(
-                    getattr(existing_tax, field) != value
-                    for field, value in values.items()
+                    fallback_candidates[0]
+                    if len(fallback_candidates) == 1
+                    else None,
                 )
-                if changed:
-                    for field, value in values.items():
-                        setattr(existing_tax, field, value)
-                    updated_tax_count += 1
-            taxes = new_taxes
+            if existing is None:
+                legacy_receipt_candidates = [
+                    candidate
+                    for candidate in existing_transactions_by_legacy_receipt.get(
+                        receipt_key(item), []
+                    )
+                    if candidate.id not in matched_transaction_ids
+                ]
+                if (
+                    len(legacy_receipt_candidates) == 1
+                    and not (
+                        legacy_receipt_candidates[0].kode_kegiatan
+                        or legacy_receipt_candidates[0].kode_rekening
+                    )
+                ):
+                    existing = legacy_receipt_candidates[0]
+
+            if data.mode == "replace_all" or existing is None:
+                transactions_to_insert.append(item)
+                continue
+
+            matched_transaction_ids.add(existing.id)
+            if data.mode == "keep":
+                skipped_count += 1
+            elif source_timestamp_is_newer(item.source_updated_at, existing):
+                transactions_to_update.append((existing, item))
+            else:
+                skipped_count += 1
+
+        existing_taxes_by_key = {tax_key(item): item for item in existing_taxes}
+        existing_taxes_by_source_id = {
+            item.arkas_id.strip(): item
+            for item in existing_taxes
+            if (item.arkas_id or "").strip()
+        }
+        seen_tax_keys = set()
+        for item in taxes:
+            key = tax_key(item)
+            if key in seen_tax_keys:
+                continue
+            seen_tax_keys.add(key)
+            source_tax_id = (item.arkas_id or "").strip()
+            existing_tax = (
+                existing_taxes_by_source_id.get(source_tax_id)
+                if source_tax_id
+                else None
+            ) or existing_taxes_by_key.get(key)
+
+            if data.mode == "replace_all" or existing_tax is None:
+                taxes_to_insert.append(item)
+            elif data.mode == "keep":
+                skipped_count += 1
+            elif source_timestamp_is_newer(item.source_updated_at, existing_tax):
+                taxes_to_update.append((existing_tax, item))
+            else:
+                skipped_count += 1
 
         unique_taxes = []
         seen_tax_keys = set()
-        for item in taxes:
+        for item in taxes_to_insert:
             key = tax_key(item)
             if key not in seen_tax_keys:
                 unique_taxes.append(item)
                 seen_tax_keys.add(key)
-        taxes = unique_taxes
+        taxes_to_insert = unique_taxes
 
-        for item in taxes:
-            db.add(
-                RekapPajak(
-                    arkas_id=item.arkas_id or None,
-                    tanggal=normalize_date_backend(item.tanggal) or item.tanggal,
-                    no_bukti=item.no_bukti.strip(),
-                    uraian=item.uraian or "",
-                    jenis_pajak=item.jenis_pajak.strip(),
-                    persentase_pajak=item.persentase_pajak,
-                    nominal_pajak=float(item.nominal_pajak or 0),
-                    nominal_wajib_disetor=(
-                        0
-                        if (item.ntpn or "").strip()
-                        else float(item.nominal_wajib_disetor or 0)
-                    ),
-                    ntpn=(item.ntpn or "").strip(),
-                    fiscal_year=item.fiscal_year,
-                    source_fund_id=item.source_fund_id or None,
-                    source_fund_name=item.source_fund_name or None,
-                    budget_id=item.budget_id or None,
-                    budget_name=item.budget_name or None,
-                )
-            )
+        for item in taxes_to_insert:
+            db.add(RekapPajak(**tax_values(item)))
 
-        for item in transactions:
-            db.add(
-                Transaksi(
-                    tanggal=normalize_date_backend(item.tanggal) or item.tanggal,
-                    kode_kegiatan=item.kode_kegiatan or "",
-                    kode_rekening=item.kode_rekening or "",
-                    no_bukti=item.no_bukti,
-                    uraian=item.uraian or "",
-                    volume=float(item.volume or 0),
-                    satuan=item.satuan or "",
-                    harga_satuan=float(item.harga_satuan or 0),
-                    nama_toko=item.nama_toko or "",
-                    alamat_toko=item.alamat_toko or "",
-                    no_telp_toko=item.no_telp_toko or "",
-                    npwp_toko=item.npwp_toko or "",
-                    no_nota=item.no_nota or "",
-                    tanggal_nota=(
-                        normalize_date_backend(item.tanggal_nota)
-                        or item.tanggal_nota
-                        or ""
-                    ),
-                    fiscal_year=item.fiscal_year,
-                    source_fund_id=item.source_fund_id or None,
-                    source_fund_name=item.source_fund_name or None,
-                    budget_id=item.budget_id or None,
-                    budget_name=item.budget_name or None,
-                    penerimaan=float(item.penerimaan or 0),
-                    pengeluaran=float(item.pengeluaran or 0),
-                    saldo=float(item.saldo or 0),
-                )
-            )
+        for item in transactions_to_insert:
+            db.add(Transaksi(**transaction_values(item)))
+
+        for existing, item in transactions_to_update:
+            for field, value in transaction_values(item).items():
+                setattr(existing, field, value)
+        for existing, item in taxes_to_update:
+            for field, value in tax_values(item).items():
+                setattr(existing, field, value)
 
         source_groups = defaultdict(list)
-        for item in data.transaksi:
+        changed_transactions = [
+            *transactions_to_insert,
+            *(item for _, item in transactions_to_update),
+        ]
+        for item in changed_transactions:
             source_groups[receipt_key(item)].append(item)
 
         kwitansi_result = await db.execute(
@@ -2895,6 +2984,8 @@ async def import_arkas_transactions(
             }
             identity_by_receipt[key] = identity_fields
             for kwitansi in kwitansi_by_receipt[key]:
+                if data.mode == "keep":
+                    continue
                 for field, value in identity_fields.items():
                     if value and value.strip():
                         setattr(kwitansi, field, value.strip())
@@ -2963,7 +3054,7 @@ async def import_arkas_transactions(
                 receipt_kwitansi.append(kwitansi)
                 existing_kwitansi.append(kwitansi)
                 created_kwitansi_count += 1
-            else:
+            elif data.mode != "keep":
                 if code:
                     kwitansi.kode_kegiatan = code
                 if nama_kegiatan:
@@ -2974,11 +3065,14 @@ async def import_arkas_transactions(
                 kwitansi.budget_id = source.budget_id or None
                 kwitansi.budget_name = source.budget_name or None
 
-        saved_count = len(transactions)
+        saved_count = len(transactions_to_insert)
+        updated_count = len(transactions_to_update)
+        updated_tax_count = len(taxes_to_update)
         if (
             saved_count
+            or updated_count
             or deleted_count
-            or taxes
+            or taxes_to_insert
             or deleted_tax_count
             or updated_tax_count
             or synced_kwitansi_count
@@ -2996,8 +3090,9 @@ async def import_arkas_transactions(
             "status": "success",
             "mode": data.mode,
             "saved_count": saved_count,
+            "updated_count": updated_count,
             "deleted_count": deleted_count,
-            "saved_tax_count": len(taxes),
+            "saved_tax_count": len(taxes_to_insert),
             "deleted_tax_count": deleted_tax_count,
             "updated_tax_count": updated_tax_count,
             "skipped_count": skipped_count,

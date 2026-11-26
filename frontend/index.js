@@ -672,30 +672,35 @@ ipcMain.handle("remove-spj-preview-pdf", (event, id) => {
   return true;
 });
 
-ipcMain.handle("print-spj-document", async (event, previewId, printerName) => {
+function withTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timeoutId));
+}
+
+ipcMain.handle("print-spj-html", async (event, printHtml, printerName) => {
   assertTrustedRenderer(event);
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
     throw new Error("Jendela utama untuk mencetak SPJ tidak tersedia.");
   }
-
-  const id = String(previewId || "");
-  const preview = spjPreviewPdfs.get(id);
-  if (!preview || preview.webContentsId !== event.sender.id) {
-    throw new Error("PDF sumber untuk dicetak tidak tersedia.");
+  if (
+    typeof printHtml !== "string" ||
+    !printHtml.startsWith("<!doctype html>") ||
+    printHtml.length === 0
+  ) {
+    throw new Error("Dokumen SPJ untuk dicetak tidak valid.");
   }
 
-  const rendererReady = await event.sender.executeJavaScript(`
-    (() => {
-      const viewer = document.getElementById("spj-native-pdf-viewer");
-      return Boolean(viewer && viewer.dataset.pdfReady === "true");
-    })()
-  `);
-  if (!rendererReady) {
-    throw new Error("PDF Preview bawaan belum selesai memuat dokumen SPJ.");
-  }
-
-  const printers = await mainWindow.webContents.getPrintersAsync();
   const selectedPrinter = String(printerName || "");
+  const printers = await withTimeout(
+    event.sender.getPrintersAsync(),
+    10_000,
+    "Daftar printer tidak merespons.",
+  );
   if (
     selectedPrinter &&
     !printers.some((printer) => printer.name === selectedPrinter)
@@ -703,42 +708,78 @@ ipcMain.handle("print-spj-document", async (event, previewId, printerName) => {
     throw new Error("Printer yang dipilih tidak lagi tersedia.");
   }
 
-  const printWindow = new BrowserWindow({
-    width: 1200,
-    height: 900,
-    show: false,
-    parent: mainWindow,
-    webPreferences: {
-      plugins: true,
-      backgroundThrottling: false,
-    },
-  });
+  const printDirectory = fs.mkdtempSync(
+    path.join(app.getPath("temp"), "spj-print-"),
+  );
+  const htmlPath = path.join(printDirectory, "dokumen.html");
+  let printWindow = null;
   try {
-    await printWindow.loadURL(`spj-pdf://preview/${encodeURIComponent(id)}.pdf`);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    if (printWindow.isDestroyed()) {
-      throw new Error("Jendela dokumen PDF untuk dicetak tertutup.");
-    }
-
-    await new Promise((resolve, reject) => {
-      printWindow.webContents.print(
-        {
-          silent: true,
-          printBackground: true,
-          marginsType: 0,
-          scaleFactor: 100,
-          pagesPerSheet: 1,
-          headerFooterEnabled: false,
-          ...(selectedPrinter ? { deviceName: selectedPrinter } : {}),
-        },
-        (success, failureReason) => {
-          if (success) resolve();
-          else reject(new Error(failureReason || "Gagal mengirim PDF SPJ ke printer."));
-        },
-      );
+    fs.writeFileSync(htmlPath, printHtml, "utf8");
+    printWindow = new BrowserWindow({
+      show: false,
+      parent: mainWindow,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
     });
+    await withTimeout(
+      printWindow.loadFile(htmlPath),
+      30_000,
+      "Dokumen cetak tidak selesai dimuat dalam 30 detik.",
+    );
+    await withTimeout(
+      printWindow.webContents.executeJavaScript(
+        "Promise.all(Array.from(document.images, image => image.decode()))",
+      ),
+      30_000,
+      "Gambar dokumen cetak tidak selesai disiapkan.",
+    );
+
+    writeAppLog("info", "frontend-main", "print-spj-html: mengirim job ke printer.");
+    await withTimeout(
+      new Promise((resolve, reject) => {
+        printWindow.webContents.print(
+          {
+            silent: true,
+            printBackground: true,
+            marginsType: 0,
+            scaleFactor: 100,
+            pagesPerSheet: 1,
+            headerFooterEnabled: false,
+            ...(selectedPrinter ? { deviceName: selectedPrinter } : {}),
+          },
+          (success, failureReason) => {
+            if (success) resolve();
+            else reject(new Error(failureReason || "Gagal mengirim PDF SPJ ke printer."));
+          },
+        );
+      }),
+      60_000,
+      "Printer tidak merespons dalam 60 detik. Periksa antrean printer sebelum mencoba lagi.",
+    );
+    writeAppLog("info", "frontend-main", "print-spj-html: job diterima printer.");
+  } catch (error) {
+    writeAppLog(
+      "error",
+      "frontend-main",
+      `print-spj-html gagal: ${error.message || error}`,
+    );
+    throw error;
   } finally {
-    if (!printWindow.isDestroyed()) printWindow.destroy();
+    if (printWindow && !printWindow.isDestroyed()) printWindow.destroy();
+    try {
+      fs.unlinkSync(htmlPath);
+      fs.rmdirSync(printDirectory);
+    } catch (error) {
+      writeAppLog(
+        "warn",
+        "frontend-main",
+        `Gagal membersihkan berkas sementara cetak SPJ: ${error.message || error}`,
+      );
+    }
   }
 });
 

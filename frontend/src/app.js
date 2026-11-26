@@ -778,8 +778,7 @@ function chooseArkasSyncMode(context, transactionCount, taxCount, sourceName) {
       `Sumber: ${sourceName}. Ditemukan ${transactionCount} baris BPU dan ` +
       `${taxCount} baris pajak ` +
       `untuk ${scopeLabel(context)}. Sinkron hanya memengaruhi tahun, ` +
-      "sumber dana, dan anggaran yang dipilih; data di luar lingkup tetap aman. " +
-      "Pilih bagaimana menangani nomor bukti yang sudah ada.";
+      "sumber dana, dan anggaran yang dipilih; data di luar lingkup tetap aman. ";
     body.appendChild(message);
     const footer = document.createElement("div");
     footer.className = "ui-dialog-foot";
@@ -793,17 +792,17 @@ function chooseArkasSyncMode(context, transactionCount, taxCount, sourceName) {
     const choices = [
       {
         mode: "replace_all",
-        label: "Ganti data pada konteks ini",
+        label: "Reset semua data",
         className: "btn btn-danger",
       },
       {
         mode: "keep",
-        label: "Pertahankan data lama",
+        label: "Tambah baru, pertahankan data lama",
         className: "btn btn-outline-primary",
       },
       {
         mode: "update",
-        label: "Perbarui nomor bukti yang sama",
+        label: "Perbarui data",
         className: "btn btn-success",
       },
     ];
@@ -1044,15 +1043,17 @@ async function syncArkas(contextFilterId = "bku-scope-filter") {
     await loadRekapPajak();
     const modeDescription = {
       replace_all: "Data pada konteks terpilih diganti",
-      keep: "Data dengan nomor bukti yang sudah ada dipertahankan",
-      update: "Data dengan nomor bukti yang sama diperbarui",
+      keep: "Data yang sudah ada dipertahankan; hanya item baru ditambahkan",
+      update: "Hanya item dengan waktu update ARKAS yang lebih baru diperbarui",
     }[mode];
     showToast(
       "Berhasil!",
       `${modeDescription}. ${result.saved_count} baris diimpor, ` +
+        `${result.updated_count || 0} baris diperbarui, ` +
         `${result.deleted_count} baris diganti/dihapus, ` +
         `${result.skipped_count} baris dilewati. ` +
-        `${result.saved_tax_count || 0} data pajak disimpan. ` +
+        `${result.saved_tax_count || 0} data pajak disimpan dan ` +
+        `${result.updated_tax_count || 0} data pajak diperbarui. ` +
         `${result.synced_kwitansi_count} SPJ diperbarui dan ` +
         `${result.created_kwitansi_count} SPJ dibuat.`,
     );
@@ -2159,13 +2160,14 @@ function saveSpjPrintSettings() {
   showToast("Berhasil!", "Pengaturan printer dan ukuran kertas disimpan.");
 }
 
-async function printKwitansi(id, previewId = null) {
+async function printKwitansi(id, previewId = null, pdfBlob = null) {
   const item = _kwitansiList.find(
     (kwitansi) => Number(kwitansi.id) === Number(id),
   );
   const label = item?.nomor_kwitansi || String(id);
+  let progressToast = null;
   try {
-    if (!window.electronAPI?.printSpjDocument) {
+    if (!window.electronAPI?.printSpjHtml) {
       throw new Error("Fitur cetak hanya tersedia di aplikasi desktop.");
     }
     if (
@@ -2176,13 +2178,26 @@ async function printKwitansi(id, previewId = null) {
         "PDF Preview bawaan belum siap. Tunggu dokumen tampil lalu coba lagi.",
       );
     }
-    showToast("Info", `Mengirim PDF SPJ ${label} ke printer...`);
+    if (!(pdfBlob instanceof Blob) || pdfBlob.size === 0) {
+      throw new Error(
+        "PDF sumber untuk dicetak tidak tersedia. Muat ulang preview.",
+      );
+    }
     const settings = getSpjPrintSettings();
-    await window.electronAPI.printSpjDocument(previewId, settings.printerName);
+    progressToast = UI.notify({
+      type: "info",
+      title: "Mengirim ke printer",
+      message: `Menyiapkan dokumen SPJ ${label} untuk printer...`,
+      duration: 0,
+    });
+    const printHtml = await buildSpjPrintHtml(pdfBlob);
+    await window.electronAPI.printSpjHtml(printHtml, settings.printerName);
+    progressToast.remove();
     showToast("Berhasil!", `SPJ ${label} berhasil dikirim ke printer.`);
     return true;
   } catch (error) {
     const message = error?.message || String(error);
+    progressToast?.remove();
     if (/print job cancel(?:ed|led)/i.test(message)) {
       appLog("warn", `printKwitansi: DIBATALKAN id=${id}: ${message}`);
       showToast("Info", `Pencetakan SPJ ${label} dibatalkan.`);
@@ -2209,6 +2224,82 @@ function openSpjPrintPreview() {
 
 let _spjPreviewState = null;
 let _spjPreviewGeneration = 0;
+let _pdfJsPromise = null;
+
+function loadPdfJs() {
+  if (!_pdfJsPromise) {
+    _pdfJsPromise = Promise.all([
+      import("pdfjs-dist"),
+      import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+    ])
+      .then(([pdfjsLib, worker]) => {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
+        return pdfjsLib;
+      })
+      .catch((error) => {
+        _pdfJsPromise = null;
+        throw error;
+      });
+  }
+  return _pdfJsPromise;
+}
+
+async function buildSpjPrintHtml(blob) {
+  const pdfjsLib = await loadPdfJs();
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(await blob.arrayBuffer()),
+  });
+  const pdfDocument = await loadingTask.promise;
+  const pages = [];
+  const pageStyles = [];
+
+  try {
+    for (
+      let pageNumber = 1;
+      pageNumber <= pdfDocument.numPages;
+      pageNumber += 1
+    ) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const pageViewport = page.getViewport({ scale: 1 });
+      const renderScale = 2;
+      const renderViewport = page.getViewport({ scale: renderScale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(renderViewport.width);
+      canvas.height = Math.ceil(renderViewport.height);
+      const renderTask = page.render({
+        canvasContext: canvas.getContext("2d"),
+        viewport: renderViewport,
+      });
+      await renderTask.promise;
+
+      const pageWidthMm = (pageViewport.width * 25.4) / 72;
+      const pageHeightMm = (pageViewport.height * 25.4) / 72;
+      const pageName = `spj-page-${pageNumber}`;
+      const imageData = canvas.toDataURL("image/png");
+      pageStyles.push(`
+        @page ${pageName} { size: ${pageWidthMm}mm ${pageHeightMm}mm; margin: 0; }
+        .${pageName} { page: ${pageName}; width: ${pageWidthMm}mm; height: ${pageHeightMm}mm; }
+      `);
+      pages.push(
+        `<section class="page ${pageName}"><img src="${imageData}" alt="Halaman ${pageNumber}"></section>`,
+      );
+      canvas.width = 0;
+      canvas.height = 0;
+      page.cleanup();
+    }
+  } finally {
+    await loadingTask.destroy();
+  }
+
+  return `<!doctype html>
+    <html><head><meta charset="utf-8"><style>
+      ${pageStyles.join("\n")}
+      html, body { margin: 0; padding: 0; }
+      .page { display: flex; break-after: page; page-break-after: always; overflow: hidden; }
+      .page:last-child { break-after: auto; page-break-after: auto; }
+      .page img { display: block; width: 100%; height: 100%; object-fit: fill; }
+    </style></head><body>${pages.join("\n")}</body></html>`;
+}
 
 function disposeSpjPreview() {
   _spjPreviewGeneration += 1;
@@ -2296,7 +2387,7 @@ async function printCurrentSpjPreview() {
   state.busy = true;
   renderSpjPreviewNavigation(state);
   try {
-    await printKwitansi(item.id, state.previewId);
+    await printKwitansi(item.id, state.previewId, state.pdfBlob);
   } finally {
     if (_spjPreviewState === state) {
       state.busy = false;
@@ -2428,6 +2519,7 @@ async function previewKwitansi(id, options = {}) {
     const previewState = {
       previewId: previewFile.id,
       pdfUrl: previewFile.url,
+      pdfBlob: blob,
       navigationItems,
       navigationIndex: initialNavigationIndex,
       autoPrint: initialAutoPrint,
@@ -4428,7 +4520,10 @@ function configureAIImageProvider() {
         if (event.key === "Escape") {
           event.preventDefault();
           finish(null);
-        } else if (event.key === "Enter" && event.target.tagName !== "TEXTAREA") {
+        } else if (
+          event.key === "Enter" &&
+          event.target.tagName !== "TEXTAREA"
+        ) {
           event.preventDefault();
           save.click();
         }
@@ -6120,15 +6215,25 @@ function handlePopupFormShortcuts(event) {
     }
     if (
       popup.contains(target) &&
-      (target.closest("textarea, select, [contenteditable='true'], button, a") ||
+      (target.closest(
+        "textarea, select, [contenteditable='true'], button, a",
+      ) ||
         (target instanceof HTMLInputElement &&
-          ["button", "submit", "reset", "file", "checkbox", "radio", "image"].includes(
-            target.type,
-          )))
+          [
+            "button",
+            "submit",
+            "reset",
+            "file",
+            "checkbox",
+            "radio",
+            "image",
+          ].includes(target.type)))
     ) {
       return;
     }
-    const save = popup.querySelector('[data-keyboard-action="save"]:not(:disabled)');
+    const save = popup.querySelector(
+      '[data-keyboard-action="save"]:not(:disabled)',
+    );
     if (save) {
       event.preventDefault();
       save.click();
@@ -6149,7 +6254,15 @@ function handlePopupFormShortcuts(event) {
   if (
     target.closest("textarea, select, [contenteditable='true'], button, a") ||
     (target instanceof HTMLInputElement &&
-      ["button", "submit", "reset", "file", "checkbox", "radio", "image"].includes(target.type))
+      [
+        "button",
+        "submit",
+        "reset",
+        "file",
+        "checkbox",
+        "radio",
+        "image",
+      ].includes(target.type))
   ) {
     return;
   }

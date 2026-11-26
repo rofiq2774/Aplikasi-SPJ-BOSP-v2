@@ -288,7 +288,7 @@ def test_kwitansi_detail_prefills_receipt_from_transaction_and_scoped_taxes(spj_
     assert json.loads(saved_lampiran)["penerima_list"][0]["pph23"] == "0"
 
 
-def test_arkas_tax_sync_persists_rows_and_filters_by_fiscal_scope(spj_client):
+def test_arkas_tax_sync_preserves_existing_taxes_in_keep_mode(spj_client):
     base_tax = {
         "tanggal": "2026-03-12",
         "no_bukti": "BPU-01",
@@ -393,7 +393,7 @@ def test_arkas_tax_sync_persists_rows_and_filters_by_fiscal_scope(spj_client):
         },
     )
     assert updated.status_code == 200, updated.text
-    assert updated.json()["updated_tax_count"] == 1
+    assert updated.json()["updated_tax_count"] == 0
 
     refreshed = spj_client.get(
         "/api/rekap-pajak",
@@ -407,8 +407,8 @@ def test_arkas_tax_sync_persists_rows_and_filters_by_fiscal_scope(spj_client):
     refreshed_row = next(
         row for row in refreshed.json()["data"] if row["arkas_id"] == "arkas-tax-2026-1"
     )
-    assert refreshed_row["ntpn"] == ""
-    assert refreshed_row["nominal_wajib_disetor"] == 15000
+    assert refreshed_row["ntpn"] == "NTPN-2026"
+    assert refreshed_row["nominal_wajib_disetor"] == 0
 
     previous_year = spj_client.get(
         "/api/rekap-pajak",
@@ -1742,7 +1742,7 @@ def test_arkas_import_syncs_spj_vendor_and_preserves_manual_fields(spj_client):
 
     assert response.status_code == 200
     assert response.json()["skipped_count"] == 1
-    assert response.json()["synced_kwitansi_count"] == 1
+    assert response.json()["synced_kwitansi_count"] == 0
     assert response.json()["created_kwitansi_count"] == 1
 
     async def read_spj():
@@ -1757,12 +1757,12 @@ def test_arkas_import_syncs_spj_vendor_and_preserves_manual_fields(spj_client):
     existing = next(row for row in kwitansi if row.no_bukti == "BPU-EXIST")
     created = next(row for row in kwitansi if row.no_bukti == "BPU-NEW")
     assert sum(row.no_bukti == "BPU-NEW" for row in kwitansi) == 1
-    assert existing.nama_toko == "Toko ARKAS"
-    assert existing.alamat_toko == "Jl. ARKAS"
-    assert existing.no_telp_toko == "08123456789"
-    assert existing.npwp_toko == "01.234.567.8-901.000"
-    assert existing.no_nota == "NOTA-ARKAS"
-    assert existing.tanggal_nota == "04-11-2026"
+    assert existing.nama_toko == "Nama lama"
+    assert existing.alamat_toko == ""
+    assert existing.no_telp_toko == ""
+    assert existing.npwp_toko == ""
+    assert existing.no_nota == ""
+    assert existing.tanggal_nota == ""
     assert existing.no_bast == "BAST-MANUAL"
     assert existing.foto_bukti == '[{"path":"uploads/keep.png","jenis":"barang"}]'
     assert existing.data_lampiran == '{"catatan":"tetap"}'
@@ -1775,9 +1775,9 @@ def test_arkas_import_syncs_spj_vendor_and_preserves_manual_fields(spj_client):
     assert created.jumlah == 75000
 
     spj_rows = spj_client.get("/api/kwitansi").json()["data"]
-    synced_row = next(row for row in spj_rows if row["no_bukti"] == "BPU-EXIST")
-    assert synced_row["no_telp_toko"] == "08123456789"
-    assert synced_row["no_nota"] == "NOTA-ARKAS"
+    preserved_row = next(row for row in spj_rows if row["no_bukti"] == "BPU-EXIST")
+    assert preserved_row["no_telp_toko"] == ""
+    assert preserved_row["no_nota"] == ""
     detail = spj_client.get(f"/api/kwitansi/{created.id}").json()["data"]
     assert detail["nama_toko"] == "Toko Baru"
     assert detail["no_telp_toko"] == "08123456789"
@@ -1836,27 +1836,60 @@ def test_generate_spj_groups_same_receipt_and_copies_arkas_vendor(spj_client):
     assert grouped_rows[0]["no_nota"] == "NOTA-GROUP"
 
 
-def test_arkas_import_update_replaces_rows_by_receipt_number(spj_client):
+def test_arkas_import_update_only_changes_items_with_newer_source_timestamp(spj_client):
     async def add_existing_rows():
-        from models import Transaksi
+        from models import RekapPajak, Transaksi
 
         async with spj_client.test_session_maker() as session:
             session.add_all(
                 [
                     Transaksi(
                         tanggal="01-11-2026",
+                        kode_kegiatan="02.01",
+                        kode_rekening="5.1.1",
                         no_bukti="BPU-UPDATE",
-                        uraian="Data lama 1",
+                        uraian="Barang pertama",
+                        arkas_item_id="rapbs-1",
+                        arkas_updated_at="2026-03-10 10:00:00",
+                        fiscal_year=2026,
+                        source_fund_id="1",
+                        budget_id="101",
                     ),
                     Transaksi(
                         tanggal="01-11-2026",
+                        kode_kegiatan="02.02",
+                        kode_rekening="5.1.2",
                         no_bukti="BPU-UPDATE",
-                        uraian="Data lama 2",
+                        uraian="Barang kedua",
+                        arkas_item_id="rapbs-2",
+                        arkas_updated_at="2026-03-10 12:00:00",
+                        fiscal_year=2026,
+                        source_fund_id="1",
+                        budget_id="101",
                     ),
-                    Transaksi(
+                    RekapPajak(
+                        arkas_id="tax-1",
                         tanggal="01-11-2026",
                         no_bukti="BPU-KEEP",
-                        uraian="Jangan diubah",
+                        uraian="Pajak lama",
+                        jenis_pajak="PPh 21",
+                        nominal_pajak=100,
+                        arkas_updated_at="2026-03-10 10:00:00",
+                        fiscal_year=2026,
+                        source_fund_id="1",
+                        budget_id="101",
+                    ),
+                    RekapPajak(
+                        arkas_id="tax-2",
+                        tanggal="01-11-2026",
+                        no_bukti="BPU-KEEP",
+                        uraian="Pajak lebih baru",
+                        jenis_pajak="PPh 22",
+                        nominal_pajak=200,
+                        arkas_updated_at="2026-03-10 12:00:00",
+                        fiscal_year=2026,
+                        source_fund_id="1",
+                        budget_id="101",
                     ),
                 ]
             )
@@ -1871,39 +1904,283 @@ def test_arkas_import_update_replaces_rows_by_receipt_number(spj_client):
                 {
                     "tanggal": "05-11-2026",
                     "no_bukti": "BPU-UPDATE",
-                    "uraian": "Data ARKAS 1",
+                    "kode_kegiatan": "02.01",
+                    "kode_rekening": "5.1.1",
+                    "uraian": "Barang pertama diperbarui",
                     "volume": 1,
                     "pengeluaran": 100,
+                    "arkas_item_id": "rapbs-1",
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
                 },
                 {
                     "tanggal": "05-11-2026",
                     "no_bukti": "BPU-UPDATE",
-                    "uraian": "Data ARKAS 2",
+                    "kode_kegiatan": "02.02",
+                    "kode_rekening": "5.1.2",
+                    "uraian": "Barang kedua dari sumber lama",
                     "volume": 2,
                     "pengeluaran": 200,
+                    "arkas_item_id": "rapbs-2",
+                    "source_updated_at": "2026-03-10 11:30:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-UPDATE",
+                    "kode_kegiatan": "02.03",
+                    "kode_rekening": "5.1.3",
+                    "uraian": "Barang baru",
+                    "pengeluaran": 300,
+                    "arkas_item_id": "rapbs-3",
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+            ],
+            "pajak": [
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-KEEP",
+                    "uraian": "Pajak pertama",
+                    "jenis_pajak": "PPh 21",
+                    "nominal_pajak": 150,
+                    "arkas_id": "tax-1",
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-KEEP",
+                    "uraian": "Pajak kedua dari sumber lama",
+                    "jenis_pajak": "PPh 22",
+                    "nominal_pajak": 250,
+                    "arkas_id": "tax-2",
+                    "source_updated_at": "2026-03-10 11:30:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-KEEP",
+                    "uraian": "Pajak baru",
+                    "jenis_pajak": "PPh 23",
+                    "nominal_pajak": 300,
+                    "arkas_id": "tax-3",
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
                 },
             ],
         },
     )
     assert response.status_code == 200
-    assert response.json()["deleted_count"] == 2
-    assert response.json()["saved_count"] == 2
+    result = response.json()
+    assert result["deleted_count"] == 0
+    assert result["saved_count"] == 1
+    assert result["updated_count"] == 1
+    assert result["saved_tax_count"] == 1
+    assert result["updated_tax_count"] == 1
+    assert result["skipped_count"] == 2
 
     async def read_rows():
         from sqlalchemy import select
-        from models import Transaksi
+        from models import RekapPajak, Transaksi
 
         async with spj_client.test_session_maker() as session:
-            result = await session.execute(select(Transaksi))
-            return result.scalars().all()
+            transactions = (
+                await session.execute(
+                    select(Transaksi).where(
+                        Transaksi.no_bukti == "BPU-UPDATE"
+                    )
+                )
+            ).scalars().all()
+            taxes = (
+                await session.execute(
+                    select(RekapPajak).where(
+                        RekapPajak.no_bukti == "BPU-KEEP"
+                    )
+                )
+            ).scalars().all()
+            return transactions, taxes
 
-    rows = asyncio.run(read_rows())
-    assert sorted(row.uraian for row in rows) == [
-        "Data ARKAS 1",
-        "Data ARKAS 2",
-        "Jangan diubah",
-        "Pulpen 1 lusin",
-    ]
+    rows, taxes = asyncio.run(read_rows())
+    assert {
+        (row.arkas_item_id, row.uraian, row.pengeluaran, row.arkas_updated_at)
+        for row in rows
+    } == {
+        ("rapbs-1", "Barang pertama diperbarui", 100, "2026-03-10 11:00:00"),
+        ("rapbs-2", "Barang kedua", 0, "2026-03-10 12:00:00"),
+        ("rapbs-3", "Barang baru", 300, "2026-03-10 11:00:00"),
+    }
+    assert {
+        (row.jenis_pajak, row.uraian, row.nominal_pajak, row.arkas_updated_at)
+        for row in taxes
+    } == {
+        ("PPh 21", "Pajak pertama", 150, "2026-03-10 11:00:00"),
+        ("PPh 22", "Pajak lebih baru", 200, "2026-03-10 12:00:00"),
+        ("PPh 23", "Pajak baru", 300, "2026-03-10 11:00:00"),
+    }
+
+
+def test_arkas_import_keep_only_adds_new_items(spj_client):
+    async def add_existing_rows():
+        from models import Kwitansi, RekapPajak, Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            session.add_all(
+                [
+                    Transaksi(
+                        tanggal="01-11-2026",
+                        kode_kegiatan="02.01",
+                        kode_rekening="5.1.1",
+                        no_bukti="BPU-WHITE",
+                        uraian="Deskripsi lama",
+                        pengeluaran=100,
+                        nama_toko="Toko lama",
+                        fiscal_year=2026,
+                        source_fund_id="1",
+                        budget_id="101",
+                    ),
+                    RekapPajak(
+                        arkas_id="tax-existing",
+                        tanggal="01-11-2026",
+                        no_bukti="BPU-WHITE",
+                        uraian="Pajak lama",
+                        jenis_pajak="PPh 21",
+                        nominal_pajak=50,
+                        fiscal_year=2026,
+                        source_fund_id="1",
+                        budget_id="101",
+                    ),
+                    Kwitansi(
+                        nomor_kwitansi="BPU-WHITE/EXISTING",
+                        no_bukti="BPU-WHITE",
+                        tanggal="01-11-2026",
+                        nama_toko="Toko lama",
+                        fiscal_year=2026,
+                        source_fund_id="1",
+                        budget_id="101",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(add_existing_rows())
+    response = spj_client.post(
+        "/api/transaksi/import-arkas",
+        json={
+            "mode": "keep",
+            "transaksi": [
+                {
+                    "tanggal": "05-11-2026",
+                    "kode_kegiatan": "02.01",
+                    "kode_rekening": "5.1.1",
+                    "no_bukti": "BPU-WHITE",
+                    "uraian": "Deskripsi baru dari ARKAS",
+                    "pengeluaran": 250,
+                    "arkas_item_id": "rapbs-old",
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+                {
+                    "tanggal": "05-11-2026",
+                    "kode_kegiatan": "02.02",
+                    "kode_rekening": "5.1.2",
+                    "no_bukti": "BPU-WHITE",
+                    "uraian": "Item baru",
+                    "pengeluaran": 200,
+                    "arkas_item_id": "rapbs-new",
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+            ],
+            "pajak": [
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-WHITE",
+                    "uraian": "Pajak lama diperbarui",
+                    "jenis_pajak": "PPh 21",
+                    "nominal_pajak": 75,
+                    "arkas_id": "tax-existing",
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+                {
+                    "tanggal": "05-11-2026",
+                    "no_bukti": "BPU-WHITE",
+                    "uraian": "Pajak baru",
+                    "jenis_pajak": "PPh 23",
+                    "nominal_pajak": 25,
+                    "source_updated_at": "2026-03-10 11:00:00",
+                    "fiscal_year": 2026,
+                    "source_fund_id": "1",
+                    "budget_id": "101",
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["saved_count"] == 1
+    assert result["updated_count"] == 0
+    assert result["saved_tax_count"] == 1
+    assert result["updated_tax_count"] == 0
+    assert result["skipped_count"] == 2
+
+    async def read_existing_rows():
+        from sqlalchemy import select
+        from models import Kwitansi, RekapPajak, Transaksi
+
+        async with spj_client.test_session_maker() as session:
+            transaction = (
+                await session.execute(
+                    select(Transaksi).where(
+                        Transaksi.no_bukti == "BPU-WHITE",
+                        Transaksi.kode_kegiatan == "02.01",
+                    )
+                )
+            ).scalars().one()
+            tax = (
+                await session.execute(
+                    select(RekapPajak).where(
+                        RekapPajak.no_bukti == "BPU-WHITE",
+                        RekapPajak.jenis_pajak == "PPh 21",
+                    )
+                )
+            ).scalars().one()
+            kwitansi = (
+                await session.execute(
+                    select(Kwitansi).where(
+                        Kwitansi.nomor_kwitansi == "BPU-WHITE/EXISTING"
+                    )
+                )
+            ).scalars().one()
+            return transaction, tax, kwitansi
+
+    transaction, tax, kwitansi = asyncio.run(read_existing_rows())
+    assert (transaction.uraian, transaction.pengeluaran, transaction.nama_toko) == (
+        "Deskripsi lama",
+        100,
+        "Toko lama",
+    )
+    assert (tax.uraian, tax.nominal_pajak) == ("Pajak lama", 50)
+    assert kwitansi.nama_toko == "Toko lama"
 
 
 def test_arkas_import_replace_all_removes_existing_transactions(spj_client):

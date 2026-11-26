@@ -30,6 +30,8 @@ class Transaksi(Base):
     source_fund_name = Column(String, nullable=True)
     budget_id = Column(String, nullable=True)
     budget_name = Column(String, nullable=True)
+    arkas_item_id = Column(String, nullable=True)
+    arkas_updated_at = Column(String, nullable=True)
     penerimaan = Column(Float, default=0)
     pengeluaran = Column(Float, default=0)
     saldo = Column(Float, default=0)
@@ -67,6 +69,7 @@ class RekapPajak(Base):
     source_fund_name = Column(String, nullable=True)
     budget_id = Column(String, nullable=True)
     budget_name = Column(String, nullable=True)
+    arkas_updated_at = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

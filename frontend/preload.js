@@ -28,8 +28,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("create-spj-preview-pdf", pdfData),
   removeSpjPreviewPdf: id =>
     ipcRenderer.invoke("remove-spj-preview-pdf", id),
-  printSpjDocument: (previewId, printerName) =>
-    ipcRenderer.invoke("print-spj-document", previewId, printerName),
+  printSpjHtml: (printHtml, printerName) =>
+    ipcRenderer.invoke("print-spj-html", printHtml, printerName),
   getAiImageSettings: () => ipcRenderer.invoke("get-ai-image-settings"),
   saveAiImageSettings: settings =>
     ipcRenderer.invoke("save-ai-image-settings", settings),

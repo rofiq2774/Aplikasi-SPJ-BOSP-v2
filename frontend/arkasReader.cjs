@@ -60,6 +60,13 @@ function selectColumn(alias, column, resultName, columns) {
   return `${alias}."${column}" AS "${resultName}"`;
 }
 
+function updatedAtExpression(alias, columns) {
+  const timestampColumns = ["last_update", "create_date"]
+    .filter((column) => columns?.has(column))
+    .map((column) => `${alias}."${column}"`);
+  return timestampColumns.length ? `COALESCE(${timestampColumns.join(", ")})` : "NULL";
+}
+
 function openDatabase(sqlite, virtualPath, encrypted) {
   const db = sqlite.open(virtualPath);
   try {
@@ -201,6 +208,8 @@ function buildQuery(db, filters) {
     'kun."no_bukti" AS "noBukti"',
     selectColumn("kun", "tanggal_nota", "tanggalNota", notaColumns),
     selectColumn("ku", "tanggal_transaksi", "tanggalTransaksi", kasColumns),
+    'r."id_rapbs" AS "arkasItemId"',
+    `MAX(${updatedAtExpression("ku", kasColumns)}) AS "sourceUpdatedAt"`,
     'rk."id_kode" AS "kodeKegiatan"',
     'rk."uraian_kode" AS "namaKegiatan"',
     'a."tahun_anggaran" AS "fiscalYear"',
@@ -594,6 +603,7 @@ function buildTaxRecapQuery(db, filters) {
 
   const fields = [
     'tax."id_kas_umum" AS "idKasUmum"',
+    `${updatedAtExpression("tax", kasColumns)} AS "sourceUpdatedAt"`,
     'tax."tanggal_transaksi" AS "tanggalTransaksi"',
     'tax."no_bukti" AS "noBukti"',
     'tax."uraian" AS "uraianPajak"',
@@ -722,6 +732,7 @@ function mapTaxRecapRow(row) {
 
   return {
     arkas_id: String(row.idKasUmum ?? "").trim(),
+    source_updated_at: String(row.sourceUpdatedAt || ""),
     tanggal: formatDate(row.tanggalTransaksi),
     uraian: String(row.parentUraian || taxDescription).trim(),
     no_bukti: String(row.parentNoBukti || row.noBukti || "").trim(),
@@ -794,6 +805,8 @@ async function readArkasTransactions(
       const details = parseDetails(row.details);
       return {
         no_bukti: String(row.noBukti || "").trim(),
+        arkas_item_id: String(row.arkasItemId ?? "").trim(),
+        source_updated_at: String(row.sourceUpdatedAt || ""),
         tanggal: formatDate(row.tanggalTransaksi),
         kode_kegiatan: String(row.kodeKegiatan ?? ""),
         nama_kegiatan: String(row.namaKegiatan || "").trim(),
@@ -1164,6 +1177,7 @@ module.exports = {
   mapArkasBudgetRows,
   mapTaxRecapRow,
   normalizeFilters,
+  buildQuery,
   buildActivitiesQuery,
   buildArkasActivityContextsQuery,
   buildArkasReferenceBarangQuery,
